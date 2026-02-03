@@ -62,6 +62,10 @@ public class Scaffold extends Module {
     private boolean shouldKeepY = false;
     private boolean towering = false;
     private EnumFacing targetFacing = null;
+    private boolean isClutching = false;
+    private double clutchStartY = 0.0;
+    private int clutchAttempts = 0;
+    private long lastClutchTime = 0L;
     public final ModeProperty rotationMode = new ModeProperty("rotations", 2, new String[]{"NONE", "DEFAULT", "BACKWARDS", "SIDEWAYS"});
     public final ModeProperty moveFix = new ModeProperty("move-fix", 1, new String[]{"NONE", "SILENT"});
     public final ModeProperty sprintMode = new ModeProperty("sprint", 0, new String[]{"NONE", "VANILLA"});
@@ -77,6 +81,9 @@ public class Scaffold extends Module {
     public final BooleanProperty swing = new BooleanProperty("swing", true);
     public final BooleanProperty itemSpoof = new BooleanProperty("item-spoof", false);
     public final BooleanProperty blockCounter = new BooleanProperty("block-counter", true);
+    public final BooleanProperty infiniteClutch = new BooleanProperty("infinite-clutch", false);
+    public final BooleanProperty grimClutchBypass = new BooleanProperty("grim-clutch-bypass", true, () -> this.infiniteClutch.getValue());
+    public final PercentProperty clutchVoidDistance = new PercentProperty("clutch-void-distance", 5, 3, 10, () -> this.infiniteClutch.getValue());
 
     private boolean shouldStopSprint() {
         if (this.isTowering()) {
@@ -237,6 +244,85 @@ public class Scaffold extends Module {
             return false;
         }
     }
+    
+    private void handleInfiniteClutch() {
+        if (!isVoidBelow()) {
+            if (isClutching) {
+                isClutching = false;
+                clutchAttempts = 0;
+            }
+            return;
+        }
+        
+        if (!isClutching) {
+            isClutching = true;
+            clutchStartY = mc.thePlayer.posY;
+            clutchAttempts = 0;
+            lastClutchTime = System.currentTimeMillis();
+        }
+        
+        double distanceFallen = clutchStartY - mc.thePlayer.posY;
+        double voidDistance = this.clutchVoidDistance.getValue().doubleValue();
+        
+        if (distanceFallen > voidDistance) {
+            if (this.grimClutchBypass.getValue()) {
+                if (System.currentTimeMillis() - lastClutchTime < 50) {
+                    return;
+                }
+                lastClutchTime = System.currentTimeMillis();
+            }
+            
+            clutchAttempts++;
+            
+            if (clutchAttempts > 100) {
+                isClutching = false;
+                clutchAttempts = 0;
+                return;
+            }
+            
+            if (this.blockCount <= 0) {
+                findBlocks();
+            }
+            
+            if (mc.thePlayer.motionY < -0.5) {
+                mc.thePlayer.motionY *= 0.9;
+            }
+        }
+    }
+    
+    private boolean isVoidBelow() {
+        int playerY = MathHelper.floor_double(mc.thePlayer.posY);
+        
+        for (int y = playerY - 1; y >= 0; y--) {
+            BlockPos pos = new BlockPos(
+                MathHelper.floor_double(mc.thePlayer.posX),
+                y,
+                MathHelper.floor_double(mc.thePlayer.posZ)
+            );
+            
+            Block block = mc.theWorld.getBlockState(pos).getBlock();
+            if (!block.getMaterial().isReplaceable()) {
+                return false;
+            }
+            
+            if (y <= 5) {
+                return true;
+            }
+        }
+        
+        return true;
+    }
+    
+    private void findBlocks() {
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
+            if (ItemUtil.isBlock(stack)) {
+                mc.thePlayer.inventory.currentItem = i;
+                this.blockCount = stack.stackSize;
+                return;
+            }
+        }
+    }
 
     public Scaffold() {
         super("Scaffold", false);
@@ -249,10 +335,19 @@ public class Scaffold extends Module {
     @EventTarget(Priority.HIGH)
     public void onUpdate(UpdateEvent event) {
         if (this.isEnabled() && event.getType() == EventType.PRE) {
+            
+            if (this.infiniteClutch.getValue()) {
+                handleInfiniteClutch();
+            }
+            
             if (this.rotationTick > 0) {
                 this.rotationTick--;
             }
             if (mc.thePlayer.onGround) {
+                if (isClutching) {
+                    isClutching = false;
+                    clutchAttempts = 0;
+                }
                 if (this.stage > 0) {
                     this.stage--;
                 }

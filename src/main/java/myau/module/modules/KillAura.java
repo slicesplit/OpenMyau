@@ -64,6 +64,12 @@ public class KillAura extends Module {
     private long attackDelayMS = 0L;
     private int blockTick = 0;
     private int lastTickProcessed;
+    private final ArrayList<AttackData> multiTargets = new ArrayList<>();
+    private int multiTargetIndex = 0;
+    private long lastMultiAttackTime = 0L;
+    private final long[] targetAttackTimes = new long[10];
+    private int attacksThisSecond = 0;
+    private long lastSecondReset = 0L;
     public final ModeProperty mode;
     public final ModeProperty sort;
     public final ModeProperty autoBlock;
@@ -99,6 +105,9 @@ public class KillAura extends Module {
     public final ModeProperty debugLog;
 
     private long getAttackDelay() {
+        if (this.mode.getValue() == 2) {
+            return 50L;
+        }
         return this.isBlocking ? (long) (1000.0F / RandomUtil.nextLong(this.autoBlockMinCPS.getValue().longValue(), this.autoBlockMaxCPS.getValue().longValue())) : 1000L / RandomUtil.nextLong(this.minCPS.getValue(), this.maxCPS.getValue());
     }
 
@@ -106,10 +115,31 @@ public class KillAura extends Module {
         if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
             if (this.isPlayerBlocking() && this.autoBlock.getValue() != 1) {
                 return false;
-            } else if (this.attackDelayMS > 0L) {
+            } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2) {
                 return false;
             } else {
-                this.attackDelayMS = this.attackDelayMS + this.getAttackDelay();
+                long currentTime = System.currentTimeMillis();
+                
+                if (this.mode.getValue() == 2) {
+                    if (currentTime - lastSecondReset > 1000) {
+                        attacksThisSecond = 0;
+                        lastSecondReset = currentTime;
+                    }
+                    
+                    if (attacksThisSecond >= 20) {
+                        return false;
+                    }
+                    
+                    if (currentTime - lastMultiAttackTime < 50) {
+                        return false;
+                    }
+                    
+                    attacksThisSecond++;
+                    lastMultiAttackTime = currentTime;
+                } else {
+                    this.attackDelayMS = this.attackDelayMS + this.getAttackDelay();
+                }
+                
                 mc.thePlayer.swingItem();
                 if ((this.rotations.getValue() != 0 || !this.isBoxInAttackRange(this.target.getBox()))
                         && RotationUtil.rayTrace(this.target.getBox(), yaw, pitch, this.attackRange.getValue()) == null) {
@@ -397,7 +427,7 @@ public class KillAura extends Module {
     public KillAura() {
         super("KillAura", false);
         this.lastTickProcessed = 0;
-        this.mode = new ModeProperty("mode", 0, new String[]{"SINGLE", "SWITCH"});
+        this.mode = new ModeProperty("mode", 0, new String[]{"SINGLE", "SWITCH", "MULTI"});
         this.sort = new ModeProperty("sort", 0, new String[]{"DISTANCE", "HEALTH", "HURT_TIME", "FOV"});
         this.autoBlock = new ModeProperty(
                 "auto-block", 2, new String[]{"NONE", "VANILLA", "SPOOF", "HYPIXEL", "BLINK", "INTERACT", "SWAP", "LEGIT", "FAKE"}
@@ -411,7 +441,7 @@ public class KillAura extends Module {
         this.fov = new IntProperty("fov", 360, 30, 360);
         this.minCPS = new IntProperty("min-aps", 14, 1, 20);
         this.maxCPS = new IntProperty("max-aps", 14, 1, 20);
-        this.switchDelay = new IntProperty("switch-delay", 150, 0, 1000);
+        this.switchDelay = new IntProperty("switch-delay", 50, 0, 1000);
         this.rotations = new ModeProperty("rotations", 2, new String[]{"NONE", "LEGIT", "SILENT", "LOCK_VIEW"});
         this.moveFix = new ModeProperty("move-fix", 1, new String[]{"NONE", "SILENT", "STRICT"});
         this.smoothing = new PercentProperty("smoothing", 0);
@@ -742,7 +772,44 @@ public class KillAura extends Module {
                     }
                 }
                 boolean attacked = false;
-                if (this.isBoxInSwingRange(this.target.getBox())) {
+                
+                if (this.mode.getValue() == 2 && !multiTargets.isEmpty()) {
+                    for (int i = 0; i < multiTargets.size(); i++) {
+                        AttackData multiTarget = multiTargets.get(i);
+                        
+                        if (multiTarget == null || !this.isValidTarget(multiTarget.getEntity())) {
+                            continue;
+                        }
+                        
+                        if (!this.isBoxInSwingRange(multiTarget.getBox())) {
+                            continue;
+                        }
+                        
+                        float[] targetRotations = RotationUtil.getRotationsToBox(
+                            multiTarget.getBox(),
+                            event.getYaw(),
+                            event.getPitch(),
+                            (float) this.angleStep.getValue() + RandomUtil.nextFloat(-5.0F, 5.0F),
+                            (float) this.smoothing.getValue() / 100.0F
+                        );
+                        
+                        if (i == 0 && (this.rotations.getValue() == 2 || this.rotations.getValue() == 3)) {
+                            event.setRotation(targetRotations[0], targetRotations[1], 1);
+                            if (this.rotations.getValue() == 3) {
+                                event.setPervRotation(targetRotations[0], 1);
+                            }
+                        }
+                        
+                        if (this.performAttack(targetRotations[0], targetRotations[1])) {
+                            attacked = true;
+                        }
+                    }
+                    
+                    multiTargetIndex++;
+                    if (multiTargetIndex >= multiTargets.size()) {
+                        multiTargetIndex = 0;
+                    }
+                } else if (this.isBoxInSwingRange(this.target.getBox())) {
                     if (this.rotations.getValue() == 2 || this.rotations.getValue() == 3) {
                         float[] rotations = RotationUtil.getRotationsToBox(
                                 this.target.getBox(),
@@ -835,14 +902,25 @@ public class KillAura extends Module {
                                                 : Double.compare(RotationUtil.distanceToEntity(entityLivingBase1), RotationUtil.distanceToEntity(entityLivingBase2));
                                     }
                             );
-                            if (this.mode.getValue() == 1 && this.hitRegistered) {
-                                this.hitRegistered = false;
-                                this.switchTick++;
+                            if (this.mode.getValue() == 2) {
+                                multiTargets.clear();
+                                int maxTargets = Math.min(4, targets.size());
+                                for (int i = 0; i < maxTargets; i++) {
+                                    multiTargets.add(new AttackData(targets.get(i)));
+                                }
+                                if (!multiTargets.isEmpty()) {
+                                    this.target = multiTargets.get(0);
+                                }
+                            } else {
+                                if (this.mode.getValue() == 1 && this.hitRegistered) {
+                                    this.hitRegistered = false;
+                                    this.switchTick++;
+                                }
+                                if (this.mode.getValue() == 0 || this.switchTick >= targets.size()) {
+                                    this.switchTick = 0;
+                                }
+                                this.target = new AttackData(targets.get(this.switchTick));
                             }
-                            if (this.mode.getValue() == 0 || this.switchTick >= targets.size()) {
-                                this.switchTick = 0;
-                            }
-                            this.target = new AttackData(targets.get(this.switchTick));
                         }
                     }
                     if (this.target != null) {

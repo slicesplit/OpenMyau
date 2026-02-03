@@ -32,26 +32,13 @@ import java.util.concurrent.ConcurrentHashMap;
 public class Backtrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"MANUAL", "LAG_BASED"});
-    public final IntProperty ticks = new IntProperty("ticks", 10, 1, 20);
+    public final IntProperty ticks = new IntProperty("ticks", 6, 1, 15);
     public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true);
-    public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true);
     public final ColorProperty color = new ColorProperty("color", 0xFF0000);
-    public final IntProperty latency = new IntProperty("latency", 100, 0, 500);
-    public final IntProperty maxQueuedPackets = new IntProperty("max-queued", 3, 1, 10, () -> this.mode.getValue() == 1);
-    public final BooleanProperty smartRelease = new BooleanProperty("smart-release", true, () -> this.mode.getValue() == 1);
-    public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true, () -> this.mode.getValue() == 1);
-    public final IntProperty minReleaseInterval = new IntProperty("min-release-interval", 45, 25, 100, () -> this.mode.getValue() == 1 && this.smartRelease.getValue());
+    public final BooleanProperty grimReachBypass = new BooleanProperty("grim-reach-bypass", true);
+    public final FloatProperty maxReachDistance = new FloatProperty("max-reach-distance", 3.0F, 2.5F, 3.5F, () -> this.grimReachBypass.getValue());
 
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();
-    private final Map<Integer, Vec3d> serverPositions = new ConcurrentHashMap<>();
-    private final LinkedList<Packet<?>> delayedPackets = new LinkedList<>();
-    private long lastPacketTime = 0L;
-    private long lastReleaseTime = 0L;
-    private boolean delayingPackets = false;
-    private int ticksSinceLastPacket = 0;
-    private int packetsThisSecond = 0;
-    private long lastSecondReset = 0L;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -60,131 +47,18 @@ public class Backtrack extends Module {
     @Override
     public void onEnabled() {
         entityPositions.clear();
-        serverPositions.clear();
-        delayedPackets.clear();
-        lastPacketTime = System.currentTimeMillis();
-        delayingPackets = false;
     }
 
     @Override
     public void onDisabled() {
-        releaseDelayedPackets();
         entityPositions.clear();
-        serverPositions.clear();
     }
 
-    @EventTarget(Priority.HIGHEST)
-    public void onPacketReceive(PacketEvent event) {
-        if (!this.isEnabled() || event.getType() != EventType.RECEIVE || mc.thePlayer == null || mc.theWorld == null) {
-            return;
-        }
-
-        Packet<?> packet = event.getPacket();
-        
-        if (packet instanceof S14PacketEntity) {
-            S14PacketEntity entityPacket = (S14PacketEntity) packet;
-            int entityId = entityPacket.getEntity(mc.theWorld) != null ? entityPacket.getEntity(mc.theWorld).getEntityId() : -1;
-            
-            if (entityId != -1 && entityPacket.getEntity(mc.theWorld) instanceof EntityPlayer) {
-                EntityPlayer player = (EntityPlayer) entityPacket.getEntity(mc.theWorld);
-                updateServerPosition(player);
-            }
-        } else if (packet instanceof S18PacketEntityTeleport) {
-            S18PacketEntityTeleport teleportPacket = (S18PacketEntityTeleport) packet;
-            int entityId = teleportPacket.getEntityId();
-            
-            if (mc.theWorld.getEntityByID(entityId) instanceof EntityPlayer) {
-                EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entityId);
-                if (player != null) {
-                    serverPositions.put(entityId, new Vec3d(
-                        teleportPacket.getX() / 32.0,
-                        teleportPacket.getY() / 32.0,
-                        teleportPacket.getZ() / 32.0
-                    ));
-                }
-            }
-        }
-    }
-
-    @EventTarget(Priority.LOWEST)
-    public void onPacketSend(PacketEvent event) {
-        if (!this.isEnabled() || event.getType() != EventType.SEND || mc.thePlayer == null) {
-            return;
-        }
-
-        if (this.mode.getValue() != 1) {
-            return;
-        }
-
-        Packet<?> packet = event.getPacket();
-        
-        if (packet instanceof C03PacketPlayer) {
-            long currentTime = System.currentTimeMillis();
-            
-            if (shouldDelayPackets()) {
-                if (!delayingPackets) {
-                    delayingPackets = true;
-                    lastPacketTime = currentTime;
-                    lastReleaseTime = currentTime;
-                }
-
-                if (delayedPackets.size() >= this.maxQueuedPackets.getValue()) {
-                    releaseOldestPacket();
-                }
-                
-                if (this.smartRelease.getValue() && currentTime - lastReleaseTime > this.minReleaseInterval.getValue()) {
-                    releaseOldestPacket();
-                    lastReleaseTime = currentTime;
-                }
-                
-                if (this.grimBypass.getValue()) {
-                    if (currentTime - lastSecondReset > 1000) {
-                        packetsThisSecond = 0;
-                        lastSecondReset = currentTime;
-                    }
-                    
-                    if (packetsThisSecond > 18) {
-                        releaseDelayedPackets();
-                        delayingPackets = false;
-                        return;
-                    }
-                }
-                
-                long effectiveLatency = this.latency.getValue();
-                if (this.grimBypass.getValue() && effectiveLatency > 100) {
-                    effectiveLatency = 100;
-                }
-                
-                if (currentTime - lastPacketTime < effectiveLatency) {
-                    delayedPackets.add(packet);
-                    event.setCancelled(true);
-                    ticksSinceLastPacket = 0;
-                    if (this.grimBypass.getValue()) {
-                        packetsThisSecond++;
-                    }
-                } else {
-                    releaseDelayedPackets();
-                    delayingPackets = false;
-                }
-            } else {
-                if (delayingPackets) {
-                    releaseDelayedPackets();
-                    delayingPackets = false;
-                }
-                ticksSinceLastPacket++;
-            }
-        }
-    }
 
     @EventTarget
     public void onTick(TickEvent event) {
         if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
             return;
-        }
-
-        if (this.mode.getValue() == 1 && delayedPackets.size() > 0 && ticksSinceLastPacket > 3) {
-            releaseDelayedPackets();
-            delayingPackets = false;
         }
 
         for (EntityPlayer player : mc.theWorld.playerEntities) {
@@ -206,7 +80,6 @@ public class Backtrack extends Module {
         }
 
         entityPositions.keySet().removeIf(id -> mc.theWorld.getEntityByID(id) == null);
-        serverPositions.keySet().removeIf(id -> mc.theWorld.getEntityByID(id) == null);
     }
 
     @EventTarget
@@ -215,18 +88,14 @@ public class Backtrack extends Module {
             return;
         }
 
-        if (this.renderPreviousTicks.getValue() && this.mode.getValue() == 0) {
+        if (this.renderPreviousTicks.getValue()) {
             renderHistoricalPositions();
-        }
-
-        if (this.renderServerPos.getValue() && this.mode.getValue() == 1) {
-            renderServerPositions();
         }
     }
 
     @EventTarget
     public void onAttack(AttackEvent event) {
-        if (!this.isEnabled() || this.mode.getValue() != 0 || mc.thePlayer == null) {
+        if (!this.isEnabled() || mc.thePlayer == null) {
             return;
         }
 
@@ -243,62 +112,6 @@ public class Backtrack extends Module {
         }
     }
 
-    private void updateServerPosition(EntityPlayer player) {
-        if (player != null) {
-            serverPositions.put(player.getEntityId(), new Vec3d(player.posX, player.posY, player.posZ));
-        }
-    }
-
-    private boolean shouldDelayPackets() {
-        KillAura killAura = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
-        if (killAura == null || !killAura.isEnabled()) {
-            return false;
-        }
-
-        for (EntityPlayer player : mc.theWorld.playerEntities) {
-            if (player == mc.thePlayer || player.isDead) {
-                continue;
-            }
-
-            double distance = mc.thePlayer.getDistanceToEntity(player);
-            if (distance <= 6.0 && isValidTarget(player)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private boolean isValidTarget(EntityPlayer player) {
-        if (player == mc.thePlayer || player.isDead || player.getHealth() <= 0) {
-            return false;
-        }
-
-        if (TeamUtil.isFriend(player)) {
-            return false;
-        }
-
-        return RotationUtil.angleToEntity(player) <= 180.0F;
-    }
-
-    private void releaseDelayedPackets() {
-        while (!delayedPackets.isEmpty()) {
-            Packet<?> packet = delayedPackets.poll();
-            if (packet != null && mc.getNetHandler() != null) {
-                mc.getNetHandler().getNetworkManager().sendPacket(packet);
-            }
-        }
-        lastReleaseTime = System.currentTimeMillis();
-    }
-    
-    private void releaseOldestPacket() {
-        if (!delayedPackets.isEmpty()) {
-            Packet<?> packet = delayedPackets.poll();
-            if (packet != null && mc.getNetHandler() != null) {
-                mc.getNetHandler().getNetworkManager().sendPacket(packet);
-            }
-        }
-    }
 
     private PositionData selectOptimalPosition(LinkedList<PositionData> positions, EntityPlayer target) {
         if (positions.isEmpty()) {
@@ -306,22 +119,50 @@ public class Backtrack extends Module {
         }
 
         double currentDistance = mc.thePlayer.getDistanceToEntity(target);
+        double maxReach = this.grimReachBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
+        
+        PositionData bestPosition = null;
+        double bestDistance = currentDistance;
         
         for (PositionData pos : positions) {
-            double backtrackDistance = mc.thePlayer.getDistanceSq(pos.x, pos.y, pos.z);
-            if (Math.sqrt(backtrackDistance) < currentDistance - 0.5) {
-                return pos;
+            double backtrackDistance = Math.sqrt(mc.thePlayer.getDistanceSq(pos.x, pos.y, pos.z));
+            
+            if (backtrackDistance < currentDistance && backtrackDistance <= maxReach) {
+                if (backtrackDistance < bestDistance) {
+                    bestDistance = backtrackDistance;
+                    bestPosition = pos;
+                }
             }
         }
-
-        return positions.getFirst();
+        
+        return bestPosition;
     }
 
     private boolean shouldUseBacktrack(EntityPlayer target, PositionData backtrackPos) {
         double currentDist = mc.thePlayer.getDistanceToEntity(target);
         double backtrackDist = Math.sqrt(mc.thePlayer.getDistanceSq(backtrackPos.x, backtrackPos.y, backtrackPos.z));
+        double maxReach = this.grimReachBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
         
-        return backtrackDist < currentDist && backtrackDist <= 6.0;
+        if (backtrackDist >= currentDist) {
+            return false;
+        }
+        
+        if (backtrackDist > maxReach) {
+            return false;
+        }
+        
+        if (this.grimReachBypass.getValue()) {
+            double eyeHeight = mc.thePlayer.getEyeHeight();
+            double playerEyeY = mc.thePlayer.posY + eyeHeight;
+            double targetCenterY = backtrackPos.y + (target.height / 2.0);
+            double verticalDist = Math.abs(playerEyeY - targetCenterY);
+            
+            if (verticalDist > 2.0) {
+                return false;
+            }
+        }
+        
+        return true;
     }
 
     private void applyBacktrackPosition(EntityPlayer target, PositionData pos) {
@@ -335,7 +176,11 @@ public class Backtrack extends Module {
         for (Map.Entry<Integer, LinkedList<PositionData>> entry : entityPositions.entrySet()) {
             EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
             
-            if (player == null || player == mc.thePlayer || !isValidTarget(player)) {
+            if (player == null || player == mc.thePlayer || player.isDead) {
+                continue;
+            }
+            
+            if (TeamUtil.isFriend(player)) {
                 continue;
             }
 
@@ -360,32 +205,6 @@ public class Backtrack extends Module {
         }
     }
 
-    private void renderServerPositions() {
-        for (Map.Entry<Integer, Vec3d> entry : serverPositions.entrySet()) {
-            EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
-            
-            if (player == null || player == mc.thePlayer || !isValidTarget(player)) {
-                continue;
-            }
-
-            Vec3d serverPos = entry.getValue();
-            double renderX = serverPos.x - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
-            double renderY = serverPos.y - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
-            double renderZ = serverPos.z - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
-
-            AxisAlignedBB box = new AxisAlignedBB(
-                renderX - 0.3, renderY, renderZ - 0.3,
-                renderX + 0.3, renderY + 1.8, renderZ + 0.3
-            );
-
-            Color serverColor = new Color(this.color.getValue());
-            RenderUtil.enableRenderState();
-            RenderUtil.drawBoundingBox(box, serverColor.getRed(), 
-                serverColor.getGreen(), serverColor.getBlue(), 255, 2.0F);
-            RenderUtil.disableRenderState();
-        }
-    }
-
     private void renderPlayerAtPosition(EntityPlayer player, PositionData pos, Color color) {
         double renderX = pos.x - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
         double renderY = pos.y - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
@@ -402,10 +221,6 @@ public class Backtrack extends Module {
         RenderUtil.disableRenderState();
     }
 
-    public LinkedList<PositionData> getEntityPositions(int entityId) {
-        return entityPositions.get(entityId);
-    }
-
     private static class PositionData {
         final double x, y, z;
         final float yaw, pitch, headYaw, limbSwing, limbSwingAmount;
@@ -420,16 +235,6 @@ public class Backtrack extends Module {
             this.headYaw = headYaw;
             this.limbSwing = limbSwing;
             this.limbSwingAmount = limbSwingAmount;
-        }
-    }
-
-    private static class Vec3d {
-        final double x, y, z;
-
-        Vec3d(double x, double y, double z) {
-            this.x = x;
-            this.y = y;
-            this.z = z;
         }
     }
 }
