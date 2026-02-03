@@ -43,6 +43,8 @@ public class ClickGui extends GuiScreen {
         combatModules.add(Myau.moduleManager.getModule(MoreKB.class));
         combatModules.add(Myau.moduleManager.getModule(Refill.class));
         combatModules.add(Myau.moduleManager.getModule(HitSelect.class));
+        combatModules.add(Myau.moduleManager.getModule(Backtrack.class));
+        combatModules.add(Myau.moduleManager.getModule(JumpReset.class));
 
         List<Module> movementModules = new ArrayList<>();
         movementModules.add(Myau.moduleManager.getModule(AntiAFK.class));
@@ -59,6 +61,7 @@ public class ClickGui extends GuiScreen {
         movementModules.add(Myau.moduleManager.getModule(Eagle.class));
         movementModules.add(Myau.moduleManager.getModule(NoJumpDelay.class));
         movementModules.add(Myau.moduleManager.getModule(AntiVoid.class));
+        movementModules.add(Myau.moduleManager.getModule(Freecam.class));
 
         List<Module> renderModules = new ArrayList<>();
         renderModules.add(Myau.moduleManager.getModule(ESP.class));
@@ -104,6 +107,7 @@ public class ClickGui extends GuiScreen {
         miscModules.add(Myau.moduleManager.getModule(AntiObfuscate.class));
         miscModules.add(Myau.moduleManager.getModule(AutoAnduril.class));
         miscModules.add(Myau.moduleManager.getModule(InventoryClicker.class));
+        miscModules.add(Myau.moduleManager.getModule(FakeLag.class));
 
         Comparator<Module> comparator = Comparator.comparing(m -> m.getName().toLowerCase());
         combatModules.sort(comparator);

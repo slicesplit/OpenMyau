@@ -80,7 +80,10 @@ public class Config {
                     if (object.has("key")) {
                         JsonElement key = object.get("key");
                         if (key != null && key.isJsonPrimitive()) {
-                            module.setKey(key.getAsInt());
+                            int keyCode = key.getAsInt();
+                            if (keyCode != 0 || module.getKey() == 0) {
+                                module.setKey(keyCode);
+                            }
                         }
                     }
 
