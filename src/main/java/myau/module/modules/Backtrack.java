@@ -38,12 +38,20 @@ public class Backtrack extends Module {
     public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true);
     public final ColorProperty color = new ColorProperty("color", 0xFF0000);
     public final IntProperty latency = new IntProperty("latency", 100, 0, 500);
+    public final IntProperty maxQueuedPackets = new IntProperty("max-queued", 3, 1, 10, () -> this.mode.getValue() == 1);
+    public final BooleanProperty smartRelease = new BooleanProperty("smart-release", true, () -> this.mode.getValue() == 1);
+    public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true, () -> this.mode.getValue() == 1);
+    public final IntProperty minReleaseInterval = new IntProperty("min-release-interval", 45, 25, 100, () -> this.mode.getValue() == 1 && this.smartRelease.getValue());
 
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();
     private final Map<Integer, Vec3d> serverPositions = new ConcurrentHashMap<>();
     private final LinkedList<Packet<?>> delayedPackets = new LinkedList<>();
     private long lastPacketTime = 0L;
+    private long lastReleaseTime = 0L;
     private boolean delayingPackets = false;
+    private int ticksSinceLastPacket = 0;
+    private int packetsThisSecond = 0;
+    private long lastSecondReset = 0L;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -111,15 +119,49 @@ public class Backtrack extends Module {
         Packet<?> packet = event.getPacket();
         
         if (packet instanceof C03PacketPlayer) {
+            long currentTime = System.currentTimeMillis();
+            
             if (shouldDelayPackets()) {
                 if (!delayingPackets) {
                     delayingPackets = true;
-                    lastPacketTime = System.currentTimeMillis();
+                    lastPacketTime = currentTime;
+                    lastReleaseTime = currentTime;
                 }
 
-                if (System.currentTimeMillis() - lastPacketTime < this.latency.getValue()) {
+                if (delayedPackets.size() >= this.maxQueuedPackets.getValue()) {
+                    releaseOldestPacket();
+                }
+                
+                if (this.smartRelease.getValue() && currentTime - lastReleaseTime > this.minReleaseInterval.getValue()) {
+                    releaseOldestPacket();
+                    lastReleaseTime = currentTime;
+                }
+                
+                if (this.grimBypass.getValue()) {
+                    if (currentTime - lastSecondReset > 1000) {
+                        packetsThisSecond = 0;
+                        lastSecondReset = currentTime;
+                    }
+                    
+                    if (packetsThisSecond > 18) {
+                        releaseDelayedPackets();
+                        delayingPackets = false;
+                        return;
+                    }
+                }
+                
+                long effectiveLatency = this.latency.getValue();
+                if (this.grimBypass.getValue() && effectiveLatency > 100) {
+                    effectiveLatency = 100;
+                }
+                
+                if (currentTime - lastPacketTime < effectiveLatency) {
                     delayedPackets.add(packet);
                     event.setCancelled(true);
+                    ticksSinceLastPacket = 0;
+                    if (this.grimBypass.getValue()) {
+                        packetsThisSecond++;
+                    }
                 } else {
                     releaseDelayedPackets();
                     delayingPackets = false;
@@ -129,6 +171,7 @@ public class Backtrack extends Module {
                     releaseDelayedPackets();
                     delayingPackets = false;
                 }
+                ticksSinceLastPacket++;
             }
         }
     }
@@ -137,6 +180,11 @@ public class Backtrack extends Module {
     public void onTick(TickEvent event) {
         if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
             return;
+        }
+
+        if (this.mode.getValue() == 1 && delayedPackets.size() > 0 && ticksSinceLastPacket > 3) {
+            releaseDelayedPackets();
+            delayingPackets = false;
         }
 
         for (EntityPlayer player : mc.theWorld.playerEntities) {
@@ -235,6 +283,16 @@ public class Backtrack extends Module {
 
     private void releaseDelayedPackets() {
         while (!delayedPackets.isEmpty()) {
+            Packet<?> packet = delayedPackets.poll();
+            if (packet != null && mc.getNetHandler() != null) {
+                mc.getNetHandler().getNetworkManager().sendPacket(packet);
+            }
+        }
+        lastReleaseTime = System.currentTimeMillis();
+    }
+    
+    private void releaseOldestPacket() {
+        if (!delayedPackets.isEmpty()) {
             Packet<?> packet = delayedPackets.poll();
             if (packet != null && mc.getNetHandler() != null) {
                 mc.getNetHandler().getNetworkManager().sendPacket(packet);

@@ -7,6 +7,7 @@ import myau.event.types.Priority;
 import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
+import myau.property.properties.BooleanProperty;
 import myau.property.properties.FloatProperty;
 import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
@@ -25,11 +26,23 @@ public class FakeLag extends Module {
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"LATENCY", "DYNAMIC", "REPEL"});
     public final IntProperty delay = new IntProperty("delay", 100, 0, 1000);
     public final FloatProperty transmissionOffset = new FloatProperty("transmission-offset", 0.5F, 0.0F, 1.0F);
+    public final IntProperty maxQueuedPackets = new IntProperty("max-queued", 3, 1, 15);
+    public final BooleanProperty smartRelease = new BooleanProperty("smart-release", true);
+    public final IntProperty minReleaseInterval = new IntProperty("min-release-interval", 45, 25, 100, () -> this.smartRelease.getValue());
+    public final BooleanProperty safeMode = new BooleanProperty("safe-mode", true);
+    public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true);
+    public final BooleanProperty transactionTiming = new BooleanProperty("transaction-timing", true, () -> this.grimBypass.getValue());
 
     private final Queue<PacketData> delayedPackets = new LinkedList<>();
     private final TimerUtil releaseTimer = new TimerUtil();
     private long dynamicDelay = 0L;
     private boolean inCombat = false;
+    private long lastReleaseTime = 0L;
+    private long lastPacketTime = 0L;
+    private int ticksSinceLastPacket = 0;
+    private int packetsThisSecond = 0;
+    private long lastSecondReset = 0L;
+    private boolean shouldSkipNextPacket = false;
 
     public FakeLag() {
         super("FakeLag", false);
@@ -41,6 +54,9 @@ public class FakeLag extends Module {
         releaseTimer.reset();
         dynamicDelay = 0L;
         inCombat = false;
+        lastReleaseTime = System.currentTimeMillis();
+        lastPacketTime = System.currentTimeMillis();
+        ticksSinceLastPacket = 0;
     }
 
     @Override
@@ -58,11 +74,29 @@ public class FakeLag extends Module {
         Packet<?> packet = event.getPacket();
 
         if (shouldDelayPacket(packet)) {
+            long currentTime = System.currentTimeMillis();
             long currentDelay = calculateDelay();
             
-            if (currentDelay > 0) {
-                delayedPackets.add(new PacketData(packet, System.currentTimeMillis() + currentDelay));
+            if (this.safeMode.getValue()) {
+                if (delayedPackets.size() >= this.maxQueuedPackets.getValue()) {
+                    releaseOldestPacket();
+                }
+                
+                if (this.smartRelease.getValue() && currentTime - lastReleaseTime > this.minReleaseInterval.getValue()) {
+                    releaseOldestPacket();
+                    lastReleaseTime = currentTime;
+                }
+                
+                if (ticksSinceLastPacket > 3) {
+                    releaseAllPackets();
+                }
+            }
+            
+            if (currentDelay > 0 && delayedPackets.size() < this.maxQueuedPackets.getValue()) {
+                delayedPackets.add(new PacketData(packet, currentTime + currentDelay));
                 event.setCancelled(true);
+                lastPacketTime = currentTime;
+                ticksSinceLastPacket = 0;
             }
         }
     }
@@ -71,6 +105,12 @@ public class FakeLag extends Module {
     public void onTick(TickEvent event) {
         if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null) {
             return;
+        }
+
+        ticksSinceLastPacket++;
+        
+        if (this.safeMode.getValue() && ticksSinceLastPacket > 3 && !delayedPackets.isEmpty()) {
+            releaseAllPackets();
         }
 
         updateCombatState();
@@ -84,6 +124,30 @@ public class FakeLag extends Module {
 
         if (mc.thePlayer.ticksExisted < 100) {
             return false;
+        }
+
+        if (this.grimBypass.getValue()) {
+            long currentTime = System.currentTimeMillis();
+            
+            if (currentTime - lastSecondReset > 1000) {
+                packetsThisSecond = 0;
+                lastSecondReset = currentTime;
+            }
+            
+            packetsThisSecond++;
+            
+            if (packetsThisSecond > 18) {
+                return false;
+            }
+            
+            if (shouldSkipNextPacket) {
+                shouldSkipNextPacket = false;
+                return false;
+            }
+            
+            if (packetsThisSecond % 4 == 0) {
+                shouldSkipNextPacket = true;
+            }
         }
 
         return true;
@@ -104,6 +168,24 @@ public class FakeLag extends Module {
 
     private long calculateLatencyDelay() {
         long baseDelay = this.delay.getValue();
+        
+        if (this.safeMode.getValue() && baseDelay > 150) {
+            baseDelay = 150;
+        }
+        
+        if (this.grimBypass.getValue()) {
+            if (baseDelay > 100) {
+                baseDelay = 100;
+            }
+            
+            if (this.transactionTiming.getValue()) {
+                long timeSinceLastRelease = System.currentTimeMillis() - lastReleaseTime;
+                if (timeSinceLastRelease < 40) {
+                    baseDelay = Math.min(baseDelay, 40);
+                }
+            }
+        }
+        
         double offset = this.transmissionOffset.getValue();
         
         if (offset > 0.01F) {
@@ -128,13 +210,20 @@ public class FakeLag extends Module {
         double distance = mc.thePlayer.getDistanceToEntity(nearestEnemy);
         double velocityTowards = calculateVelocityTowards(nearestEnemy);
 
+        long calculatedDelay;
         if (velocityTowards > 0.1) {
-            return (long) (this.delay.getValue() * 1.5);
+            calculatedDelay = (long) (this.delay.getValue() * 1.5);
         } else if (distance < 3.0) {
-            return this.delay.getValue();
+            calculatedDelay = this.delay.getValue();
         } else {
-            return this.delay.getValue() / 2;
+            calculatedDelay = this.delay.getValue() / 2;
         }
+        
+        if (this.safeMode.getValue() && calculatedDelay > 150) {
+            calculatedDelay = 150;
+        }
+        
+        return calculatedDelay;
     }
 
     private long calculateRepelDelay() {
@@ -152,7 +241,13 @@ public class FakeLag extends Module {
 
         if (distance < 4.0 && velocityTowards > 0.05) {
             double repelFactor = 1.0 - (distance / 4.0);
-            return (long) (this.delay.getValue() * repelFactor);
+            long calculatedDelay = (long) (this.delay.getValue() * repelFactor);
+            
+            if (this.safeMode.getValue() && calculatedDelay > 150) {
+                calculatedDelay = 150;
+            }
+            
+            return calculatedDelay;
         }
 
         return 0L;
@@ -166,6 +261,11 @@ public class FakeLag extends Module {
     private void processDelayedPackets() {
         long currentTime = System.currentTimeMillis();
         
+        if (this.smartRelease.getValue() && currentTime - lastReleaseTime > this.minReleaseInterval.getValue() && !delayedPackets.isEmpty()) {
+            releaseOldestPacket();
+            lastReleaseTime = currentTime;
+        }
+        
         while (!delayedPackets.isEmpty()) {
             PacketData packetData = delayedPackets.peek();
             
@@ -177,6 +277,7 @@ public class FakeLag extends Module {
             if (currentTime >= packetData.releaseTime) {
                 delayedPackets.poll();
                 sendPacketDirect(packetData.packet);
+                lastReleaseTime = currentTime;
             } else {
                 break;
             }
@@ -185,6 +286,17 @@ public class FakeLag extends Module {
 
     private void releaseAllPackets() {
         while (!delayedPackets.isEmpty()) {
+            PacketData packetData = delayedPackets.poll();
+            if (packetData != null) {
+                sendPacketDirect(packetData.packet);
+            }
+        }
+        lastReleaseTime = System.currentTimeMillis();
+        ticksSinceLastPacket = 0;
+    }
+    
+    private void releaseOldestPacket() {
+        if (!delayedPackets.isEmpty()) {
             PacketData packetData = delayedPackets.poll();
             if (packetData != null) {
                 sendPacketDirect(packetData.packet);

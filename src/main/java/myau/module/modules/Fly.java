@@ -7,6 +7,7 @@ import myau.module.Module;
 import myau.util.KeyBindUtil;
 import myau.util.MoveUtil;
 import myau.util.ChatUtil;
+import myau.property.properties.BooleanProperty;
 import myau.property.properties.FloatProperty;
 import myau.property.properties.ModeProperty;
 import net.minecraft.block.Block;
@@ -24,8 +25,12 @@ public class Fly extends Module {
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"VANILLA", "VULCAN_GHOST"});
     public final FloatProperty hSpeed = new FloatProperty("horizontal-speed", 1.0F, 0.0F, 100.0F);
     public final FloatProperty vSpeed = new FloatProperty("vertical-speed", 1.0F, 0.0F, 100.0F);
+    public final FloatProperty ghostSpeed = new FloatProperty("ghost-speed", 0.3F, 0.1F, 1.0F, () -> this.mode.getValue() == 1);
+    public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true, () -> this.mode.getValue() == 1);
+    public final FloatProperty grimMaxDistance = new FloatProperty("grim-max-distance", 3.5F, 2.0F, 6.0F, () -> this.mode.getValue() == 1 && this.grimBypass.getValue());
     
     private boolean ghostModeActive = false;
+    private long lastGroundTime = 0L;
 
     public Fly() {
         super("Fly", false);
@@ -54,6 +59,14 @@ public class Fly extends Module {
             }
             MoveUtil.setSpeed(0.0);
             event.setFriction((float) MoveUtil.getBaseMoveSpeed() * this.hSpeed.getValue());
+        } else if (this.mode.getValue() == 1) {
+            boolean jumpPressed = KeyBindUtil.isKeyDown(mc.gameSettings.keyBindJump.getKeyCode());
+            boolean sneakPressed = KeyBindUtil.isKeyDown(mc.gameSettings.keyBindSneak.getKeyCode());
+            
+            if (jumpPressed && !sneakPressed) {
+                MoveUtil.setSpeed(0.0);
+                event.setFriction((float) MoveUtil.getBaseMoveSpeed() * this.ghostSpeed.getValue());
+            }
         }
     }
 
@@ -73,6 +86,17 @@ public class Fly extends Module {
                     this.verticalMotion = this.verticalMotion - this.vSpeed.getValue().doubleValue() * 0.42F;
                 }
                 KeyBindUtil.setKeyBindState(mc.gameSettings.keyBindSneak.getKeyCode(), false);
+            }
+        } else if (this.mode.getValue() == 1) {
+            if (this.grimBypass.getValue()) {
+                boolean jumpPressed = KeyBindUtil.isKeyDown(mc.gameSettings.keyBindJump.getKeyCode());
+                boolean sneakPressed = KeyBindUtil.isKeyDown(mc.gameSettings.keyBindSneak.getKeyCode());
+                
+                if (jumpPressed && !sneakPressed) {
+                    if (mc.thePlayer.motionY < 0) {
+                        mc.thePlayer.motionY *= 0.98;
+                    }
+                }
             }
         }
     }
@@ -102,6 +126,17 @@ public class Fly extends Module {
             return;
         }
         
+        if (mc.thePlayer.onGround) {
+            lastGroundTime = System.currentTimeMillis();
+        }
+        
+        if (this.grimBypass.getValue()) {
+            long timeSinceGround = System.currentTimeMillis() - lastGroundTime;
+            if (timeSinceGround < 500) {
+                return;
+            }
+        }
+        
         Block block = event.getBlock();
         Material material = block.getMaterial();
         
@@ -112,12 +147,30 @@ public class Fly extends Module {
             !(block instanceof BlockLadder)) {
             
             BlockPos pos = event.getPos();
-            AxisAlignedBB expandedBox = new AxisAlignedBB(
-                pos.getX() - 2.0, pos.getY() - 1.0, pos.getZ() - 2.0,
-                pos.getX() + 3.0, pos.getY() + 2.0, pos.getZ() + 3.0
+            
+            double playerX = mc.thePlayer.posX;
+            double playerY = mc.thePlayer.posY;
+            double playerZ = mc.thePlayer.posZ;
+            
+            double distanceToBlock = Math.sqrt(
+                Math.pow(pos.getX() + 0.5 - playerX, 2) +
+                Math.pow(pos.getY() - playerY, 2) +
+                Math.pow(pos.getZ() + 0.5 - playerZ, 2)
             );
             
-            event.setBoundingBox(expandedBox);
+            double maxDistance = this.grimBypass.getValue() ? this.grimMaxDistance.getValue() : 5.0;
+            
+            if (distanceToBlock < maxDistance) {
+                double size = this.grimBypass.getValue() ? 1.5 : 2.0;
+                double height = this.grimBypass.getValue() ? 1.5 : 2.0;
+                
+                AxisAlignedBB expandedBox = new AxisAlignedBB(
+                    pos.getX() - size, pos.getY() - 1.0, pos.getZ() - size,
+                    pos.getX() + size + 1.0, pos.getY() + height, pos.getZ() + size + 1.0
+                );
+                
+                event.setBoundingBox(expandedBox);
+            }
         }
     }
 
