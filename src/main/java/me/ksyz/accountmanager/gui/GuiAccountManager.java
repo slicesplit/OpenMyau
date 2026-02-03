@@ -52,23 +52,30 @@ public class GuiAccountManager extends GuiScreen {
         Keyboard.enableRepeatEvents(true);
 
         buttonList.add(loginButton = new GuiButton(
-                0, width / 2 - 150, height - 52, 95, 20, "Login"
+                0, width / 2 - 150, height - 76, 95, 20, "Login"
         ));
         buttonList.add(new GuiButton(
-                1, width / 2 - 50, height - 52, 95, 20, "Add"
+                1, width / 2 - 50, height - 76, 95, 20, "Add"
         ));
         buttonList.add(new GuiButton(
-                4, width / 2 + 50, height - 52, 95, 20, "Session"
+                4, width / 2 + 50, height - 76, 95, 20, "Session"
         ));
 
         buttonList.add(deleteButton = new GuiButton(
-                2, width / 2 - 150, height - 28, 95, 20, "Delete"
-        ));
-        buttonList.add(cancelButton = new GuiButton(
-                3, width / 2 + 50, height - 28, 95, 20, "Cancel"
+                2, width / 2 - 150, height - 52, 95, 20, "Delete"
         ));
         buttonList.add(new GuiButton(
-                5, width / 2 - 50, height - 28, 95, 20, "Add Token"
+                6, width / 2 - 50, height - 52, 95, 20, "Cracked"
+        ));
+        buttonList.add(new GuiButton(
+                5, width / 2 + 50, height - 52, 95, 20, "Add Token"
+        ));
+        
+        buttonList.add(cancelButton = new GuiButton(
+                3, width / 2 - 50, height - 28, 95, 20, "Cancel"
+        ));
+        buttonList.add(new GuiButton(
+                7, width / 2 + 50, height - 28, 95, 20, "Random"
         ));
 
         guiAccountList = new GuiAccountList(mc);
@@ -296,6 +303,20 @@ public class GuiAccountManager extends GuiScreen {
                 break;
                 case 5:{
                     mc.displayGuiScreen(new GuiAddToken(this));
+                }
+                break;
+                case 6:{
+                    mc.displayGuiScreen(new GuiCrackedLogin(this));
+                }
+                break;
+                case 7:{
+                    String randomUsername = me.ksyz.accountmanager.utils.UsernameGenerator.generateUnique();
+                    java.util.UUID uuid = java.util.UUID.nameUUIDFromBytes(("OfflinePlayer:" + randomUsername).getBytes());
+                    net.minecraft.util.Session crackedSession = new net.minecraft.util.Session(randomUsername, uuid.toString(), "0", "legacy");
+                    SessionManager.set(crackedSession);
+                    notification = new Notification(TextFormatting.translate(String.format(
+                            "&aLogged in as %s (Cracked)&r", randomUsername
+                    )), 5000L);
                 }
                 break;
                 default: {

@@ -292,6 +292,79 @@ public class KillAura extends Module {
         return entityLivingBase instanceof EntityPlayer && TeamUtil.isTarget((EntityPlayer) entityLivingBase);
     }
 
+    private boolean willKnockIntoVoid(EntityLivingBase target) {
+        if (target == null || !(target instanceof EntityPlayer)) {
+            return false;
+        }
+
+        double targetX = target.posX;
+        double targetY = target.posY;
+        double targetZ = target.posZ;
+
+        if (targetY > 10.0) {
+            return false;
+        }
+
+        Vec3 playerPos = new Vec3(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
+        Vec3 targetPos = new Vec3(targetX, targetY, targetZ);
+        Vec3 knockbackDirection = targetPos.subtract(playerPos).normalize();
+
+        double knockbackStrength = 0.4;
+        if (mc.thePlayer.isSprinting()) {
+            knockbackStrength += 0.5;
+        }
+
+        ItemStack heldItem = mc.thePlayer.getHeldItem();
+        if (heldItem != null && heldItem.getItem() instanceof ItemSword) {
+            int knockbackLevel = net.minecraft.enchantment.EnchantmentHelper.getKnockbackModifier(mc.thePlayer);
+            knockbackStrength += knockbackLevel * 0.4;
+        }
+
+        double predictedX = targetX + knockbackDirection.xCoord * knockbackStrength;
+        double predictedZ = targetZ + knockbackDirection.zCoord * knockbackStrength;
+
+        for (int checkDist = 0; checkDist <= 3; checkDist++) {
+            double checkX = predictedX + knockbackDirection.xCoord * checkDist;
+            double checkZ = predictedZ + knockbackDirection.zCoord * checkDist;
+
+            if (!hasGroundBelow(checkX, targetY, checkZ, 5)) {
+                for (int safetyCheck = 0; safetyCheck < 2; safetyCheck++) {
+                    double safeX = checkX + (Math.random() - 0.5) * 2.0;
+                    double safeZ = checkZ + (Math.random() - 0.5) * 2.0;
+                    
+                    if (hasGroundBelow(safeX, targetY, safeZ, 5)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private boolean hasGroundBelow(double x, double y, double z, int maxDistance) {
+        BlockPos startPos = new BlockPos(x, y, z);
+        
+        for (int i = 0; i < maxDistance; i++) {
+            BlockPos checkPos = startPos.down(i);
+            
+            if (checkPos.getY() < 0) {
+                return false;
+            }
+
+            net.minecraft.block.Block block = mc.theWorld.getBlockState(checkPos).getBlock();
+            
+            if (block != null && block.getMaterial() != net.minecraft.block.material.Material.air) {
+                if (block.isFullBlock() || block.getMaterial().isSolid()) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private int findEmptySlot(int currentSlot) {
         for (int i = 0; i < 9; i++) {
             if (i != currentSlot && mc.thePlayer.inventory.getStackInSlot(i) == null) {
@@ -735,6 +808,11 @@ public class KillAura extends Module {
                             }
                             if (targets.stream().anyMatch(this::isPlayerTarget)) {
                                 targets.removeIf(entityLivingBase -> !this.isPlayerTarget(entityLivingBase));
+                            }
+                            targets.removeIf(this::willKnockIntoVoid);
+                            if (targets.isEmpty()) {
+                                this.target = null;
+                                return;
                             }
                             targets.sort(
                                     (entityLivingBase1, entityLivingBase2) -> {

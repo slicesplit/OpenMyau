@@ -7,7 +7,9 @@ import myau.event.types.Priority;
 import myau.events.PacketEvent;
 import myau.events.UpdateEvent;
 import myau.module.Module;
+import myau.property.properties.BooleanProperty;
 import myau.property.properties.ModeProperty;
+import myau.property.properties.PercentProperty;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
@@ -16,10 +18,15 @@ import net.minecraft.network.play.client.C02PacketUseEntity;
 import net.minecraft.network.play.client.C0BPacketEntityAction;
 import net.minecraft.util.Vec3;
 
+import java.util.Random;
+
 public class HitSelect extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
+    private final Random random = new Random();
     
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"SECOND", "CRITICALS", "W_TAP"});
+    public final PercentProperty chance = new PercentProperty("chance", 100, 0, 100, null);
+    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"PAUSE", "ACTIVE"});
+    public final ModeProperty preference = new ModeProperty("preference", 0, new String[]{"KB_REDUCTION", "CRITICAL_HITS"});
     
     private boolean sprintState = false;
     private boolean set = false;
@@ -79,17 +86,20 @@ public class HitSelect extends Module {
             }
 
             EntityLivingBase living = (EntityLivingBase) target;
+            
+            if (random.nextFloat() * 100.0F > this.chance.getValue().floatValue()) {
+                this.allowedHits++;
+                return;
+            }
+            
             boolean allow = true;
 
             switch (this.mode.getValue()) {
-                case 0: // SECOND
-                    allow = this.prioritizeSecondHit(mc.thePlayer, living);
+                case 0:
+                    allow = this.evaluatePauseMode(mc.thePlayer, living);
                     break;
-                case 1: // CRITICALS
-                    allow = this.prioritizeCriticalHits(mc.thePlayer);
-                    break;
-                case 2: // WTAP
-                    allow = this.prioritizeWTapHits(mc.thePlayer, this.sprintState);
+                case 1:
+                    allow = this.evaluateActiveMode(mc.thePlayer, living);
                     break;
             }
 
@@ -102,76 +112,90 @@ public class HitSelect extends Module {
         }
     }
 
-    private boolean prioritizeSecondHit(EntityLivingBase player, EntityLivingBase target) {
-        // If target is already hurt, allow the hit
-        if (target.hurtTime != 0) {
+    private boolean evaluatePauseMode(EntityLivingBase player, EntityLivingBase target) {
+        if (target.hurtTime > 0) {
             return true;
         }
 
-        // If player hasn't recovered from hurt time, allow the hit
-        if (player.hurtTime <= player.maxHurtTime - 1) {
-            return true;
-        }
-
-        // If too close, allow the hit
         double dist = player.getDistanceToEntity(target);
         if (dist < 2.5) {
             return true;
         }
 
-        // If not moving towards each other, allow the hit
+        this.fixMotion();
+        return false;
+    }
+
+    private boolean evaluateActiveMode(EntityLivingBase player, EntityLivingBase target) {
+        boolean shouldBlock = false;
+
+        switch (this.preference.getValue()) {
+            case 0:
+                shouldBlock = this.evaluateKBReduction(player, target);
+                break;
+            case 1:
+                shouldBlock = this.evaluateCriticalHits(player, target);
+                break;
+        }
+
+        if (shouldBlock) {
+            this.fixMotion();
+            return false;
+        }
+
+        return true;
+    }
+
+    private boolean evaluateKBReduction(EntityLivingBase player, EntityLivingBase target) {
+        if (target.hurtTime > 0) {
+            return false;
+        }
+
+        if (player.hurtTime > 0 && player.hurtTime <= player.maxHurtTime - 1) {
+            return false;
+        }
+
+        double dist = player.getDistanceToEntity(target);
+        if (dist < 2.5) {
+            return false;
+        }
+
         if (!this.isMovingTowards(target, player, 60.0)) {
-            return true;
+            return false;
         }
 
         if (!this.isMovingTowards(player, target, 60.0)) {
+            return false;
+        }
+
+        if (!this.sprintState) {
             return true;
         }
 
-        // Block the hit and fix motion
-        this.fixMotion();
         return false;
     }
 
-    private boolean prioritizeCriticalHits(EntityLivingBase player) {
-        // If on ground, allow the hit
+    private boolean evaluateCriticalHits(EntityLivingBase player, EntityLivingBase target) {
+        if (target.hurtTime > 0) {
+            return false;
+        }
+
         if (player.onGround) {
+            return false;
+        }
+
+        if (player.hurtTime > 0) {
+            return false;
+        }
+
+        if (player.fallDistance > 0.0F && player.motionY < 0.0) {
+            return false;
+        }
+
+        if (player.motionY > -0.1 && player.motionY < 0.1) {
             return true;
         }
 
-        // If hurt, allow the hit
-        if (player.hurtTime != 0) {
-            return true;
-        }
-
-        // If falling, allow the hit (for crits)
-        if (player.fallDistance > 0.0f) {
-            return true;
-        }
-
-        // Block the hit and fix motion
-        this.fixMotion();
-        return false;
-    }
-
-    private boolean prioritizeWTapHits(EntityLivingBase player, boolean sprinting) {
-        // If against wall, allow the hit
-        if (player.isCollidedHorizontally) {
-            return true;
-        }
-
-        // If not moving forward, allow the hit
-        if (!mc.gameSettings.keyBindForward.isKeyDown()) {
-            return true;
-        }
-
-        // If already sprinting, allow the hit
-        if (sprinting) {
-            return true;
-        }
-
-        // Block the hit and fix motion
-        this.fixMotion();
         return false;
     }
 

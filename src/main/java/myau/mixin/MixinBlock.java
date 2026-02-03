@@ -1,18 +1,26 @@
 package myau.mixin;
 
 import myau.Myau;
+import myau.events.BlockBBEvent;
 import myau.module.modules.Xray;
 import net.minecraft.block.Block;
+import net.minecraft.block.state.IBlockState;
+import net.minecraft.entity.Entity;
+import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.EnumWorldBlockLayer;
 import net.minecraft.world.IBlockAccess;
+import net.minecraft.world.World;
 import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+import java.util.List;
 
 @SideOnly(Side.CLIENT)
 @Mixin(value = {Block.class}, priority = 9999)
@@ -54,6 +62,26 @@ public abstract class MixinBlock {
                     callbackInfoReturnable.setReturnValue(EnumWorldBlockLayer.TRANSLUCENT);
                 }
             }
+        }
+    }
+
+    @Inject(
+            method = {"addCollisionBoxesToList"},
+            at = {@At("HEAD")},
+            cancellable = true
+    )
+    public void addCollisionBoxesToList(World world, BlockPos pos, IBlockState state, AxisAlignedBB mask, List<AxisAlignedBB> list, Entity collidingEntity, CallbackInfo ci) {
+        Block block = (Block) (Object) this;
+        AxisAlignedBB originalBox = block.getCollisionBoundingBox(world, pos, state);
+        BlockBBEvent event = new BlockBBEvent(block, pos, originalBox);
+        myau.event.EventManager.call(event);
+        
+        if (event.isCancelled() || (event.getBoundingBox() != null && event.getBoundingBox() != originalBox)) {
+            AxisAlignedBB box = event.getBoundingBox();
+            if (box != null && mask.intersectsWith(box)) {
+                list.add(box);
+            }
+            ci.cancel();
         }
     }
 }
