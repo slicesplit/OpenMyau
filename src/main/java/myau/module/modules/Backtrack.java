@@ -37,18 +37,24 @@ public class Backtrack extends Module {
     public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true);
     public final ColorProperty color = new ColorProperty("color", 0xFF0000);
     
-    // Grim Bypass Settings
+    // Grim Bypass Settings (Ghost Mode)
     public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true);
+    public final BooleanProperty ghostMode = new BooleanProperty("ghost-mode", true, () -> this.grimBypass.getValue());
     public final FloatProperty maxReachDistance = new FloatProperty("max-reach-distance", 3.0F, 2.8F, 3.0F, () -> this.grimBypass.getValue());
     public final BooleanProperty smartPositionSelect = new BooleanProperty("smart-position-select", true, () -> this.grimBypass.getValue());
     public final BooleanProperty respectPing = new BooleanProperty("respect-ping", true, () -> this.grimBypass.getValue());
     public final IntProperty maxBacktrackTime = new IntProperty("max-backtrack-time", 200, 100, 500, () -> this.grimBypass.getValue() && this.respectPing.getValue());
     public final BooleanProperty onlyOnAdvantage = new BooleanProperty("only-on-advantage", true, () -> this.grimBypass.getValue());
-    public final BooleanProperty smoothTransition = new BooleanProperty("smooth-transition", true, () -> this.grimBypass.getValue());
+    public final BooleanProperty smoothTransition = new BooleanProperty("smooth-transition", false, () -> this.grimBypass.getValue() && !this.ghostMode.getValue());
 
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();
     private final Map<Integer, Long> lastHitTimes = new ConcurrentHashMap<>();
     private int playerPing = 0;
+    
+    // Ghost mode state
+    private boolean ghostActive = false;
+    private EntityPlayer ghostTarget = null;
+    private PositionData ghostPosition = null;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -59,12 +65,23 @@ public class Backtrack extends Module {
         entityPositions.clear();
         lastHitTimes.clear();
         updatePlayerPing();
+        ghostActive = false;
+        ghostTarget = null;
+        ghostPosition = null;
     }
 
     @Override
     public void onDisabled() {
         entityPositions.clear();
         lastHitTimes.clear();
+        
+        // Reset ghost target if active
+        if (ghostActive && ghostTarget != null && ghostPosition != null) {
+            restoreEntityPosition(ghostTarget, ghostPosition);
+        }
+        ghostActive = false;
+        ghostTarget = null;
+        ghostPosition = null;
     }
     
     private void updatePlayerPing() {
@@ -149,7 +166,26 @@ public class Backtrack extends Module {
             if (positions != null && !positions.isEmpty()) {
                 PositionData backtrackPos = selectOptimalPosition(positions, target);
                 if (backtrackPos != null && shouldUseBacktrack(target, backtrackPos)) {
+                    PositionData originalPos = positions.getFirst();
+                    
+                    // Apply backtrack position
                     applyBacktrackPosition(target, backtrackPos);
+                    
+                    // Ghost mode: Restore immediately after attack
+                    if (this.grimBypass.getValue() && this.ghostMode.getValue()) {
+                        // Restore on next tick (after attack packet sent)
+                        new Thread(() -> {
+                            try {
+                                Thread.sleep(1); // 1ms delay
+                                if (target != null && !target.isDead) {
+                                    restoreEntityPosition(target, originalPos);
+                                    ghostActive = false;
+                                    ghostTarget = null;
+                                    ghostPosition = null;
+                                }
+                            } catch (InterruptedException ignored) {}
+                        }).start();
+                    }
                 }
             }
         }
@@ -283,25 +319,74 @@ public class Backtrack extends Module {
     }
 
     private void applyBacktrackPosition(EntityPlayer target, PositionData pos) {
-        // Grim bypass: Smooth transition to avoid teleport detection
-        if (this.grimBypass.getValue() && this.smoothTransition.getValue()) {
-            double smoothFactor = 0.7; // Interpolate 70% towards backtrack position
+        // Ghost mode: Only apply client-side, never send to server
+        if (this.grimBypass.getValue() && this.ghostMode.getValue()) {
+            // Store original position for restoration
+            if (!ghostActive || ghostTarget != target) {
+                ghostTarget = target;
+                ghostPosition = new PositionData(
+                    target.posX, target.posY, target.posZ,
+                    target.rotationYaw, target.rotationPitch,
+                    target.rotationYawHead, target.limbSwing, target.limbSwingAmount,
+                    System.currentTimeMillis()
+                );
+                ghostActive = true;
+            }
             
-            double newX = target.posX + (pos.x - target.posX) * smoothFactor;
-            double newY = target.posY + (pos.y - target.posY) * smoothFactor;
-            double newZ = target.posZ + (pos.z - target.posZ) * smoothFactor;
+            // Apply backtrack position ONLY client-side
+            target.posX = pos.x;
+            target.posY = pos.y;
+            target.posZ = pos.z;
+            target.lastTickPosX = pos.x;
+            target.lastTickPosY = pos.y;
+            target.lastTickPosZ = pos.z;
+            target.rotationYaw = pos.yaw;
+            target.rotationPitch = pos.pitch;
+            target.rotationYawHead = pos.headYaw;
             
-            target.setPosition(newX, newY, newZ);
+            // Update interpolation
+            target.serverPosX = (int)(pos.x * 32.0);
+            target.serverPosY = (int)(pos.y * 32.0);
+            target.serverPosZ = (int)(pos.z * 32.0);
+            
         } else {
-            target.setPosition(pos.x, pos.y, pos.z);
+            // Smooth transition for non-ghost mode
+            if (this.grimBypass.getValue() && this.smoothTransition.getValue()) {
+                double smoothFactor = 0.7;
+                
+                double newX = target.posX + (pos.x - target.posX) * smoothFactor;
+                double newY = target.posY + (pos.y - target.posY) * smoothFactor;
+                double newZ = target.posZ + (pos.z - target.posZ) * smoothFactor;
+                
+                target.setPosition(newX, newY, newZ);
+            } else {
+                target.setPosition(pos.x, pos.y, pos.z);
+            }
+            
+            target.rotationYaw = pos.yaw;
+            target.rotationPitch = pos.pitch;
+            target.rotationYawHead = pos.headYaw;
         }
-        
-        target.rotationYaw = pos.yaw;
-        target.rotationPitch = pos.pitch;
-        target.rotationYawHead = pos.headYaw;
         
         // Track this hit
         lastHitTimes.put(target.getEntityId(), System.currentTimeMillis());
+    }
+    
+    private void restoreEntityPosition(EntityPlayer target, PositionData originalPos) {
+        // Restore entity to original position
+        target.posX = originalPos.x;
+        target.posY = originalPos.y;
+        target.posZ = originalPos.z;
+        target.lastTickPosX = originalPos.x;
+        target.lastTickPosY = originalPos.y;
+        target.lastTickPosZ = originalPos.z;
+        target.rotationYaw = originalPos.yaw;
+        target.rotationPitch = originalPos.pitch;
+        target.rotationYawHead = originalPos.headYaw;
+        
+        target.serverPosX = (int)(originalPos.x * 32.0);
+        target.serverPosY = (int)(originalPos.y * 32.0);
+        target.serverPosZ = (int)(originalPos.z * 32.0);
     }
 
     private void renderHistoricalPositions() {

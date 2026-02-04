@@ -770,25 +770,27 @@ public class KillAura extends Module {
                                 swap = true;
                             }
                             break;
-                        case 9: // GRIM - Hyper optimized for GrimAC
+                        case 9: // GRIM - Ghost autoblock (no BadPacketsA)
                             if (this.hasValidTarget()) {
                                 if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
                                     switch (this.blockTick) {
                                         case 0:
-                                            // Start blocking immediately with proper timing
+                                            // Start blocking - use blink to ghost block packets
                                             if (!this.isPlayerBlocking()) {
+                                                // Enable blink to ghost blocking packets
+                                                Myau.blinkManager.setBlinkState(true, BlinkModules.AUTO_BLOCK);
                                                 swap = true;
                                             }
                                             blocked = true;
                                             this.blockTick = 1;
                                             break;
                                         case 1:
-                                            // Unblock right before attack with minimal delay
+                                            // Unblock phase - release packets before attack
                                             if (this.isPlayerBlocking()) {
-                                                // Send item change packet for instant unblock (Grim bypass)
-                                                int currentSlot = mc.thePlayer.inventory.currentItem;
-                                                PacketUtil.sendPacket(new C09PacketHeldItemChange(currentSlot));
+                                                // Stop blocking
                                                 this.stopBlock();
+                                                // Release blink packets (makes block visible to server)
+                                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
                                                 attack = false;
                                             }
                                             // Use precise timing window

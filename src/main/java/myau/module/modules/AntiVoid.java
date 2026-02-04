@@ -26,20 +26,18 @@ public class AntiVoid extends Module {
     private double[] validatedSafePosition = null;
     private int safePositionAge = 0;
     
-    // Grim bypass state
-    private double[] predictedPosition = null;
-    private double motionYAccumulator = 0.0;
+    // Grim bypass state (Blink-based)
+    private boolean grimBlinkActive = false;
     private int ticksInVoid = 0;
-    private boolean grimSafeMode = false;
+    private double grimVoidStartY = 0.0;
     
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"BLINK", "GRIM"});
     public final FloatProperty distance = new FloatProperty("distance", 5.0F, 0.0F, 16.0F);
     
-    // Grim mode settings
-    public final FloatProperty grimSafetyMargin = new FloatProperty("grim-safety-margin", 0.5F, 0.1F, 2.0F, () -> this.mode.getValue() == 1);
-    public final FloatProperty grimPredictionAccuracy = new FloatProperty("grim-prediction-accuracy", 0.95F, 0.8F, 1.0F, () -> this.mode.getValue() == 1);
-    public final myau.property.properties.IntProperty grimMaxTicks = new myau.property.properties.IntProperty("grim-max-ticks", 10, 5, 20, () -> this.mode.getValue() == 1);
-    public final myau.property.properties.BooleanProperty grimAdvancedPrediction = new myau.property.properties.BooleanProperty("grim-advanced-prediction", true, () -> this.mode.getValue() == 1);
+    // Grim mode settings (Blink-based approach)
+    public final myau.property.properties.IntProperty grimMaxTicks = new myau.property.properties.IntProperty("grim-max-ticks", 15, 5, 30, () -> this.mode.getValue() == 1);
+    public final myau.property.properties.BooleanProperty grimAutoRelease = new myau.property.properties.BooleanProperty("grim-auto-release", true, () -> this.mode.getValue() == 1);
+    public final myau.property.properties.IntProperty grimScanRadius = new myau.property.properties.IntProperty("grim-scan-radius", 5, 3, 10, () -> this.mode.getValue() == 1);
 
     private void resetBlink() {
         Myau.blinkManager.setBlinkState(false, BlinkModules.ANTI_VOID);
@@ -62,11 +60,11 @@ public class AntiVoid extends Module {
         if (this.isEnabled()) {
             this.isInVoid = !mc.thePlayer.capabilities.allowFlying && PlayerUtil.isInWater();
             
-            // Grim mode
+            // Grim mode (Blink-based)
             if (this.mode.getValue() == 1) {
-                handleGrimMode();
+                handleGrimBlinkMode();
             }
-            // Blink mode
+            // Standard Blink mode
             else if (this.mode.getValue() == 0) {
                 if (!this.isInVoid && mc.thePlayer.onGround) {
                     if (this.isSafePosition(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) {
@@ -206,61 +204,63 @@ public class AntiVoid extends Module {
         }
     }
 
-    private void handleGrimMode() {
-        // Hyper-precise void detection for Grim
-        boolean voidDetected = detectVoidWithPrediction();
+    private void handleGrimBlinkMode() {
+        // Blink-based approach: Ghost packets instead of teleporting
+        boolean voidDetected = detectVoidBelow();
         
         if (voidDetected) {
-            ticksInVoid++;
-            
-            // Advanced prediction algorithm
-            if (this.grimAdvancedPrediction.getValue()) {
-                predictFallTrajectory();
+            if (!grimBlinkActive) {
+                // Start blinking when void is detected
+                grimBlinkActive = true;
+                grimVoidStartY = mc.thePlayer.posY;
+                ticksInVoid = 0;
+                
+                // Enable blink to buffer packets
+                Myau.blinkManager.setBlinkState(true, BlinkModules.ANTI_VOID);
             }
             
-            // Calculate optimal teleport position
-            if (ticksInVoid >= 3 && ticksInVoid <= this.grimMaxTicks.getValue()) {
-                double[] optimalPos = calculateGrimSafeTeleport();
-                
-                if (optimalPos != null && shouldTeleportNow()) {
-                    performGrimSafeTeleport(optimalPos);
-                    ticksInVoid = 0;
-                    grimSafeMode = false;
+            ticksInVoid++;
+            
+            // Check if we've found solid ground or reached max ticks
+            if (ticksInVoid > this.grimMaxTicks.getValue() || hasFoundGround()) {
+                // Release packets - player will snap to current position
+                if (this.grimAutoRelease.getValue()) {
+                    Myau.blinkManager.setBlinkState(false, BlinkModules.ANTI_VOID);
                 }
-            } else if (ticksInVoid > this.grimMaxTicks.getValue()) {
-                // Emergency teleport
-                double[] emergency = findEmergencySafePosition();
-                if (emergency != null) {
-                    performGrimSafeTeleport(emergency);
-                }
+                grimBlinkActive = false;
                 ticksInVoid = 0;
             }
         } else {
-            ticksInVoid = 0;
-            grimSafeMode = false;
-            motionYAccumulator = 0.0;
-        }
-        
-        // Update safe position
-        if (!voidDetected && mc.thePlayer.onGround) {
-            if (this.isSafePosition(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) {
-                this.validatedSafePosition = new double[]{mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ};
-                this.safePositionAge = 0;
+            // No void detected
+            if (grimBlinkActive) {
+                // We're safe now, release packets
+                Myau.blinkManager.setBlinkState(false, BlinkModules.ANTI_VOID);
+                grimBlinkActive = false;
+                ticksInVoid = 0;
+            }
+            
+            // Update safe position when on ground
+            if (mc.thePlayer.onGround) {
+                if (this.isSafePosition(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ)) {
+                    this.validatedSafePosition = new double[]{mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ};
+                    this.safePositionAge = 0;
+                }
             }
         }
     }
     
-    private boolean detectVoidWithPrediction() {
-        // Check 3x3 area below player
+    private boolean detectVoidBelow() {
+        // Scan area below player for void
         int playerY = (int) Math.floor(mc.thePlayer.posY);
         int playerX = (int) Math.floor(mc.thePlayer.posX);
         int playerZ = (int) Math.floor(mc.thePlayer.posZ);
+        int scanRadius = this.mode.getValue() == 1 ? this.grimScanRadius.getValue() : 1;
         
         boolean voidConfirmed = true;
         
-        for (int xOff = -1; xOff <= 1; xOff++) {
-            for (int zOff = -1; zOff <= 1; zOff++) {
-                for (int y = playerY - 1; y >= Math.max(0, playerY - 10); y--) {
+        for (int xOff = -scanRadius; xOff <= scanRadius; xOff++) {
+            for (int zOff = -scanRadius; zOff <= scanRadius; zOff++) {
+                for (int y = playerY - 1; y >= Math.max(0, playerY - 15); y--) {
                     net.minecraft.util.BlockPos pos = new net.minecraft.util.BlockPos(
                         playerX + xOff, y, playerZ + zOff
                     );
@@ -281,110 +281,27 @@ public class AntiVoid extends Module {
         return voidConfirmed;
     }
     
-    private void predictFallTrajectory() {
-        // Accurate fall prediction using Minecraft physics
-        double motionY = mc.thePlayer.motionY;
-        motionYAccumulator += motionY;
-        
-        // Predict position after N ticks
-        double predictedY = mc.thePlayer.posY;
-        double currentMotionY = motionY;
-        
-        for (int tick = 0; tick < 5; tick++) {
-            currentMotionY -= 0.08; // Gravity
-            currentMotionY *= 0.98; // Air resistance
-            predictedY += currentMotionY;
-        }
-        
-        predictedPosition = new double[]{
-            mc.thePlayer.posX + mc.thePlayer.motionX * 3,
-            predictedY,
-            mc.thePlayer.posZ + mc.thePlayer.motionZ * 3
-        };
-    }
-    
-    private double[] calculateGrimSafeTeleport() {
-        if (validatedSafePosition == null) {
-            return findEmergencySafePosition();
-        }
-        
-        // Calculate safe teleport with Grim-safe margins
-        double safeX = validatedSafePosition[0];
-        double safeY = validatedSafePosition[1] + this.grimSafetyMargin.getValue();
-        double safeZ = validatedSafePosition[2];
-        
-        // Verify it's still safe
-        if (isSafePosition(safeX, safeY, safeZ)) {
-            return new double[]{safeX, safeY, safeZ};
-        }
-        
-        return findEmergencySafePosition();
-    }
-    
-    private boolean shouldTeleportNow() {
-        // Grim-safe timing: Only teleport when fall velocity indicates danger
-        double motionY = mc.thePlayer.motionY;
-        double currentY = mc.thePlayer.posY;
-        
-        // Calculate if we'll hit void in next few ticks
-        double predictedY = currentY + (motionY * 3) - (0.08 * 3 * 3 / 2);
-        
-        if (predictedY < this.grimSafetyMargin.getValue()) {
+    private boolean hasFoundGround() {
+        // Check if player has landed on solid ground
+        if (mc.thePlayer.onGround) {
             return true;
         }
         
-        // Also check if motion is too fast
-        if (Math.abs(motionY) > 0.7) {
-            return true;
-        }
+        // Check if there's ground very close below
+        int playerY = (int) Math.floor(mc.thePlayer.posY);
+        int playerX = (int) Math.floor(mc.thePlayer.posX);
+        int playerZ = (int) Math.floor(mc.thePlayer.posZ);
         
-        return false;
-    }
-    
-    private void performGrimSafeTeleport(double[] position) {
-        // Use precise positioning to avoid Grim setback detection
-        double teleportX = position[0];
-        double teleportY = position[1];
-        double teleportZ = position[2];
-        
-        // Add small random offset for realism (Grim bypass)
-        teleportX += RandomUtil.nextFloat(-0.05F, 0.05F);
-        teleportZ += RandomUtil.nextFloat(-0.05F, 0.05F);
-        
-        // Send position packet
-        mc.thePlayer.setPosition(teleportX, teleportY, teleportZ);
-        mc.getNetHandler().getNetworkManager().sendPacket(
-            new C04PacketPlayerPosition(teleportX, teleportY, teleportZ, true)
-        );
-        
-        // Reset motion
-        mc.thePlayer.motionY = 0.0;
-    }
-    
-    private double[] findEmergencySafePosition() {
-        // Search wider area for any safe position
-        double playerX = mc.thePlayer.posX;
-        double playerY = mc.thePlayer.posY;
-        double playerZ = mc.thePlayer.posZ;
-        
-        for (int radius = 1; radius <= 10; radius++) {
-            for (int xOff = -radius; xOff <= radius; xOff++) {
-                for (int zOff = -radius; zOff <= radius; zOff++) {
-                    for (int yOff = 0; yOff <= 10; yOff++) {
-                        double checkX = playerX + xOff;
-                        double checkY = Math.max(playerY + yOff, 1.0);
-                        double checkZ = playerZ + zOff;
-                        
-                        if (isSafePosition(checkX, checkY, checkZ)) {
-                            return new double[]{checkX, checkY, checkZ};
-                        }
-                    }
-                }
+        for (int y = playerY; y >= Math.max(0, playerY - 3); y--) {
+            net.minecraft.util.BlockPos pos = new net.minecraft.util.BlockPos(playerX, y, playerZ);
+            net.minecraft.block.Block block = mc.theWorld.getBlockState(pos).getBlock();
+            
+            if (block != null && !block.getMaterial().isReplaceable()) {
+                return true;
             }
         }
         
-        // Last resort: teleport to spawn height
-        return new double[]{playerX, 64.0, playerZ};
+        return false;
     }
 
     @Override
@@ -393,16 +310,15 @@ public class AntiVoid extends Module {
         this.wasInVoid = false;
         this.resetBlink();
         this.ticksInVoid = 0;
-        this.grimSafeMode = false;
-        this.motionYAccumulator = 0.0;
-        this.predictedPosition = null;
+        this.grimBlinkActive = false;
+        this.grimVoidStartY = 0.0;
     }
 
     @Override
     public void onDisabled() {
         Myau.blinkManager.setBlinkState(false, BlinkModules.ANTI_VOID);
         this.ticksInVoid = 0;
-        this.grimSafeMode = false;
+        this.grimBlinkActive = false;
     }
 
     @Override
