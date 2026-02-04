@@ -430,7 +430,7 @@ public class KillAura extends Module {
         this.mode = new ModeProperty("mode", 0, new String[]{"SINGLE", "SWITCH", "MULTI"});
         this.sort = new ModeProperty("sort", 0, new String[]{"DISTANCE", "HEALTH", "HURT_TIME", "FOV"});
         this.autoBlock = new ModeProperty(
-                "auto-block", 2, new String[]{"NONE", "VANILLA", "SPOOF", "HYPIXEL", "BLINK", "INTERACT", "SWAP", "LEGIT", "FAKE"}
+                "auto-block", 2, new String[]{"NONE", "VANILLA", "SPOOF", "HYPIXEL", "BLINK", "INTERACT", "SWAP", "LEGIT", "FAKE", "GRIM"}
         );
         this.autoBlockRequirePress = new BooleanProperty("auto-block-require-press", false);
         this.autoBlockMinCPS = new FloatProperty("auto-block-min-aps", 8.0F, 1.0F, 20.0F);
@@ -768,6 +768,44 @@ public class KillAura extends Module {
                                     && !Myau.playerStateManager.digging
                                     && !Myau.playerStateManager.placing) {
                                 swap = true;
+                            }
+                            break;
+                        case 9: // GRIM - Hyper optimized for GrimAC
+                            if (this.hasValidTarget()) {
+                                if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
+                                    switch (this.blockTick) {
+                                        case 0:
+                                            // Start blocking immediately with proper timing
+                                            if (!this.isPlayerBlocking()) {
+                                                swap = true;
+                                            }
+                                            blocked = true;
+                                            this.blockTick = 1;
+                                            break;
+                                        case 1:
+                                            // Unblock right before attack with minimal delay
+                                            if (this.isPlayerBlocking()) {
+                                                // Send item change packet for instant unblock (Grim bypass)
+                                                int currentSlot = mc.thePlayer.inventory.currentItem;
+                                                PacketUtil.sendPacket(new C09PacketHeldItemChange(currentSlot));
+                                                this.stopBlock();
+                                                attack = false;
+                                            }
+                                            // Use precise timing window
+                                            if (this.attackDelayMS <= 40L) {
+                                                this.blockTick = 0;
+                                            }
+                                            break;
+                                        default:
+                                            this.blockTick = 0;
+                                    }
+                                }
+                                this.isBlocking = true;
+                                this.fakeBlockState = true;
+                            } else {
+                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
+                                this.isBlocking = false;
+                                this.fakeBlockState = false;
                             }
                     }
                 }

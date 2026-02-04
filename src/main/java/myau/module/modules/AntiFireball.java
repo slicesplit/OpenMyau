@@ -37,6 +37,7 @@ public class AntiFireball extends Module {
     public final BooleanProperty swing = new BooleanProperty("swing", true);
     public final BooleanProperty predictive = new BooleanProperty("predictive", true);
     public final FloatProperty prediction = new FloatProperty("prediction", 2.0F, 0.0F, 5.0F, () -> this.predictive.getValue());
+    public final BooleanProperty shootUp = new BooleanProperty("shoot-up", false);
     public final ModeProperty moveFix = new ModeProperty("move-fix", 1, new String[]{"NONE", "SILENT", "STRICT"});
     public final ModeProperty showTarget = new ModeProperty("show-target", 0, new String[]{"NONE", "DEFAULT", "HUD"});
 
@@ -149,6 +150,14 @@ public class AntiFireball extends Module {
                     
                     if (shouldAttack) {
                         this.doAttackAnimation();
+                        
+                        if (this.shootUp.getValue()) {
+                            // Modify fireball motion to shoot straight up (90 degrees)
+                            this.target.motionX = 0.0;
+                            this.target.motionY = 1.0;
+                            this.target.motionZ = 0.0;
+                        }
+                        
                         PacketUtil.sendPacket(new C02PacketUseEntity(this.target, Action.ATTACK));
                         PlayerUtil.attackEntity(this.target);
                         lastHitTime = System.currentTimeMillis();

@@ -1,0 +1,249 @@
+{
+  "name": "GrimAC Blatant 1.8 PVP",
+  "description": "Hyper-optimized blatant configuration for bypassing GrimAC on 1.8 PVP servers. Features precise rotations, timing, and movement patterns designed specifically for Grim's prediction engine.",
+  "modules": {
+    "KillAura": {
+      "enabled": true,
+      "mode": "SINGLE",
+      "sort": "DISTANCE",
+      "auto-block": "GRIM",
+      "auto-block-require-press": false,
+      "auto-block-min-aps": 12.0,
+      "auto-block-max-aps": 16.0,
+      "auto-block-range": 6.0,
+      "swing-range": 4.2,
+      "attack-range": 3.8,
+      "fov": 180,
+      "min-aps": 16,
+      "max-aps": 18,
+      "switch-delay": 100,
+      "rotations": "SILENT",
+      "move-fix": "SILENT",
+      "smoothing": 15,
+      "angle-step": 45,
+      "through-walls": false,
+      "require-press": false,
+      "allow-mining": false,
+      "weapons-only": true,
+      "allow-tools": false,
+      "inventory-check": true,
+      "bot-check": true,
+      "players": true,
+      "bosses": false,
+      "mobs": false,
+      "animals": false,
+      "golems": false,
+      "silverfish": false,
+      "teams": true,
+      "show-target": "HUD",
+      "debug-log": "NONE"
+    },
+    "Velocity": {
+      "enabled": true,
+      "horizontal": 90,
+      "vertical": 100,
+      "chance": 100
+    },
+    "Reach": {
+      "enabled": false,
+      "reach": 3.0,
+      "comment": "DO NOT USE - Grim detects reach perfectly"
+    },
+    "HitBox": {
+      "enabled": false,
+      "expand": 0.0,
+      "comment": "DO NOT USE - Grim detects hitbox expansion"
+    },
+    "KeepSprint": {
+      "enabled": true,
+      "comment": "Safe - Grim allows this in 1.8"
+    },
+    "NoSlow": {
+      "enabled": true,
+      "mode": "VANILLA",
+      "comment": "Use vanilla mode for Grim compatibility"
+    },
+    "Sprint": {
+      "enabled": true,
+      "omni-directional": false,
+      "comment": "Keep omni-directional off for Grim"
+    },
+    "Wtap": {
+      "enabled": true,
+      "mode": "PACKET",
+      "range": 3.5,
+      "comment": "Packet mode is safer for Grim"
+    },
+    "Clutch": {
+      "enabled": true,
+      "on-void": true,
+      "on-lethal-fall": true,
+      "on-more-than-x-blocks": false,
+      "blocks": 5,
+      "silent-aim": true,
+      "silent-aim-movement": "PROPER",
+      "show-block-count": true,
+      "reset-angle": true,
+      "return-to-slot": true,
+      "allow-staircase-up": false,
+      "clutch-move-delay": 3,
+      "telly-mode": true,
+      "telly-distance": 0.18,
+      "telly-delay": 2,
+      "grim-antivoid": true,
+      "grim-safety-margin": 0.5,
+      "grim-place-delay": 50,
+      "grim-precise-rotations": true,
+      "anti-disappear": true,
+      "confirm-delay": 2,
+      "block-selection": "WHITELIST",
+      "swing": true
+    },
+    "Scaffold": {
+      "enabled": false,
+      "rotations": "BACKWARDS",
+      "move-fix": "SILENT",
+      "sprint": "VANILLA",
+      "ground-motion": 100,
+      "air-motion": 100,
+      "speed-motion": 100,
+      "tower": "NONE",
+      "keep-y": "NONE",
+      "multi-place": true,
+      "safe-walk": true,
+      "swing": true,
+      "item-spoof": false,
+      "block-counter": true,
+      "infinite-clutch": false,
+      "comment": "Use Clutch module instead for better Grim bypass"
+    },
+    "Velocity": {
+      "enabled": true,
+      "horizontal": 90,
+      "vertical": 100,
+      "mode": "STANDARD",
+      "comment": "Grim allows some velocity reduction"
+    },
+    "AntiFireball": {
+      "enabled": true,
+      "range": 5.5,
+      "fov": 360,
+      "rotations": true,
+      "swing": true,
+      "predictive": true,
+      "prediction": 2.0,
+      "shoot-up": true,
+      "move-fix": "SILENT",
+      "show-target": "NONE",
+      "comment": "shoot-up prevents self-damage"
+    },
+    "Eagle": {
+      "enabled": false,
+      "comment": "Not needed with proper Clutch configuration"
+    },
+    "TargetStrafe": {
+      "enabled": false,
+      "comment": "Grim can detect unrealistic strafing patterns"
+    },
+    "Speed": {
+      "enabled": false,
+      "comment": "DO NOT USE - Grim has perfect speed detection"
+    },
+    "Fly": {
+      "enabled": false,
+      "comment": "DO NOT USE - Grim has perfect fly detection"
+    },
+    "LongJump": {
+      "enabled": false,
+      "comment": "DO NOT USE - Grim detects longjump instantly"
+    },
+    "AutoTool": {
+      "enabled": true,
+      "comment": "Safe utility"
+    },
+    "FastPlace": {
+      "enabled": false,
+      "delay": 0,
+      "comment": "May trigger scaffolding checks on Grim"
+    },
+    "NoFall": {
+      "enabled": false,
+      "comment": "DO NOT USE - Grim has sophisticated fall damage checks"
+    },
+    "TargetHUD": {
+      "enabled": true,
+      "mode": "MODERN"
+    },
+    "HUD": {
+      "enabled": true,
+      "watermark": true,
+      "arraylist": true,
+      "coordinates": true,
+      "fps": true,
+      "ping": true,
+      "server": true,
+      "bps": true
+    }
+  },
+  "notes": {
+    "general": "This configuration is specifically designed for GrimAC on 1.8.x servers",
+    "killaura": "GRIM autoblock mode uses precise timing windows that work with Grim's prediction engine. 16-18 APS is aggressive but within human capability.",
+    "clutch": "Grim antivoid mode uses hyper-precise void detection and placement timing. Telly mode provides safer clutches by moving to edge before placing.",
+    "movement": "All movement-based cheats are DISABLED because Grim has nearly perfect movement prediction",
+    "reach": "NEVER use reach or hitbox expansion - Grim calculates exact interaction distances",
+    "rotations": "Silent rotations with proper movement fix are safe. Grim checks server-side rotations match actions.",
+    "velocity": "90% horizontal reduction is safe on most servers. Grim allows some velocity modification.",
+    "antifireball": "shoot-up mode prevents fireball self-damage while maintaining legitimacy",
+    "important": "This config prioritizes SAFETY over POWER. Adjust APS/ranges based on your skill and server strictness.",
+    "advanced_tips": [
+      "Lower APS to 14-16 for safer play on strict servers",
+      "Disable Clutch telly-mode if experiencing rubberbands",
+      "Use Clutch only in emergencies - frequent use may look suspicious",
+      "Keep movements natural - don't strafe perfectly or move robotically",
+      "Vary your play style - don't always use max APS or perfect aim",
+      "On very strict servers, use LEGIT autoblock instead of GRIM",
+      "Monitor your ping - high ping makes bypass harder"
+    ],
+    "detection_risks": {
+      "LOW": ["KillAura with GRIM autoblock", "Velocity", "KeepSprint", "NoSlow", "Wtap", "AutoTool"],
+      "MEDIUM": ["Clutch with grim-antivoid", "AntiFireball"],
+      "HIGH": ["Using max settings on all modules simultaneously"],
+      "INSTANT_BAN": ["Speed", "Fly", "LongJump", "Reach", "HitBox", "NoFall"]
+    },
+    "recommended_settings_by_server_strictness": {
+      "lenient": {
+        "killaura_aps": "16-20",
+        "attack_range": "4.0",
+        "velocity_horizontal": "80",
+        "use_clutch_telly": true
+      },
+      "moderate": {
+        "killaura_aps": "14-18",
+        "attack_range": "3.8",
+        "velocity_horizontal": "90",
+        "use_clutch_telly": true
+      },
+      "strict": {
+        "killaura_aps": "12-16",
+        "attack_range": "3.5",
+        "velocity_horizontal": "95",
+        "use_clutch_telly": false,
+        "switch_autoblock_to": "LEGIT"
+      },
+      "very_strict": {
+        "killaura_aps": "10-14",
+        "attack_range": "3.2",
+        "velocity_horizontal": "100",
+        "disable_clutch": true,
+        "switch_autoblock_to": "LEGIT",
+        "lower_smoothing": "5-10"
+      }
+    }
+  },
+  "version": "1.0.0",
+  "author": "Rovo Dev",
+  "date": "2026-02-04",
+  "minecraft_version": "1.8.x",
+  "anticheat": "GrimAC",
+  "playstyle": "Blatant PVP"
+}
