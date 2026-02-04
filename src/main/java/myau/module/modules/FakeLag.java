@@ -23,15 +23,22 @@ import java.util.Queue;
 public class FakeLag extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"LATENCY", "DYNAMIC", "REPEL"});
+    // Core Settings
+    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"LATENCY", "DYNAMIC", "REPEL", "GRIM"});
     public final IntProperty delay = new IntProperty("delay", 100, 0, 1000);
     public final FloatProperty transmissionOffset = new FloatProperty("transmission-offset", 0.5F, 0.0F, 1.0F);
     public final IntProperty maxQueuedPackets = new IntProperty("max-queued", 3, 1, 15);
     public final BooleanProperty smartRelease = new BooleanProperty("smart-release", true);
     public final IntProperty minReleaseInterval = new IntProperty("min-release-interval", 45, 25, 100, () -> this.smartRelease.getValue());
     public final BooleanProperty safeMode = new BooleanProperty("safe-mode", true);
+    
+    // Grim Bypass Settings
     public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true);
     public final BooleanProperty transactionTiming = new BooleanProperty("transaction-timing", true, () -> this.grimBypass.getValue());
+    public final IntProperty maxPacketsPerSecond = new IntProperty("max-packets-per-second", 18, 16, 20, () -> this.grimBypass.getValue());
+    public final BooleanProperty respectPostOrder = new BooleanProperty("respect-post-order", true, () -> this.grimBypass.getValue());
+    public final BooleanProperty adaptiveTiming = new BooleanProperty("adaptive-timing", true, () -> this.grimBypass.getValue());
+    public final IntProperty minPacketInterval = new IntProperty("min-packet-interval", 45, 35, 55, () -> this.grimBypass.getValue() && this.adaptiveTiming.getValue());
 
     private final Queue<PacketData> delayedPackets = new LinkedList<>();
     private final TimerUtil releaseTimer = new TimerUtil();
@@ -43,6 +50,12 @@ public class FakeLag extends Module {
     private int packetsThisSecond = 0;
     private long lastSecondReset = 0L;
     private boolean shouldSkipNextPacket = false;
+    
+    // Grim bypass tracking
+    private int consecutiveDelays = 0;
+    private long lastPacketSentTime = 0L;
+    private boolean flyingPacketSent = false;
+    private int tickCounter = 0;
 
     public FakeLag() {
         super("FakeLag", false);
@@ -57,6 +70,10 @@ public class FakeLag extends Module {
         lastReleaseTime = System.currentTimeMillis();
         lastPacketTime = System.currentTimeMillis();
         ticksSinceLastPacket = 0;
+        consecutiveDelays = 0;
+        lastPacketSentTime = 0L;
+        flyingPacketSent = false;
+        tickCounter = 0;
     }
 
     @Override
@@ -108,6 +125,12 @@ public class FakeLag extends Module {
         }
 
         ticksSinceLastPacket++;
+        tickCounter++;
+        
+        // Grim bypass: Reset flying packet flag each tick
+        if (this.grimBypass.getValue()) {
+            flyingPacketSent = false;
+        }
         
         if (this.safeMode.getValue() && ticksSinceLastPacket > 3 && !delayedPackets.isEmpty()) {
             releaseAllPackets();
@@ -126,6 +149,7 @@ public class FakeLag extends Module {
             return false;
         }
 
+        // Grim bypass: Advanced packet filtering
         if (this.grimBypass.getValue()) {
             long currentTime = System.currentTimeMillis();
             
@@ -136,10 +160,29 @@ public class FakeLag extends Module {
             
             packetsThisSecond++;
             
-            if (packetsThisSecond > 18) {
+            // Grim bypass: Respect max packets per second (configurable 16-20)
+            if (packetsThisSecond > this.maxPacketsPerSecond.getValue()) {
                 return false;
             }
             
+            // Grim bypass: Respect Post check order
+            if (this.respectPostOrder.getValue()) {
+                // Mark that we've seen a flying packet this tick
+                flyingPacketSent = true;
+                
+                // Don't delay first packet of tick (Grim expects this)
+                if (!flyingPacketSent) {
+                    return false;
+                }
+            }
+            
+            // Grim mode: Use sophisticated pattern
+            if (this.mode.getValue() == 3) {
+                // In Grim mode, let calculateGrimDelay handle the logic
+                return true;
+            }
+            
+            // Legacy Grim bypass logic for other modes
             if (shouldSkipNextPacket) {
                 shouldSkipNextPacket = false;
                 return false;
@@ -161,9 +204,74 @@ public class FakeLag extends Module {
                 return calculateDynamicDelay();
             case 2:
                 return calculateRepelDelay();
+            case 3:
+                return calculateGrimDelay();
             default:
                 return 0L;
         }
+    }
+    
+    private long calculateGrimDelay() {
+        // Grim mode: Hyper-optimized for GrimAC's Post check and transaction timing
+        long currentTime = System.currentTimeMillis();
+        
+        // Check packets per second limit
+        if (currentTime - lastSecondReset > 1000) {
+            packetsThisSecond = 0;
+            lastSecondReset = currentTime;
+        }
+        
+        // Grim bypass: Never exceed max packets per second
+        if (packetsThisSecond >= this.maxPacketsPerSecond.getValue()) {
+            consecutiveDelays = 0;
+            return 0L; // Must send immediately
+        }
+        
+        // Grim bypass: Adaptive timing based on combat state
+        if (this.adaptiveTiming.getValue()) {
+            long timeSinceLastPacket = currentTime - lastPacketSentTime;
+            
+            // Ensure minimum interval between packets
+            if (timeSinceLastPacket < this.minPacketInterval.getValue()) {
+                return 0L; // Too soon, don't delay
+            }
+            
+            // In combat: Use shorter, more controlled delays
+            if (inCombat) {
+                // Pattern: delay 2, send 1, delay 2, send 1 (mimics high ping)
+                if (consecutiveDelays < 2) {
+                    consecutiveDelays++;
+                    return 50L; // Short delay for combat
+                } else {
+                    consecutiveDelays = 0;
+                    return 0L; // Send immediately
+                }
+            } else {
+                // Out of combat: Can use longer delays
+                if (consecutiveDelays < 3) {
+                    consecutiveDelays++;
+                    return 75L;
+                } else {
+                    consecutiveDelays = 0;
+                    return 0L;
+                }
+            }
+        }
+        
+        // Grim bypass: Transaction timing (respects Grim's transaction order)
+        if (this.transactionTiming.getValue()) {
+            // Don't delay if we haven't sent a flying packet this tick
+            if (!flyingPacketSent) {
+                return 0L;
+            }
+            
+            // Use tick-based timing for more natural pattern
+            if (tickCounter % 3 == 0) {
+                return 60L;
+            }
+        }
+        
+        return 50L; // Default safe delay
     }
 
     private long calculateLatencyDelay() {
@@ -307,6 +415,11 @@ public class FakeLag extends Module {
     private void sendPacketDirect(Packet<?> packet) {
         if (mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
             mc.getNetHandler().getNetworkManager().sendPacket(packet);
+            
+            // Grim bypass: Track when we actually send packets
+            if (this.grimBypass.getValue()) {
+                lastPacketSentTime = System.currentTimeMillis();
+            }
         }
     }
 
@@ -372,6 +485,9 @@ public class FakeLag extends Module {
 
     @Override
     public String[] getSuffix() {
+        if (this.mode.getValue() == 3) {
+            return new String[]{String.format("§7[§aGRIM §e%d§7]", delayedPackets.size())};
+        }
         return new String[]{String.format("§7[§e%d§7]", delayedPackets.size())};
     }
 

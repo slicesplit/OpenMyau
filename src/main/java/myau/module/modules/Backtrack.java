@@ -32,13 +32,23 @@ import java.util.concurrent.ConcurrentHashMap;
 public class Backtrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 
+    // Core Settings
     public final IntProperty ticks = new IntProperty("ticks", 6, 1, 15);
     public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true);
     public final ColorProperty color = new ColorProperty("color", 0xFF0000);
-    public final BooleanProperty grimReachBypass = new BooleanProperty("grim-reach-bypass", true);
-    public final FloatProperty maxReachDistance = new FloatProperty("max-reach-distance", 3.0F, 2.5F, 3.5F, () -> this.grimReachBypass.getValue());
+    
+    // Grim Bypass Settings
+    public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true);
+    public final FloatProperty maxReachDistance = new FloatProperty("max-reach-distance", 3.0F, 2.8F, 3.0F, () -> this.grimBypass.getValue());
+    public final BooleanProperty smartPositionSelect = new BooleanProperty("smart-position-select", true, () -> this.grimBypass.getValue());
+    public final BooleanProperty respectPing = new BooleanProperty("respect-ping", true, () -> this.grimBypass.getValue());
+    public final IntProperty maxBacktrackTime = new IntProperty("max-backtrack-time", 200, 100, 500, () -> this.grimBypass.getValue() && this.respectPing.getValue());
+    public final BooleanProperty onlyOnAdvantage = new BooleanProperty("only-on-advantage", true, () -> this.grimBypass.getValue());
+    public final BooleanProperty smoothTransition = new BooleanProperty("smooth-transition", true, () -> this.grimBypass.getValue());
 
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();
+    private final Map<Integer, Long> lastHitTimes = new ConcurrentHashMap<>();
+    private int playerPing = 0;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -47,11 +57,20 @@ public class Backtrack extends Module {
     @Override
     public void onEnabled() {
         entityPositions.clear();
+        lastHitTimes.clear();
+        updatePlayerPing();
     }
 
     @Override
     public void onDisabled() {
         entityPositions.clear();
+        lastHitTimes.clear();
+    }
+    
+    private void updatePlayerPing() {
+        if (mc.getNetHandler() != null && mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()) != null) {
+            playerPing = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()).getResponseTime();
+        }
     }
 
 
@@ -60,6 +79,13 @@ public class Backtrack extends Module {
         if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
             return;
         }
+
+        // Update ping for Grim bypass calculations
+        if (this.grimBypass.getValue() && mc.thePlayer.ticksExisted % 20 == 0) {
+            updatePlayerPing();
+        }
+
+        long currentTime = System.currentTimeMillis();
 
         for (EntityPlayer player : mc.theWorld.playerEntities) {
             if (player == mc.thePlayer || player.isDead) {
@@ -71,15 +97,32 @@ public class Backtrack extends Module {
             positions.addFirst(new PositionData(
                 player.posX, player.posY, player.posZ,
                 player.rotationYaw, player.rotationPitch,
-                player.rotationYawHead, player.limbSwing, player.limbSwingAmount
+                player.rotationYawHead, player.limbSwing, player.limbSwingAmount,
+                currentTime
             ));
 
-            while (positions.size() > this.ticks.getValue()) {
+            // Grim bypass: Limit backtrack history based on ping and settings
+            int maxTicks = this.ticks.getValue();
+            if (this.grimBypass.getValue() && this.respectPing.getValue()) {
+                // Calculate safe backtrack window based on ping
+                int pingBasedLimit = Math.min((int) Math.ceil(playerPing / 50.0), maxTicks);
+                maxTicks = Math.max(3, pingBasedLimit);
+            }
+
+            while (positions.size() > maxTicks) {
                 positions.removeLast();
+            }
+            
+            // Grim bypass: Remove positions older than max backtrack time
+            if (this.grimBypass.getValue() && this.respectPing.getValue()) {
+                positions.removeIf(pos -> currentTime - pos.timestamp > this.maxBacktrackTime.getValue());
             }
         }
 
         entityPositions.keySet().removeIf(id -> mc.theWorld.getEntityByID(id) == null);
+        
+        // Clean old hit times
+        lastHitTimes.entrySet().removeIf(entry -> currentTime - entry.getValue() > 1000);
     }
 
     @EventTarget
@@ -119,18 +162,68 @@ public class Backtrack extends Module {
         }
 
         double currentDistance = mc.thePlayer.getDistanceToEntity(target);
-        double maxReach = this.grimReachBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
+        double maxReach = this.grimBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
         
         PositionData bestPosition = null;
         double bestDistance = currentDistance;
+        long currentTime = System.currentTimeMillis();
         
-        for (PositionData pos : positions) {
-            double backtrackDistance = Math.sqrt(mc.thePlayer.getDistanceSq(pos.x, pos.y, pos.z));
+        // Grim bypass: Smart position selection
+        if (this.grimBypass.getValue() && this.smartPositionSelect.getValue()) {
+            // Prioritize positions that are:
+            // 1. Within safe reach (max 3.0)
+            // 2. Not too old (respect ping)
+            // 3. Provide clear advantage
             
-            if (backtrackDistance < currentDistance && backtrackDistance <= maxReach) {
-                if (backtrackDistance < bestDistance) {
-                    bestDistance = backtrackDistance;
-                    bestPosition = pos;
+            for (PositionData pos : positions) {
+                // Skip positions that are too old
+                if (this.respectPing.getValue() && currentTime - pos.timestamp > this.maxBacktrackTime.getValue()) {
+                    continue;
+                }
+                
+                double backtrackDistance = Math.sqrt(mc.thePlayer.getDistanceSq(pos.x, pos.y, pos.z));
+                
+                // Never exceed 3.0 reach for Grim safety
+                if (backtrackDistance > maxReach) {
+                    continue;
+                }
+                
+                // Grim bypass: Only use backtrack if it provides advantage
+                if (this.onlyOnAdvantage.getValue()) {
+                    double advantage = currentDistance - backtrackDistance;
+                    if (advantage < 0.3) {
+                        continue; // Not enough advantage
+                    }
+                }
+                
+                // Check if this position is better
+                if (backtrackDistance < currentDistance && backtrackDistance < bestDistance) {
+                    // Grim bypass: Prefer more recent positions if distance is similar
+                    if (bestPosition != null) {
+                        double distanceDiff = Math.abs(backtrackDistance - bestDistance);
+                        if (distanceDiff < 0.2 && pos.timestamp > bestPosition.timestamp) {
+                            bestDistance = backtrackDistance;
+                            bestPosition = pos;
+                        } else if (backtrackDistance < bestDistance) {
+                            bestDistance = backtrackDistance;
+                            bestPosition = pos;
+                        }
+                    } else {
+                        bestDistance = backtrackDistance;
+                        bestPosition = pos;
+                    }
+                }
+            }
+        } else {
+            // Simple selection without Grim bypass
+            for (PositionData pos : positions) {
+                double backtrackDistance = Math.sqrt(mc.thePlayer.getDistanceSq(pos.x, pos.y, pos.z));
+                
+                if (backtrackDistance < currentDistance && backtrackDistance <= maxReach) {
+                    if (backtrackDistance < bestDistance) {
+                        bestDistance = backtrackDistance;
+                        bestPosition = pos;
+                    }
                 }
             }
         }
@@ -141,17 +234,19 @@ public class Backtrack extends Module {
     private boolean shouldUseBacktrack(EntityPlayer target, PositionData backtrackPos) {
         double currentDist = mc.thePlayer.getDistanceToEntity(target);
         double backtrackDist = Math.sqrt(mc.thePlayer.getDistanceSq(backtrackPos.x, backtrackPos.y, backtrackPos.z));
-        double maxReach = this.grimReachBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
+        double maxReach = this.grimBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
         
         if (backtrackDist >= currentDist) {
             return false;
         }
         
+        // Grim bypass: NEVER exceed 3.0 blocks
         if (backtrackDist > maxReach) {
             return false;
         }
         
-        if (this.grimReachBypass.getValue()) {
+        if (this.grimBypass.getValue()) {
+            // Check vertical distance (Grim checks this)
             double eyeHeight = mc.thePlayer.getEyeHeight();
             double playerEyeY = mc.thePlayer.posY + eyeHeight;
             double targetCenterY = backtrackPos.y + (target.height / 2.0);
@@ -160,16 +255,53 @@ public class Backtrack extends Module {
             if (verticalDist > 2.0) {
                 return false;
             }
+            
+            // Grim bypass: Check for hit cooldown (prevent spam)
+            Long lastHitTime = lastHitTimes.get(target.getEntityId());
+            if (lastHitTime != null && System.currentTimeMillis() - lastHitTime < 100) {
+                return false; // Too soon since last hit
+            }
+            
+            // Grim bypass: Only use if position is recent enough
+            if (this.respectPing.getValue()) {
+                long timeSincePosition = System.currentTimeMillis() - backtrackPos.timestamp;
+                if (timeSincePosition > this.maxBacktrackTime.getValue()) {
+                    return false;
+                }
+            }
+            
+            // Grim bypass: Check if advantage is significant enough
+            if (this.onlyOnAdvantage.getValue()) {
+                double advantage = currentDist - backtrackDist;
+                if (advantage < 0.3) {
+                    return false;
+                }
+            }
         }
         
         return true;
     }
 
     private void applyBacktrackPosition(EntityPlayer target, PositionData pos) {
-        target.setPosition(pos.x, pos.y, pos.z);
+        // Grim bypass: Smooth transition to avoid teleport detection
+        if (this.grimBypass.getValue() && this.smoothTransition.getValue()) {
+            double smoothFactor = 0.7; // Interpolate 70% towards backtrack position
+            
+            double newX = target.posX + (pos.x - target.posX) * smoothFactor;
+            double newY = target.posY + (pos.y - target.posY) * smoothFactor;
+            double newZ = target.posZ + (pos.z - target.posZ) * smoothFactor;
+            
+            target.setPosition(newX, newY, newZ);
+        } else {
+            target.setPosition(pos.x, pos.y, pos.z);
+        }
+        
         target.rotationYaw = pos.yaw;
         target.rotationPitch = pos.pitch;
         target.rotationYawHead = pos.headYaw;
+        
+        // Track this hit
+        lastHitTimes.put(target.getEntityId(), System.currentTimeMillis());
     }
 
     private void renderHistoricalPositions() {
@@ -224,9 +356,10 @@ public class Backtrack extends Module {
     private static class PositionData {
         final double x, y, z;
         final float yaw, pitch, headYaw, limbSwing, limbSwingAmount;
+        final long timestamp;
 
         PositionData(double x, double y, double z, float yaw, float pitch, 
-                    float headYaw, float limbSwing, float limbSwingAmount) {
+                    float headYaw, float limbSwing, float limbSwingAmount, long timestamp) {
             this.x = x;
             this.y = y;
             this.z = z;
@@ -235,6 +368,7 @@ public class Backtrack extends Module {
             this.headYaw = headYaw;
             this.limbSwing = limbSwing;
             this.limbSwingAmount = limbSwingAmount;
+            this.timestamp = timestamp;
         }
     }
 }

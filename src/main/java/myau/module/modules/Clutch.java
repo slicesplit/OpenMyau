@@ -53,12 +53,9 @@ public class Clutch extends Module {
     private long lastTellyTime = 0L;
     private BlockPos tellyTargetPos = null;
     
-    // Grim bypass variables
+    // Track placements for anti-disappear
     private Map<BlockPos, Long> recentPlacements = new HashMap<>();
     private long lastPlaceTime = 0L;
-    private int consecutivePlacements = 0;
-    private double grimVoidCheckY = 0.0;
-    private boolean grimSafeMode = false;
     
     // Block disappear prevention
     private BlockPos lastPlacedBlock = null;
@@ -86,11 +83,7 @@ public class Clutch extends Module {
     public final FloatProperty tellyDistance = new FloatProperty("telly-distance", 0.2F, 0.1F, 0.4F, () -> this.tellyMode.getValue());
     public final IntProperty tellyDelay = new IntProperty("telly-delay", 2, 1, 5, () -> this.tellyMode.getValue());
     
-    // Grim AntiVoid Bypass
-    public final BooleanProperty grimMode = new BooleanProperty("grim-antivoid", false);
-    public final FloatProperty grimSafetyMargin = new FloatProperty("grim-safety-margin", 0.5F, 0.1F, 2.0F, () -> this.grimMode.getValue());
-    public final IntProperty grimPlaceDelay = new IntProperty("grim-place-delay", 50, 20, 200, () -> this.grimMode.getValue());
-    public final BooleanProperty grimPreciseRotations = new BooleanProperty("grim-precise-rotations", true, () -> this.grimMode.getValue());
+    // Note: Grim antivoid features moved to AntiVoid module for better compatibility
     
     // Block disappear/rubberband prevention
     public final BooleanProperty antiDisappear = new BooleanProperty("anti-disappear", true);
@@ -115,7 +108,6 @@ public class Clutch extends Module {
         this.tellyStage = 0;
         this.recentPlacements.clear();
         this.waitingForConfirm = false;
-        this.grimSafeMode = false;
     }
     
     @Override
@@ -251,14 +243,6 @@ public class Clutch extends Module {
             return null;
         }
         
-        // Grim mode: Check if it's safe to place
-        if (this.grimMode.getValue() && grimSafeMode) {
-            double currentY = mc.thePlayer.posY;
-            if (currentY < grimVoidCheckY + this.grimSafetyMargin.getValue()) {
-                return null; // Too close to void, don't place yet
-            }
-        }
-        
         // Check for staircase mode
         if (this.allowStaircaseUp.getValue() && shouldStaircase()) {
             double motionX = mc.thePlayer.motionX;
@@ -324,68 +308,6 @@ public class Clutch extends Module {
         return options.get(0);
     }
     
-    private Vec3 getPreciseHitVec(BlockPos blockPos, EnumFacing facing) {
-        // Use precise offsets for better placement accuracy (Grim bypass)
-        double[] xOffsets = PRECISE_OFFSETS;
-        double[] yOffsets = PRECISE_OFFSETS;
-        double[] zOffsets = PRECISE_OFFSETS;
-        
-        // Constrain to face
-        switch (facing) {
-            case NORTH:
-                zOffsets = new double[]{0.0};
-                break;
-            case EAST:
-                xOffsets = new double[]{1.0};
-                break;
-            case SOUTH:
-                zOffsets = new double[]{1.0};
-                break;
-            case WEST:
-                xOffsets = new double[]{0.0};
-                break;
-            case DOWN:
-                yOffsets = new double[]{0.0};
-                break;
-            case UP:
-                yOffsets = new double[]{1.0};
-                break;
-        }
-        
-        Vec3 bestVec = null;
-        float bestYawDiff = Float.MAX_VALUE;
-        
-        for (double x : xOffsets) {
-            for (double y : yOffsets) {
-                for (double z : zOffsets) {
-                    Vec3 vec = new Vec3(
-                        blockPos.getX() + x,
-                        blockPos.getY() + y,
-                        blockPos.getZ() + z
-                    );
-                    
-                    double deltaX = vec.xCoord - mc.thePlayer.posX;
-                    double deltaY = vec.yCoord - (mc.thePlayer.posY + mc.thePlayer.getEyeHeight());
-                    double deltaZ = vec.zCoord - mc.thePlayer.posZ;
-                    
-                    double distSq = deltaX * deltaX + deltaZ * deltaZ;
-                    float yaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
-                    float yawDiff = Math.abs(MathHelper.wrapAngleTo180_float(yaw - mc.thePlayer.rotationYaw));
-                    
-                    if (yawDiff < bestYawDiff) {
-                        bestYawDiff = yawDiff;
-                        bestVec = vec;
-                    }
-                }
-            }
-        }
-        
-        return bestVec != null ? bestVec : new Vec3(
-            blockPos.getX() + 0.5,
-            blockPos.getY() + 0.5,
-            blockPos.getZ() + 0.5
-        );
-    }
     
     private boolean shouldStaircase() {
         long currentTime = System.currentTimeMillis();
@@ -401,14 +323,6 @@ public class Clutch extends Module {
     
     private void place(BlockPos blockPos, EnumFacing enumFacing, Vec3 vec3) {
         if (ItemUtil.isHoldingBlock() && this.blockCount > 0) {
-            // Grim mode: Check placement timing
-            if (this.grimMode.getValue()) {
-                long currentTime = System.currentTimeMillis();
-                if (currentTime - lastPlaceTime < this.grimPlaceDelay.getValue()) {
-                    return; // Too soon, respect place delay
-                }
-                lastPlaceTime = currentTime;
-            }
             
             // Telly mode: Handle telly placement
             if (this.tellyMode.getValue() && tellyActive) {
@@ -433,16 +347,13 @@ public class Clutch extends Module {
                     placeConfirmTicks = 0;
                 }
                 
-                // Track for Grim bypass
-                if (this.grimMode.getValue()) {
-                    recentPlacements.put(blockPos, System.currentTimeMillis());
-                    consecutivePlacements++;
-                    
-                    // Clean old placements
-                    recentPlacements.entrySet().removeIf(entry -> 
-                        System.currentTimeMillis() - entry.getValue() > 5000
-                    );
-                }
+                // Track placements
+                recentPlacements.put(blockPos, System.currentTimeMillis());
+                
+                // Clean old placements
+                recentPlacements.entrySet().removeIf(entry -> 
+                    System.currentTimeMillis() - entry.getValue() > 5000
+                );
                 
                 // Mark clutch as complete
                 this.clutchCompleteTime = System.currentTimeMillis();
@@ -543,10 +454,6 @@ public class Clutch extends Module {
             }
         }
         
-        // Grim antivoid: Hyper-precise void detection
-        if (this.grimMode.getValue() && this.onVoid.getValue()) {
-            handleGrimAntiVoid();
-        }
         
         // Telly mode: Activate when needed
         if (this.tellyMode.getValue() && !tellyActive && shouldActivate()) {
@@ -555,55 +462,6 @@ public class Clutch extends Module {
         }
     }
     
-    private void handleGrimAntiVoid() {
-        // Detect void below with extreme precision
-        int playerY = MathHelper.floor_double(mc.thePlayer.posY);
-        double playerX = mc.thePlayer.posX;
-        double playerZ = mc.thePlayer.posZ;
-        
-        boolean voidDetected = true;
-        int groundY = -1;
-        
-        // Check in a 3x3 area below player for ground
-        for (int xOff = -1; xOff <= 1; xOff++) {
-            for (int zOff = -1; zOff <= 1; zOff++) {
-                for (int y = playerY - 1; y >= 0; y--) {
-                    BlockPos pos = new BlockPos(
-                        MathHelper.floor_double(playerX) + xOff,
-                        y,
-                        MathHelper.floor_double(playerZ) + zOff
-                    );
-                    
-                    if (!BlockUtil.isReplaceable(pos)) {
-                        voidDetected = false;
-                        groundY = Math.max(groundY, y);
-                        break;
-                    }
-                    
-                    if (y <= 2) {
-                        break; // Confirmed void
-                    }
-                }
-            }
-        }
-        
-        if (voidDetected) {
-            grimSafeMode = true;
-            grimVoidCheckY = mc.thePlayer.posY;
-            
-            // Calculate safe placement Y based on fall trajectory
-            double motionY = mc.thePlayer.motionY;
-            double predictedY = mc.thePlayer.posY + motionY;
-            
-            // Only allow placement if we're not falling too fast or too close to void
-            if (Math.abs(motionY) > 0.7 || predictedY < this.grimSafetyMargin.getValue()) {
-                // Emergency mode: Need to place NOW
-                grimSafeMode = false;
-            }
-        } else {
-            grimSafeMode = false;
-        }
-    }
     
     @EventTarget(Priority.HIGH)
     public void onUpdate(UpdateEvent event) {
@@ -641,14 +499,7 @@ public class Clutch extends Module {
             BlockData blockData = getClutchBlockData();
             
             if (blockData != null) {
-                Vec3 hitVec;
-                
-                // Use precise hit vec for Grim mode
-                if (this.grimMode.getValue() && this.grimPreciseRotations.getValue()) {
-                    hitVec = getPreciseHitVec(blockData.blockPos, blockData.enumFacing);
-                } else {
-                    hitVec = BlockUtil.getHitVec(blockData.blockPos, blockData.enumFacing, event.getYaw(), event.getPitch());
-                }
+                Vec3 hitVec = BlockUtil.getHitVec(blockData.blockPos, blockData.enumFacing, event.getYaw(), event.getPitch());
                 
                 Vec3 eyePos = mc.thePlayer.getPositionEyes(1.0f);
                 double deltaX = hitVec.xCoord - eyePos.xCoord;
@@ -656,13 +507,6 @@ public class Clutch extends Module {
                 double deltaZ = hitVec.zCoord - eyePos.zCoord;
                 
                 float[] rotations = RotationUtil.getRotations(deltaX, deltaY, deltaZ, event.getYaw(), event.getPitch(), 180.0f, 0.0f);
-                
-                // Grim mode: Add micro-adjustments to rotations for realism
-                if (this.grimMode.getValue() && this.grimPreciseRotations.getValue()) {
-                    rotations[0] += RandomUtil.nextFloat(-0.5F, 0.5F);
-                    rotations[1] += RandomUtil.nextFloat(-0.5F, 0.5F);
-                    rotations[1] = MathHelper.clamp_float(rotations[1], -90.0F, 90.0F);
-                }
                 
                 if (this.silentAim.getValue()) {
                     event.setRotation(rotations[0], rotations[1], 0);

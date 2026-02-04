@@ -86,6 +86,7 @@ public class ClickGui extends GuiScreen {
         playerModules.add(Myau.moduleManager.getModule(AutoHeal.class));
         playerModules.add(Myau.moduleManager.getModule(AutoTool.class));
         playerModules.add(Myau.moduleManager.getModule(ChestStealer.class));
+        playerModules.add(Myau.moduleManager.getModule(Clutch.class));
         playerModules.add(Myau.moduleManager.getModule(InvManager.class));
         playerModules.add(Myau.moduleManager.getModule(InvWalk.class));
         playerModules.add(Myau.moduleManager.getModule(Scaffold.class));
@@ -108,6 +109,7 @@ public class ClickGui extends GuiScreen {
         miscModules.add(Myau.moduleManager.getModule(AutoAnduril.class));
         miscModules.add(Myau.moduleManager.getModule(InventoryClicker.class));
         miscModules.add(Myau.moduleManager.getModule(FakeLag.class));
+        miscModules.add(Myau.moduleManager.getModule(RemoteShop.class));
 
         Comparator<Module> comparator = Comparator.comparing(m -> m.getName().toLowerCase());
         combatModules.sort(comparator);

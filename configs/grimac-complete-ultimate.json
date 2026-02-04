@@ -1,0 +1,498 @@
+{
+  "name": "GrimAC Complete Ultimate Config",
+  "description": "Best settings for all modified modules including KillAura, Backtrack, FakeLag, AntiVoid, Blink, Clutch, and RemoteShop",
+  "version": "2.0.0",
+  "author": "Rovo Dev",
+  "date": "2026-02-04",
+  "minecraft_version": "1.8.x",
+  "anticheat": "GrimAC",
+  "modules": {
+    "KillAura": {
+      "enabled": true,
+      "comment": "GRIM autoblock mode with optimized settings",
+      "mode": "SINGLE",
+      "sort": "DISTANCE",
+      "auto-block": "GRIM",
+      "auto-block-require-press": false,
+      "auto-block-min-aps": 12.0,
+      "auto-block-max-aps": 16.0,
+      "auto-block-range": 6.0,
+      "swing-range": 4.2,
+      "attack-range": 3.8,
+      "fov": 180,
+      "min-aps": 14,
+      "max-aps": 18,
+      "switch-delay": 100,
+      "rotations": "SILENT",
+      "move-fix": "SILENT",
+      "smoothing": 15,
+      "angle-step": 45,
+      "through-walls": false,
+      "require-press": false,
+      "allow-mining": false,
+      "weapons-only": true,
+      "allow-tools": false,
+      "inventory-check": true,
+      "bot-check": true,
+      "players": true,
+      "bosses": false,
+      "mobs": false,
+      "animals": false,
+      "golems": false,
+      "silverfish": false,
+      "teams": true,
+      "show-target": "HUD",
+      "tips": [
+        "GRIM autoblock uses 40ms timing window",
+        "16-18 APS is aggressive but safe",
+        "Lower to 12-16 for strict servers",
+        "Silent rotations with proper move-fix bypass Grim"
+      ]
+    },
+    "Backtrack": {
+      "enabled": true,
+      "comment": "Complete Grim bypass with 3.0 max reach",
+      "ticks": 6,
+      "render-previous-ticks": true,
+      "color": 16711680,
+      "grim-bypass": true,
+      "max-reach-distance": 3.0,
+      "smart-position-select": true,
+      "respect-ping": true,
+      "max-backtrack-time": 200,
+      "only-on-advantage": true,
+      "smooth-transition": true,
+      "tips": [
+        "NEVER exceeds 3.0 blocks reach",
+        "Adapts to your ping automatically",
+        "Only backtracks when advantage >= 0.3 blocks",
+        "Smooth transitions prevent teleport detection",
+        "100ms hit cooldown per target"
+      ],
+      "strict_server_settings": {
+        "ticks": 4,
+        "max-reach-distance": 2.9,
+        "max-backtrack-time": 150
+      },
+      "aggressive_settings": {
+        "ticks": 8,
+        "max-backtrack-time": 300,
+        "only-on-advantage": false
+      }
+    },
+    "FakeLag": {
+      "enabled": true,
+      "comment": "GRIM mode with transaction timing",
+      "mode": "GRIM",
+      "delay": 100,
+      "transmission-offset": 0.5,
+      "max-queued": 3,
+      "smart-release": true,
+      "min-release-interval": 45,
+      "safe-mode": true,
+      "grim-bypass": true,
+      "transaction-timing": true,
+      "max-packets-per-second": 18,
+      "respect-post-order": true,
+      "adaptive-timing": true,
+      "min-packet-interval": 45,
+      "tips": [
+        "GRIM mode uses 2-1-2-1 pattern in combat",
+        "Never exceeds 18 packets/second",
+        "Respects Grim's Post check order",
+        "Adaptive timing based on combat state",
+        "45ms minimum between packets"
+      ],
+      "combat_pattern": "Delay 2 packets (50ms) → Send 1 → Repeat",
+      "out_of_combat_pattern": "Delay 3 packets (75ms) → Send 1 → Repeat"
+    },
+    "AntiVoid": {
+      "enabled": true,
+      "comment": "Grim mode with advanced prediction",
+      "mode": "GRIM",
+      "distance": 5.0,
+      "grim-safety-margin": 0.5,
+      "grim-prediction-accuracy": 0.95,
+      "grim-max-ticks": 10,
+      "grim-advanced-prediction": true,
+      "tips": [
+        "3x3 area void scanning",
+        "Physics-based fall prediction",
+        "Teleports only when necessary",
+        "0.5 block safety margin",
+        "Max 10 ticks before emergency teleport",
+        "Random ±0.05 offset for realism"
+      ],
+      "how_it_works": {
+        "detection": "Scans 3x3 area below player up to 10 blocks down",
+        "prediction": "Calculates fall trajectory using gravity (0.08) and air resistance (0.98)",
+        "timing": "Teleports when predictedY < 0.5 or motionY > 0.7",
+        "position": "Uses last validated ground position + safety margin",
+        "bypass": "Random offsets and proper packet order prevent detection"
+      },
+      "strict_servers": {
+        "grim-safety-margin": 0.7,
+        "grim-max-ticks": 8
+      },
+      "lenient_servers": {
+        "grim-safety-margin": 0.3,
+        "grim-max-ticks": 12
+      }
+    },
+    "Blink": {
+      "enabled": false,
+      "comment": "GRIM mode for 5000+ packets without rubberband",
+      "mode": "GRIM",
+      "ticks": 100,
+      "grim-max-packets": 5000,
+      "grim-smart-release": true,
+      "grim-release-interval": 50,
+      "grim-packet-optimization": true,
+      "grim-max-per-tick": 20,
+      "tips": [
+        "Buffers up to 5000 packets safely",
+        "Smart release every 50ms",
+        "Packet optimization removes duplicates",
+        "Releases max 20 packets per tick",
+        "No rubberbanding on disable",
+        "Enable when you need to freeze position"
+      ],
+      "use_cases": [
+        "Phase through walls",
+        "Long-distance teleports",
+        "Bypass velocity checks",
+        "Temporary position freeze",
+        "Combat advantages"
+      ],
+      "ultra_safe": {
+        "grim-max-packets": 3000,
+        "grim-release-interval": 70,
+        "grim-max-per-tick": 15
+      },
+      "aggressive": {
+        "grim-max-packets": 8000,
+        "grim-release-interval": 40,
+        "grim-max-per-tick": 25
+      }
+    },
+    "Clutch": {
+      "enabled": true,
+      "comment": "Telly mode with anti-disappear, Grim antivoid moved to AntiVoid module",
+      "on-void": true,
+      "on-lethal-fall": true,
+      "on-more-than-x-blocks": false,
+      "blocks": 5,
+      "silent-aim": true,
+      "silent-aim-movement": "PROPER",
+      "show-block-count": true,
+      "reset-angle": true,
+      "return-to-slot": true,
+      "allow-staircase-up": false,
+      "clutch-move-delay": 3,
+      "telly-mode": true,
+      "telly-distance": 0.18,
+      "telly-delay": 2,
+      "anti-disappear": true,
+      "confirm-delay": 2,
+      "block-selection": "WHITELIST",
+      "swing": true,
+      "tips": [
+        "Telly mode extends reach safely",
+        "Anti-disappear prevents block loss",
+        "Use with AntiVoid GRIM mode for best results",
+        "0.18 telly distance is optimal",
+        "2 tick confirm delay prevents rubberbanding"
+      ],
+      "note": "For Grim antivoid bypass, enable AntiVoid module in GRIM mode instead"
+    },
+    "RemoteShop": {
+      "enabled": false,
+      "comment": "Access shops remotely, enable when needed",
+      "mode": "HYPIXEL",
+      "activation-key": 199,
+      "cancel-inventory": true,
+      "auto-close": true,
+      "close-delay": 100,
+      "click-optimization": true,
+      "tips": [
+        "Press HOME key to open shop",
+        "Hypixel mode uses /shop command",
+        "Cancel inventory prevents interference",
+        "Auto-closes after 100ms of inactivity",
+        "Works from anywhere"
+      ],
+      "key_codes": {
+        "HOME": 199,
+        "END": 207,
+        "INSERT": 210,
+        "DELETE": 211
+      }
+    },
+    "Velocity": {
+      "enabled": true,
+      "horizontal": 90,
+      "vertical": 100,
+      "chance": 100,
+      "comment": "90% horizontal safe for Grim"
+    },
+    "NoSlow": {
+      "enabled": true,
+      "mode": "VANILLA",
+      "comment": "Vanilla mode is Grim-safe"
+    },
+    "KeepSprint": {
+      "enabled": true,
+      "comment": "Fully safe on Grim"
+    },
+    "Sprint": {
+      "enabled": true,
+      "omni-directional": false,
+      "comment": "Keep omni off for Grim"
+    },
+    "Wtap": {
+      "enabled": true,
+      "mode": "PACKET",
+      "range": 3.5,
+      "comment": "Packet mode safer for Grim"
+    },
+    "AntiFireball": {
+      "enabled": true,
+      "range": 5.5,
+      "fov": 360,
+      "rotations": true,
+      "swing": true,
+      "predictive": true,
+      "prediction": 2.0,
+      "shoot-up": true,
+      "move-fix": "SILENT",
+      "show-target": "NONE",
+      "comment": "Shoot-up prevents self-damage"
+    },
+    "AutoTool": {
+      "enabled": true,
+      "comment": "Safe utility module"
+    },
+    "TargetHUD": {
+      "enabled": true,
+      "mode": "MODERN"
+    },
+    "HUD": {
+      "enabled": true,
+      "watermark": true,
+      "arraylist": true,
+      "coordinates": true,
+      "fps": true,
+      "ping": true,
+      "server": true,
+      "bps": true
+    }
+  },
+  "danger_modules": {
+    "DO_NOT_USE": [
+      "Speed",
+      "Fly",
+      "LongJump",
+      "Reach (>3.0)",
+      "HitBox",
+      "NoFall"
+    ],
+    "reason": "These modules have INSTANT detection on GrimAC"
+  },
+  "server_strictness_presets": {
+    "very_strict": {
+      "KillAura": {
+        "min-aps": 10,
+        "max-aps": 14,
+        "attack-range": 3.2,
+        "auto-block": "LEGIT"
+      },
+      "Backtrack": {
+        "ticks": 4,
+        "max-reach-distance": 2.9,
+        "max-backtrack-time": 150
+      },
+      "FakeLag": {
+        "mode": "LATENCY",
+        "delay": 75,
+        "max-packets-per-second": 17
+      },
+      "AntiVoid": {
+        "grim-safety-margin": 0.7,
+        "grim-max-ticks": 8
+      },
+      "Blink": {
+        "enabled": false,
+        "comment": "Disable on very strict servers"
+      }
+    },
+    "strict": {
+      "KillAura": {
+        "min-aps": 12,
+        "max-aps": 16,
+        "attack-range": 3.5
+      },
+      "Backtrack": {
+        "ticks": 5,
+        "max-reach-distance": 3.0,
+        "max-backtrack-time": 180
+      },
+      "FakeLag": {
+        "mode": "GRIM",
+        "max-packets-per-second": 17
+      }
+    },
+    "moderate": {
+      "KillAura": {
+        "min-aps": 14,
+        "max-aps": 18,
+        "attack-range": 3.8
+      },
+      "Backtrack": {
+        "ticks": 6,
+        "max-backtrack-time": 200
+      },
+      "FakeLag": {
+        "mode": "GRIM",
+        "max-packets-per-second": 18
+      }
+    },
+    "lenient": {
+      "KillAura": {
+        "min-aps": 16,
+        "max-aps": 20,
+        "attack-range": 4.0
+      },
+      "Backtrack": {
+        "ticks": 8,
+        "max-backtrack-time": 300,
+        "only-on-advantage": false
+      },
+      "FakeLag": {
+        "mode": "DYNAMIC",
+        "max-packets-per-second": 19
+      },
+      "Blink": {
+        "grim-max-packets": 8000
+      }
+    }
+  },
+  "advanced_tips": {
+    "killaura_optimization": [
+      "Use GRIM autoblock for best bypass",
+      "14-18 APS is the sweet spot",
+      "Silent rotations with PROPER movement fix",
+      "Lower smoothing (10-20) for more legit look",
+      "Keep attack range at 3.8 or below"
+    ],
+    "backtrack_optimization": [
+      "Enable respect-ping for automatic adaptation",
+      "only-on-advantage ensures selective usage",
+      "smooth-transition prevents Grim setbacks",
+      "Max reach of 3.0 is CRITICAL - never higher",
+      "Use render to see backtrack positions"
+    ],
+    "fakelag_optimization": [
+      "GRIM mode is specifically for GrimAC",
+      "Transaction timing respects Grim's checks",
+      "Adaptive timing changes based on combat",
+      "Never exceeds 18 PPS on default settings",
+      "Smart release prevents packet buildup"
+    ],
+    "antivoid_optimization": [
+      "GRIM mode uses physics-based prediction",
+      "3x3 scanning catches all void scenarios",
+      "Safety margin of 0.5 prevents early triggers",
+      "Advanced prediction calculates 5 ticks ahead",
+      "Random offsets make teleports look natural"
+    ],
+    "blink_optimization": [
+      "5000 packet capacity for long blinks",
+      "Smart release prevents detection",
+      "Packet optimization reduces queue size",
+      "Use for specific situations only",
+      "Disable after use to release packets"
+    ],
+    "clutch_optimization": [
+      "Use AntiVoid GRIM mode alongside Clutch",
+      "Telly mode for safer clutches",
+      "Anti-disappear prevents block loss",
+      "Silent aim with PROPER movement",
+      "Return to slot maintains hotbar"
+    ]
+  },
+  "detection_risk_matrix": {
+    "LOW": [
+      "KillAura (GRIM autoblock, 14-18 APS)",
+      "Backtrack (Grim bypass enabled)",
+      "FakeLag (GRIM mode)",
+      "AntiVoid (GRIM mode)",
+      "Velocity (90% horizontal)",
+      "KeepSprint",
+      "NoSlow (Vanilla)",
+      "Wtap (Packet)",
+      "AutoTool"
+    ],
+    "MEDIUM": [
+      "Blink (GRIM mode, short usage)",
+      "Clutch (with telly)",
+      "AntiFireball (shoot-up)",
+      "RemoteShop"
+    ],
+    "HIGH": [
+      "KillAura (20+ APS)",
+      "Backtrack (>3.0 reach)",
+      "FakeLag (>20 PPS)",
+      "Blink (long-term use)",
+      "Multiple movement cheats together"
+    ],
+    "INSTANT_BAN": [
+      "Speed",
+      "Fly",
+      "LongJump",
+      "Reach >3.0",
+      "HitBox expansion",
+      "NoFall"
+    ]
+  },
+  "usage_guidelines": {
+    "general": [
+      "Start with moderate settings",
+      "Monitor for flags and adjust",
+      "Don't use all modules simultaneously",
+      "Keep movements natural",
+      "Vary your playstyle",
+      "Test on alts first"
+    ],
+    "combination_recommendations": {
+      "safe_combo": [
+        "KillAura (GRIM)",
+        "Velocity (90%)",
+        "KeepSprint",
+        "NoSlow",
+        "AutoTool"
+      ],
+      "aggressive_combo": [
+        "KillAura (GRIM)",
+        "Backtrack",
+        "FakeLag (GRIM)",
+        "Velocity (90%)",
+        "Wtap"
+      ],
+      "emergency_combo": [
+        "AntiVoid (GRIM)",
+        "Clutch",
+        "AntiFireball"
+      ]
+    }
+  },
+  "final_notes": {
+    "reach_warning": "NEVER use reach >3.0 - Grim calculates exact distances",
+    "movement_warning": "ALL movement cheats are detected - Speed/Fly/LongJump are instant bans",
+    "backtrack_note": "Backtrack is safe ONLY with Grim bypass enabled and max 3.0 reach",
+    "fakelag_note": "GRIM mode specifically counters GrimAC's Post check",
+    "antivoid_note": "GRIM mode uses advanced prediction to avoid setbacks",
+    "blink_note": "Can hold 5000+ packets but use sparingly",
+    "testing": "Always test on alt accounts first before using on main",
+    "adaptation": "Adjust settings based on your specific server's strictness"
+  }
+}
