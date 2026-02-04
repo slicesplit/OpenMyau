@@ -37,24 +37,29 @@ public class Backtrack extends Module {
     public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true);
     public final ColorProperty color = new ColorProperty("color", 0xFF0000);
     
-    // Grim Bypass Settings (Ghost Mode)
+    // Ultimate Closet Bypass Settings
     public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true);
-    public final BooleanProperty ghostMode = new BooleanProperty("ghost-mode", true, () -> this.grimBypass.getValue());
-    public final FloatProperty maxReachDistance = new FloatProperty("max-reach-distance", 3.0F, 2.8F, 3.0F, () -> this.grimBypass.getValue());
+    public final BooleanProperty closetMode = new BooleanProperty("closet-mode", true, () -> this.grimBypass.getValue());
+    public final FloatProperty maxReachDistance = new FloatProperty("max-reach-distance", 2.95F, 2.8F, 3.0F, () -> this.grimBypass.getValue());
     public final BooleanProperty smartPositionSelect = new BooleanProperty("smart-position-select", true, () -> this.grimBypass.getValue());
     public final BooleanProperty respectPing = new BooleanProperty("respect-ping", true, () -> this.grimBypass.getValue());
-    public final IntProperty maxBacktrackTime = new IntProperty("max-backtrack-time", 200, 100, 500, () -> this.grimBypass.getValue() && this.respectPing.getValue());
+    public final IntProperty maxBacktrackTime = new IntProperty("max-backtrack-time", 150, 50, 300, () -> this.grimBypass.getValue() && this.respectPing.getValue());
     public final BooleanProperty onlyOnAdvantage = new BooleanProperty("only-on-advantage", true, () -> this.grimBypass.getValue());
-    public final BooleanProperty smoothTransition = new BooleanProperty("smooth-transition", false, () -> this.grimBypass.getValue() && !this.ghostMode.getValue());
+    public final FloatProperty minAdvantage = new FloatProperty("min-advantage", 0.5F, 0.2F, 1.0F, () -> this.grimBypass.getValue() && this.onlyOnAdvantage.getValue());
+    public final BooleanProperty hitboxCheck = new BooleanProperty("hitbox-check", true, () -> this.grimBypass.getValue());
+    public final BooleanProperty raytraceValidation = new BooleanProperty("raytrace-validation", true, () -> this.grimBypass.getValue());
+    public final IntProperty cooldownHits = new IntProperty("cooldown-hits", 3, 1, 10, () -> this.grimBypass.getValue());
 
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();
     private final Map<Integer, Long> lastHitTimes = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> consecutiveHits = new ConcurrentHashMap<>();
     private int playerPing = 0;
     
-    // Ghost mode state
-    private boolean ghostActive = false;
-    private EntityPlayer ghostTarget = null;
-    private PositionData ghostPosition = null;
+    // Closet mode state (ultimate bypass)
+    private boolean closetActive = false;
+    private EntityPlayer closetTarget = null;
+    private PositionData closetPosition = null;
+    private long lastBacktrackUse = 0L;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -64,24 +69,27 @@ public class Backtrack extends Module {
     public void onEnabled() {
         entityPositions.clear();
         lastHitTimes.clear();
+        consecutiveHits.clear();
         updatePlayerPing();
-        ghostActive = false;
-        ghostTarget = null;
-        ghostPosition = null;
+        closetActive = false;
+        closetTarget = null;
+        closetPosition = null;
+        lastBacktrackUse = 0L;
     }
 
     @Override
     public void onDisabled() {
         entityPositions.clear();
         lastHitTimes.clear();
+        consecutiveHits.clear();
         
-        // Reset ghost target if active
-        if (ghostActive && ghostTarget != null && ghostPosition != null) {
-            restoreEntityPosition(ghostTarget, ghostPosition);
+        // Reset closet target if active
+        if (closetActive && closetTarget != null && closetPosition != null) {
+            restoreEntityPosition(closetTarget, closetPosition);
         }
-        ghostActive = false;
-        ghostTarget = null;
-        ghostPosition = null;
+        closetActive = false;
+        closetTarget = null;
+        closetPosition = null;
     }
     
     private void updatePlayerPing() {
@@ -171,17 +179,17 @@ public class Backtrack extends Module {
                     // Apply backtrack position
                     applyBacktrackPosition(target, backtrackPos);
                     
-                    // Ghost mode: Restore immediately after attack
-                    if (this.grimBypass.getValue() && this.ghostMode.getValue()) {
+                    // Closet mode: Restore immediately after attack
+                    if (this.grimBypass.getValue() && this.closetMode.getValue()) {
                         // Restore on next tick (after attack packet sent)
                         new Thread(() -> {
                             try {
                                 Thread.sleep(1); // 1ms delay
                                 if (target != null && !target.isDead) {
                                     restoreEntityPosition(target, originalPos);
-                                    ghostActive = false;
-                                    ghostTarget = null;
-                                    ghostPosition = null;
+                                    closetActive = false;
+                                    closetTarget = null;
+                                    closetPosition = null;
                                 }
                             } catch (InterruptedException ignored) {}
                         }).start();
@@ -204,40 +212,52 @@ public class Backtrack extends Module {
         double bestDistance = currentDistance;
         long currentTime = System.currentTimeMillis();
         
-        // Grim bypass: Smart position selection
-        if (this.grimBypass.getValue() && this.smartPositionSelect.getValue()) {
+        // Ultimate Closet Mode: Ultra-safe position selection
+        if (this.grimBypass.getValue() && this.closetMode.getValue() && this.smartPositionSelect.getValue()) {
             // Prioritize positions that are:
             // 1. Within safe reach (max 3.0)
             // 2. Not too old (respect ping)
             // 3. Provide clear advantage
             
             for (PositionData pos : positions) {
-                // Skip positions that are too old
+                // Skip positions that are too old (shorter window for closet)
                 if (this.respectPing.getValue() && currentTime - pos.timestamp > this.maxBacktrackTime.getValue()) {
                     continue;
                 }
                 
-                double backtrackDistance = Math.sqrt(mc.thePlayer.getDistanceSq(pos.x, pos.y, pos.z));
+                // Calculate exact distance to hitbox center (like Grim does)
+                double backtrackDistance = calculateExactDistance(pos, target);
                 
-                // Never exceed 3.0 reach for Grim safety
+                // Closet mode: NEVER exceed 2.95 (stay well under 3.0)
                 if (backtrackDistance > maxReach) {
                     continue;
                 }
                 
-                // Grim bypass: Only use backtrack if it provides advantage
+                // Raytrace validation: Ensure we can actually hit the hitbox
+                if (this.raytraceValidation.getValue() && !canRaytraceHit(pos, target)) {
+                    continue;
+                }
+                
+                // Hitbox check: Validate we're aiming at valid part
+                if (this.hitboxCheck.getValue() && !isValidHitboxTarget(pos, target)) {
+                    continue;
+                }
+                
+                // Closet: Only use backtrack if advantage is significant
                 if (this.onlyOnAdvantage.getValue()) {
                     double advantage = currentDistance - backtrackDistance;
-                    if (advantage < 0.3) {
+                    if (advantage < this.minAdvantage.getValue()) {
                         continue; // Not enough advantage
                     }
                 }
                 
                 // Check if this position is better
                 if (backtrackDistance < currentDistance && backtrackDistance < bestDistance) {
-                    // Grim bypass: Prefer more recent positions if distance is similar
+                    // Prefer more recent positions if distance is similar
                     if (bestPosition != null) {
                         double distanceDiff = Math.abs(backtrackDistance - bestDistance);
-                        if (distanceDiff < 0.2 && pos.timestamp > bestPosition.timestamp) {
+                        // Closer time preference for closet mode
+                        if (distanceDiff < 0.1 && pos.timestamp > bestPosition.timestamp) {
                             bestDistance = backtrackDistance;
                             bestPosition = pos;
                         } else if (backtrackDistance < bestDistance) {
@@ -269,20 +289,38 @@ public class Backtrack extends Module {
 
     private boolean shouldUseBacktrack(EntityPlayer target, PositionData backtrackPos) {
         double currentDist = mc.thePlayer.getDistanceToEntity(target);
-        double backtrackDist = Math.sqrt(mc.thePlayer.getDistanceSq(backtrackPos.x, backtrackPos.y, backtrackPos.z));
+        double backtrackDist = calculateExactDistance(backtrackPos, target);
         double maxReach = this.grimBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
         
         if (backtrackDist >= currentDist) {
             return false;
         }
         
-        // Grim bypass: NEVER exceed 3.0 blocks
+        // Closet mode: NEVER exceed max reach (default 2.95)
         if (backtrackDist > maxReach) {
             return false;
         }
         
-        if (this.grimBypass.getValue()) {
-            // Check vertical distance (Grim checks this)
+        if (this.grimBypass.getValue() && this.closetMode.getValue()) {
+            // Check hit cooldown pattern (closet mode)
+            Integer hits = consecutiveHits.getOrDefault(target.getEntityId(), 0);
+            if (hits >= this.cooldownHits.getValue()) {
+                // Force cooldown every N hits
+                Long lastHitTime = lastHitTimes.get(target.getEntityId());
+                if (lastHitTime != null && System.currentTimeMillis() - lastHitTime < 300) {
+                    return false; // Skip this hit
+                } else {
+                    // Reset counter after cooldown
+                    consecutiveHits.put(target.getEntityId(), 0);
+                }
+            }
+            
+            // Global backtrack cooldown (don't spam backtrack)
+            if (System.currentTimeMillis() - lastBacktrackUse < 50) {
+                return false;
+            }
+            
+            // Check vertical distance
             double eyeHeight = mc.thePlayer.getEyeHeight();
             double playerEyeY = mc.thePlayer.posY + eyeHeight;
             double targetCenterY = backtrackPos.y + (target.height / 2.0);
@@ -292,13 +330,7 @@ public class Backtrack extends Module {
                 return false;
             }
             
-            // Grim bypass: Check for hit cooldown (prevent spam)
-            Long lastHitTime = lastHitTimes.get(target.getEntityId());
-            if (lastHitTime != null && System.currentTimeMillis() - lastHitTime < 100) {
-                return false; // Too soon since last hit
-            }
-            
-            // Grim bypass: Only use if position is recent enough
+            // Only use if position is recent
             if (this.respectPing.getValue()) {
                 long timeSincePosition = System.currentTimeMillis() - backtrackPos.timestamp;
                 if (timeSincePosition > this.maxBacktrackTime.getValue()) {
@@ -306,12 +338,22 @@ public class Backtrack extends Module {
                 }
             }
             
-            // Grim bypass: Check if advantage is significant enough
+            // Check if advantage is significant
             if (this.onlyOnAdvantage.getValue()) {
                 double advantage = currentDist - backtrackDist;
-                if (advantage < 0.3) {
+                if (advantage < this.minAdvantage.getValue()) {
                     return false;
                 }
+            }
+            
+            // Raytrace validation
+            if (this.raytraceValidation.getValue() && !canRaytraceHit(backtrackPos, target)) {
+                return false;
+            }
+            
+            // Hitbox validation
+            if (this.hitboxCheck.getValue() && !isValidHitboxTarget(backtrackPos, target)) {
+                return false;
             }
         }
         
@@ -319,18 +361,18 @@ public class Backtrack extends Module {
     }
 
     private void applyBacktrackPosition(EntityPlayer target, PositionData pos) {
-        // Ghost mode: Only apply client-side, never send to server
-        if (this.grimBypass.getValue() && this.ghostMode.getValue()) {
+        // Closet mode: Only apply client-side, never send to server
+        if (this.grimBypass.getValue() && this.closetMode.getValue()) {
             // Store original position for restoration
-            if (!ghostActive || ghostTarget != target) {
-                ghostTarget = target;
-                ghostPosition = new PositionData(
+            if (!closetActive || closetTarget != target) {
+                closetTarget = target;
+                closetPosition = new PositionData(
                     target.posX, target.posY, target.posZ,
                     target.rotationYaw, target.rotationPitch,
                     target.rotationYawHead, target.limbSwing, target.limbSwingAmount,
                     System.currentTimeMillis()
                 );
-                ghostActive = true;
+                closetActive = true;
             }
             
             // Apply backtrack position ONLY client-side
@@ -350,19 +392,8 @@ public class Backtrack extends Module {
             target.serverPosZ = (int)(pos.z * 32.0);
             
         } else {
-            // Smooth transition for non-ghost mode
-            if (this.grimBypass.getValue() && this.smoothTransition.getValue()) {
-                double smoothFactor = 0.7;
-                
-                double newX = target.posX + (pos.x - target.posX) * smoothFactor;
-                double newY = target.posY + (pos.y - target.posY) * smoothFactor;
-                double newZ = target.posZ + (pos.z - target.posZ) * smoothFactor;
-                
-                target.setPosition(newX, newY, newZ);
-            } else {
-                target.setPosition(pos.x, pos.y, pos.z);
-            }
-            
+            // Direct position change for non-closet mode
+            target.setPosition(pos.x, pos.y, pos.z);
             target.rotationYaw = pos.yaw;
             target.rotationPitch = pos.pitch;
             target.rotationYawHead = pos.headYaw;
@@ -370,6 +401,11 @@ public class Backtrack extends Module {
         
         // Track this hit
         lastHitTimes.put(target.getEntityId(), System.currentTimeMillis());
+        lastBacktrackUse = System.currentTimeMillis();
+        
+        // Update consecutive hit counter
+        int hits = consecutiveHits.getOrDefault(target.getEntityId(), 0);
+        consecutiveHits.put(target.getEntityId(), hits + 1);
     }
     
     private void restoreEntityPosition(EntityPlayer target, PositionData originalPos) {
@@ -387,6 +423,120 @@ public class Backtrack extends Module {
         target.serverPosX = (int)(originalPos.x * 32.0);
         target.serverPosY = (int)(originalPos.y * 32.0);
         target.serverPosZ = (int)(originalPos.z * 32.0);
+    }
+    
+    // Calculate exact distance like Grim does (from eye to hitbox)
+    private double calculateExactDistance(PositionData pos, EntityPlayer target) {
+        double eyeX = mc.thePlayer.posX;
+        double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
+        double eyeZ = mc.thePlayer.posZ;
+        
+        // Get closest point on hitbox
+        double closestX = Math.max(pos.x - 0.3, Math.min(eyeX, pos.x + 0.3));
+        double closestY = Math.max(pos.y, Math.min(eyeY, pos.y + target.height));
+        double closestZ = Math.max(pos.z - 0.3, Math.min(eyeZ, pos.z + 0.3));
+        
+        // Calculate distance from eye to closest point
+        double deltaX = eyeX - closestX;
+        double deltaY = eyeY - closestY;
+        double deltaZ = eyeZ - closestZ;
+        
+        return Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+    }
+    
+    // Raytrace validation (mimics Grim's raytrace check)
+    private boolean canRaytraceHit(PositionData pos, EntityPlayer target) {
+        double eyeX = mc.thePlayer.posX;
+        double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
+        double eyeZ = mc.thePlayer.posZ;
+        
+        // Calculate look vector
+        float yaw = mc.thePlayer.rotationYaw;
+        float pitch = mc.thePlayer.rotationPitch;
+        
+        double yawRad = Math.toRadians(-yaw);
+        double pitchRad = Math.toRadians(-pitch);
+        
+        double vecX = Math.sin(yawRad) * Math.cos(pitchRad);
+        double vecY = Math.sin(pitchRad);
+        double vecZ = Math.cos(yawRad) * Math.cos(pitchRad);
+        
+        // Extend vector to reach distance
+        double reachDist = this.maxReachDistance.getValue();
+        double targetX = eyeX + vecX * reachDist;
+        double targetY = eyeY + vecY * reachDist;
+        double targetZ = eyeZ + vecZ * reachDist;
+        
+        // Check if ray intersects with entity hitbox
+        double minX = pos.x - 0.3;
+        double minY = pos.y;
+        double minZ = pos.z - 0.3;
+        double maxX = pos.x + 0.3;
+        double maxY = pos.y + target.height;
+        double maxZ = pos.z + 0.3;
+        
+        // Simple AABB raytrace
+        return rayIntersectsAABB(eyeX, eyeY, eyeZ, targetX, targetY, targetZ, minX, minY, minZ, maxX, maxY, maxZ);
+    }
+    
+    // Check if hitbox target is valid
+    private boolean isValidHitboxTarget(PositionData pos, EntityPlayer target) {
+        // Check vertical distance (Grim checks this)
+        double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
+        double targetCenterY = pos.y + (target.height / 2.0);
+        double verticalDist = Math.abs(eyeY - targetCenterY);
+        
+        // Reject if too high/low
+        if (verticalDist > 2.5) {
+            return false;
+        }
+        
+        // Check if we're looking somewhat towards target
+        double deltaX = pos.x - mc.thePlayer.posX;
+        double deltaZ = pos.z - mc.thePlayer.posZ;
+        
+        float targetYaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
+        float yawDiff = Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(targetYaw - mc.thePlayer.rotationYaw));
+        
+        // Allow up to 90 degree difference (generous for closet mode)
+        return yawDiff < 90.0F;
+    }
+    
+    // Simple AABB-Ray intersection
+    private boolean rayIntersectsAABB(double x1, double y1, double z1, double x2, double y2, double z2,
+                                      double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
+        double dirX = x2 - x1;
+        double dirY = y2 - y1;
+        double dirZ = z2 - z1;
+        
+        double tMin = 0.0;
+        double tMax = 1.0;
+        
+        // X slab
+        if (Math.abs(dirX) > 0.0001) {
+            double t1 = (minX - x1) / dirX;
+            double t2 = (maxX - x1) / dirX;
+            tMin = Math.max(tMin, Math.min(t1, t2));
+            tMax = Math.min(tMax, Math.max(t1, t2));
+        }
+        
+        // Y slab
+        if (Math.abs(dirY) > 0.0001) {
+            double t1 = (minY - y1) / dirY;
+            double t2 = (maxY - y1) / dirY;
+            tMin = Math.max(tMin, Math.min(t1, t2));
+            tMax = Math.min(tMax, Math.max(t1, t2));
+        }
+        
+        // Z slab
+        if (Math.abs(dirZ) > 0.0001) {
+            double t1 = (minZ - z1) / dirZ;
+            double t2 = (maxZ - z1) / dirZ;
+            tMin = Math.max(tMin, Math.min(t1, t2));
+            tMax = Math.min(tMax, Math.max(t1, t2));
+        }
+        
+        return tMax >= tMin && tMax >= 0.0;
     }
 
     private void renderHistoricalPositions() {

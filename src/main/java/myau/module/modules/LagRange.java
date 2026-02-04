@@ -39,7 +39,7 @@ public class LagRange extends Module {
     private boolean hasTarget = false;
     private Vec3 lastPosition = null;
     private Vec3 currentPosition = null;
-    public final IntProperty delay = new IntProperty("delay", 150, 0, 1000);
+    public final IntProperty delay = new IntProperty("delay", 150, 0, 10000);
     public final FloatProperty range = new FloatProperty("range", 10.0F, 3.0F, 100.0F);
     public final BooleanProperty weaponsOnly = new BooleanProperty("weapons-only", true);
     public final BooleanProperty allowTools = new BooleanProperty("allow-tools", false, this.weaponsOnly::getValue);
