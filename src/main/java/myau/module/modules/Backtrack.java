@@ -42,17 +42,26 @@ public class Backtrack extends Module {
     private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // Extra hitbox for 1.7-1.8 clients
     private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Movement uncertainty
     private static final double SAFE_REACH_DISTANCE = 2.97; // Stay safely under 3.0
+    
+    // LAGRANGE 1000MS COMPENSATION
+    // With 1000ms artificial lag, Grim gives us MUCH more leniency
+    private static final double LAGRANGE_REACH_BONUS = 0.5; // Extra reach allowed with high ping
+    private static final double LAGRANGE_UNCERTAINTY = 0.15; // 1000ms = 15 blocks of movement uncertainty
+    private static final int LAGRANGE_PING = 1000; // Your constant 1000ms Lagrange latency
+    private static final int MAX_BACKTRACK_TICKS = 20; // With 1000ms, we can go back 20 ticks (1 second)
 
     // Mode Selection
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"Manual", "Lag Based"});
     
     // Manual Mode Settings
     public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true, () -> mode.getModeString().equals("Manual"));
-    public final IntProperty ticks = new IntProperty("ticks", 6, 1, 15, () -> mode.getModeString().equals("Manual"));
+    // LAGRANGE: Increased max ticks to 20 (1000ms = 20 ticks of history)
+    public final IntProperty ticks = new IntProperty("ticks", 15, 1, 20, () -> mode.getModeString().equals("Manual"));
     
     // Lag Based Mode Settings
     public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true, () -> mode.getModeString().equals("Lag Based"));
-    public final IntProperty latency = new IntProperty("latency", 100, 50, 500, () -> mode.getModeString().equals("Lag Based"));
+    // LAGRANGE: Latency can be much higher (up to 2000ms) since we already have 1000ms base
+    public final IntProperty latency = new IntProperty("latency", 200, 50, 2000, () -> mode.getModeString().equals("Lag Based"));
     
     // Shared Settings
     public final ColorProperty color = new ColorProperty("color", 0xFF0000);
@@ -235,19 +244,24 @@ public class Backtrack extends Module {
     /**
      * Calculate reach distance exactly like Grim does (from eye to closest point on hitbox)
      * This replicates ReachUtils.getMinReachToBox from Grim source
+     * 
+     * LAGRANGE BYPASS: With 1000ms ping, Grim adds massive uncertainty to reach checks
      */
     private double calculateGrimReachDistance(PositionData pos, EntityPlayer target) {
         double eyeX = mc.thePlayer.posX;
         double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
         double eyeZ = mc.thePlayer.posZ;
         
+        // LAGRANGE: Expand hitbox more due to high ping uncertainty
+        double lagrangeExpansion = LAGRANGE_UNCERTAINTY; // 0.15 blocks extra
+        
         // Get closest point on target's hitbox (standard player hitbox: 0.6 width, 1.8 height)
-        double targetMinX = pos.x - 0.3;
-        double targetMaxX = pos.x + 0.3;
-        double targetMinY = pos.y;
-        double targetMaxY = pos.y + 1.8;
-        double targetMinZ = pos.z - 0.3;
-        double targetMaxZ = pos.z + 0.3;
+        double targetMinX = pos.x - 0.3 - lagrangeExpansion;
+        double targetMaxX = pos.x + 0.3 + lagrangeExpansion;
+        double targetMinY = pos.y - lagrangeExpansion;
+        double targetMaxY = pos.y + 1.8 + lagrangeExpansion;
+        double targetMinZ = pos.z - 0.3 - lagrangeExpansion;
+        double targetMaxZ = pos.z + 0.3 + lagrangeExpansion;
         
         // Clamp eye position to hitbox bounds to find closest point
         double closestX = MathHelper.clamp_double(eyeX, targetMinX, targetMaxX);
@@ -265,74 +279,155 @@ public class Backtrack extends Module {
     /**
      * Validates that a backtrack position will pass all Grim AC checks
      * Checks: Reach, Hitbox, BadPacketsT (interaction vector)
+     * 
+     * LAGRANGE BYPASS: With 1000ms ping, Grim is MUCH more lenient
      */
     private boolean isPositionSafeForGrim(PositionData pos, EntityPlayer target, double reachDistance) {
-        // 1. REACH CHECK: Must be under safe distance with all margins
-        double maxAllowedReach = GRIM_MAX_REACH - GRIM_REACH_THRESHOLD - GRIM_MOVEMENT_THRESHOLD;
-        if (reachDistance > maxAllowedReach) {
+        // 1. REACH CHECK: With Lagrange 1000ms, we can go much further
+        // Grim adds (ping/50) * 0.03 blocks of uncertainty
+        // 1000ms / 50 = 20 ticks * 0.03 = 0.6 blocks extra reach!
+        double lagrangeMaxReach = SAFE_REACH_DISTANCE + LAGRANGE_REACH_BONUS + (LAGRANGE_PING / 50.0 * GRIM_MOVEMENT_THRESHOLD);
+        
+        if (reachDistance > lagrangeMaxReach) {
             return false; // Would flag Reach check
         }
         
-        // 2. HITBOX CHECK: Validate we can actually hit this position with our look angle
+        // 2. HITBOX CHECK: MOST IMPORTANT - Validate raytrace intercept
+        // This is what causes most hitbox flags!
         if (!canRaytraceHitGrim(pos, target)) {
-            return false; // Would flag Hitbox check
+            return false; // Would flag Hitbox check - calculateIntercept returned null
         }
         
-        // 3. BADPACKETS CHECK: Ensure interaction vector is valid
-        // BadPacketsT checks the relative position vector is within bounds
+        // 3. Additional raytrace check with LAST look direction (Grim checks multiple angles)
+        if (!canRaytraceHitWithLastLook(pos, target)) {
+            return false; // Would flag on secondary hitbox check
+        }
+        
+        // 4. BADPACKETS CHECK: Ensure interaction vector is valid
         double relativeX = pos.x - mc.thePlayer.posX;
         double relativeY = pos.y - mc.thePlayer.posY;
         double relativeZ = pos.z - mc.thePlayer.posZ;
         
-        // Normalize to entity-relative coordinates (what Grim expects)
-        double targetRelativeY = relativeY - pos.y; // Should be within [0, 1.8]
-        
-        if (targetRelativeY < -0.1 || targetRelativeY > 1.9) {
+        // Check horizontal bounds (BadPacketsT checks ±0.3001 for 1.9+)
+        if (Math.abs(relativeX - (pos.x - (int)pos.x)) > 0.31 || 
+            Math.abs(relativeZ - (pos.z - (int)pos.z)) > 0.31) {
             return false; // Would flag BadPacketsT
         }
         
-        // 4. Ensure we're not attacking from an impossible angle
-        double horizontalDistance = Math.sqrt(relativeX * relativeX + relativeZ * relativeZ);
-        double verticalDistance = Math.abs(mc.thePlayer.posY + mc.thePlayer.getEyeHeight() - (pos.y + 0.9));
+        // Check vertical bounds (0 to 1.8 for player height)
+        double targetHeight = pos.y + 1.8;
+        if (relativeY < -0.1 || relativeY > targetHeight + 0.1) {
+            return false; // Would flag BadPacketsT
+        }
         
-        if (verticalDistance > 2.5) {
-            return false; // Impossible vertical angle
+        // 5. Ensure reasonable vertical angle
+        double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
+        double targetCenterY = pos.y + 0.9; // Player center
+        double verticalDist = Math.abs(eyeY - targetCenterY);
+        
+        if (verticalDist > 3.0) {
+            return false; // Impossible angle
+        }
+        
+        // 6. Ensure we're within FOV (basic sanity check)
+        double deltaX = pos.x - mc.thePlayer.posX;
+        double deltaZ = pos.z - mc.thePlayer.posZ;
+        float targetYaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
+        float yawDiff = Math.abs(MathHelper.wrapAngleTo180_float(targetYaw - mc.thePlayer.rotationYaw));
+        
+        if (yawDiff > 90.0F) {
+            return false; // Can't hit behind us
         }
         
         return true;
     }
     
     /**
+     * Check hitbox with last look direction (Grim checks multiple look vectors)
+     */
+    private boolean canRaytraceHitWithLastLook(PositionData pos, EntityPlayer target) {
+        double eyeX = mc.thePlayer.posX;
+        double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
+        double eyeZ = mc.thePlayer.posZ;
+        
+        // Use previous rotation (Grim checks this too)
+        float lastYaw = mc.thePlayer.prevRotationYaw;
+        float lastPitch = mc.thePlayer.prevRotationPitch;
+        
+        // Calculate last look vector
+        float yawRad = (float) Math.toRadians(-lastYaw);
+        float pitchRad = (float) Math.toRadians(-lastPitch);
+        float pitchCos = MathHelper.cos(pitchRad);
+        
+        double lookX = MathHelper.sin(yawRad) * pitchCos;
+        double lookY = MathHelper.sin(pitchRad);
+        double lookZ = MathHelper.cos(yawRad) * pitchCos;
+        
+        double distance = GRIM_MAX_REACH + 3.0;
+        Vec3 eyeVec = new Vec3(eyeX, eyeY, eyeZ);
+        Vec3 endVec = new Vec3(
+            eyeX + lookX * distance,
+            eyeY + lookY * distance,
+            eyeZ + lookZ * distance
+        );
+        
+        // Apply expansion
+        // LAGRANGE: Add extra expansion for 1000ms ping
+        double hitboxExpansion = GRIM_REACH_THRESHOLD + GRIM_HITBOX_EXPANSION_1_8 + GRIM_MOVEMENT_THRESHOLD;
+        hitboxExpansion += LAGRANGE_UNCERTAINTY;
+        hitboxExpansion += (LAGRANGE_PING / 50.0) * GRIM_MOVEMENT_THRESHOLD;
+        
+        AxisAlignedBB targetBox = new AxisAlignedBB(
+            pos.x - 0.3 - hitboxExpansion, 
+            pos.y - hitboxExpansion, 
+            pos.z - 0.3 - hitboxExpansion,
+            pos.x + 0.3 + hitboxExpansion, 
+            pos.y + 1.8 + hitboxExpansion, 
+            pos.z + 0.3 + hitboxExpansion
+        );
+        
+        return targetBox.calculateIntercept(eyeVec, endVec) != null;
+    }
+    
+    /**
      * Check if we can raytrace to the hitbox from our current look angle
-     * Replicates Grim's raytrace validation
+     * Replicates Grim's EXACT raytrace validation using calculateIntercept
      */
     private boolean canRaytraceHitGrim(PositionData pos, EntityPlayer target) {
         double eyeX = mc.thePlayer.posX;
         double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
         double eyeZ = mc.thePlayer.posZ;
         
-        // Calculate look vector
-        float yaw = mc.thePlayer.rotationYaw;
-        float pitch = mc.thePlayer.rotationPitch;
-        
+        // Get look vectors (current and last, like Grim does)
         Vec3 lookVec = mc.thePlayer.getLookVec();
         
-        // Extend look vector to max reach distance
-        double distance = GRIM_MAX_REACH + 3.0; // Grim uses reach + 3
+        // Extend look vector (Grim uses maxReach + 3)
+        double distance = GRIM_MAX_REACH + 3.0;
+        Vec3 eyeVec = new Vec3(eyeX, eyeY, eyeZ);
         Vec3 endVec = new Vec3(
             eyeX + lookVec.xCoord * distance,
             eyeY + lookVec.yCoord * distance,
             eyeZ + lookVec.zCoord * distance
         );
         
-        // Create target hitbox
+        // CRITICAL: Apply hitbox expansion like Grim does
+        // LAGRANGE: With 1000ms ping, add MASSIVE hitbox expansion
+        double hitboxExpansion = GRIM_REACH_THRESHOLD + GRIM_HITBOX_EXPANSION_1_8 + GRIM_MOVEMENT_THRESHOLD;
+        hitboxExpansion += LAGRANGE_UNCERTAINTY; // Add 0.15 blocks for 1000ms ping
+        hitboxExpansion += (LAGRANGE_PING / 50.0) * GRIM_MOVEMENT_THRESHOLD; // Grim's formula: +0.6 blocks
+        
+        // Create expanded target hitbox (standard player: 0.6 width, 1.8 height)
         AxisAlignedBB targetBox = new AxisAlignedBB(
-            pos.x - 0.3, pos.y, pos.z - 0.3,
-            pos.x + 0.3, pos.y + 1.8, pos.z + 0.3
+            pos.x - 0.3 - hitboxExpansion, 
+            pos.y - hitboxExpansion, 
+            pos.z - 0.3 - hitboxExpansion,
+            pos.x + 0.3 + hitboxExpansion, 
+            pos.y + 1.8 + hitboxExpansion, 
+            pos.z + 0.3 + hitboxExpansion
         );
         
-        // Check if our look ray intersects the target's hitbox
-        Vec3 eyeVec = new Vec3(eyeX, eyeY, eyeZ);
+        // GRIM'S EXACT CHECK: calculateIntercept must not be null
+        // If null = no intersection = HITBOX flag
         return targetBox.calculateIntercept(eyeVec, endVec) != null;
     }
 

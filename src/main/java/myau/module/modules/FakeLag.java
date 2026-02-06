@@ -26,16 +26,26 @@ import java.util.Queue;
  * 
  * Transmission Offset: Higher values may make your connection more unstable.
  * Delay: The amount of delay (in milliseconds) to wait before sending any given packet to the server.
+ * 
+ * LAGRANGE 1000MS BYPASS:
+ * - Accounts for base 1000ms Lagrange latency
+ * - Prevents disconnect from stacking delays
+ * - Smart packet timing to avoid Grim flags
  */
 public class FakeLag extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
+    
+    // LAGRANGE COMPENSATION
+    private static final int LAGRANGE_BASE_PING = 1000; // Your Lagrange constant latency
+    private static final int MAX_TOTAL_DELAY = 1500; // Max 1.5s total delay (Lagrange + FakeLag)
+    private static final int SAFE_QUEUE_SIZE = 30; // Max packets before force release
 
     // Mode Selection
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"Latency", "Dynamic", "Repel"});
     
-    // Settings
-    public final IntProperty delay = new IntProperty("delay", 100, 0, 500);
-    public final IntProperty transmissionOffset = new IntProperty("transmission-offset", 50, 0, 200);
+    // Settings - LAGRANGE: Reduced max delay since we already have 1000ms base
+    public final IntProperty delay = new IntProperty("delay", 100, 0, 300);
+    public final IntProperty transmissionOffset = new IntProperty("transmission-offset", 50, 0, 150);
 
     private final Queue<PacketData> delayedPackets = new LinkedList<>();
     private long lastReleaseTime = 0L;
@@ -69,10 +79,45 @@ public class FakeLag extends Module {
 
         // Only delay movement packets
         if (packet instanceof C03PacketPlayer) {
+            // CRITICAL: Cancel the packet so we can delay it
             event.setCancelled(true);
             
             long currentDelay = calculateDelay();
-            delayedPackets.add(new PacketData(packet, System.currentTimeMillis() + currentDelay));
+            long releaseTime = System.currentTimeMillis() + currentDelay;
+            
+            // Add to queue with release time
+            delayedPackets.add(new PacketData(packet, releaseTime));
+            
+            // IMPORTANT: Immediately try to process packets
+            // This ensures smooth lag simulation instead of teleporting
+            processDelayedPacketsImmediate();
+        }
+    }
+    
+    /**
+     * Immediate packet processing - called right after adding to queue
+     * This makes FakeLag work like real lag instead of Blink
+     */
+    private void processDelayedPacketsImmediate() {
+        long currentTime = System.currentTimeMillis();
+        
+        // Try to release any ready packets immediately
+        while (!delayedPackets.isEmpty()) {
+            PacketData packetData = delayedPackets.peek();
+            
+            if (packetData != null && currentTime >= packetData.releaseTime) {
+                delayedPackets.poll();
+                
+                if (mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
+                    try {
+                        mc.getNetHandler().getNetworkManager().sendPacket(packetData.packet);
+                    } catch (Exception e) {
+                        // Silently handle
+                    }
+                }
+            } else {
+                break; // No more ready packets
+            }
         }
     }
 
@@ -82,7 +127,8 @@ public class FakeLag extends Module {
             return;
         }
 
-        // Process delayed packets
+        // CRITICAL: Process delayed packets EVERY tick to simulate real lag
+        // Not just when we have packets ready - continuously release them
         processDelayedPackets();
     }
 
@@ -91,22 +137,34 @@ public class FakeLag extends Module {
     private long calculateDelay() {
         long baseDelay = this.delay.getValue();
         
+        // LAGRANGE BYPASS: Ensure total delay doesn't exceed safe limits
+        // We already have 1000ms base, so FakeLag adds less
+        long calculatedDelay;
+        
         switch (mode.getModeString()) {
             case "Latency":
                 // Constant delay
-                return baseDelay;
+                calculatedDelay = baseDelay;
+                break;
                 
             case "Dynamic":
                 // Dynamic delay based on combat state
-                return calculateDynamicDelay(baseDelay);
+                calculatedDelay = calculateDynamicDelay(baseDelay);
+                break;
                 
             case "Repel":
                 // Repel mode: Keep enemies away
-                return calculateRepelDelay(baseDelay);
+                calculatedDelay = calculateRepelDelay(baseDelay);
+                break;
                 
             default:
-                return baseDelay;
+                calculatedDelay = baseDelay;
         }
+        
+        // LAGRANGE BYPASS: Cap total delay to prevent disconnect
+        // Total delay = Lagrange (1000ms) + FakeLag delay
+        long maxAdditionalDelay = MAX_TOTAL_DELAY - LAGRANGE_BASE_PING;
+        return Math.min(calculatedDelay, maxAdditionalDelay);
     }
 
     private long calculateDynamicDelay(long baseDelay) {
@@ -154,8 +212,10 @@ public class FakeLag extends Module {
     private void processDelayedPackets() {
         long currentTime = System.currentTimeMillis();
         
-        // Release packets whose delay has expired
-        while (!delayedPackets.isEmpty()) {
+        // FIXED: Release packets in order, like real lag would
+        // Real lag doesn't hold packets forever - it delays them then sends
+        int released = 0;
+        while (!delayedPackets.isEmpty() && released < 10) { // Max 10 per tick to prevent spam
             PacketData packetData = delayedPackets.peek();
             
             if (packetData != null && currentTime >= packetData.releaseTime) {
@@ -163,22 +223,44 @@ public class FakeLag extends Module {
                 
                 if (mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
                     try {
+                        // Send the packet now
                         mc.getNetHandler().getNetworkManager().sendPacket(packetData.packet);
+                        released++;
                     } catch (Exception e) {
                         // Silently handle packet send errors
                     }
                 }
             } else {
-                break; // No more packets ready to send
+                break; // No more packets ready to send yet
             }
         }
         
-        // Anti-rubberband: Force release old packets
+        // LAGRANGE BYPASS: Much stricter queue management due to base 1000ms delay
+        if (delayedPackets.size() > SAFE_QUEUE_SIZE) {
+            // Too many packets queued, release immediately to prevent disconnect
+            // With Lagrange 1000ms base, we can't afford large queues
+            releaseAllPackets();
+        }
+        
+        // LAGRANGE BYPASS: Force release old packets earlier
         if (!delayedPackets.isEmpty()) {
             PacketData oldest = delayedPackets.peek();
-            if (oldest != null && currentTime - oldest.captureTime > 1000) {
-                // Packet is over 1 second old, force release to prevent disconnect
-                releaseAllPackets();
+            // With Lagrange, packets are already delayed 1000ms
+            // So FakeLag packets over 400ms old = 1400ms total delay = risky
+            if (oldest != null && currentTime - oldest.captureTime > 400) {
+                // Force release to prevent disconnect (total delay would be 1400ms+)
+                int forceRelease = 0;
+                while (!delayedPackets.isEmpty() && forceRelease < 10) {
+                    PacketData old = delayedPackets.poll();
+                    if (old != null && mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
+                        try {
+                            mc.getNetHandler().getNetworkManager().sendPacket(old.packet);
+                            forceRelease++;
+                        } catch (Exception e) {
+                            // Silently handle
+                        }
+                    }
+                }
             }
         }
     }
