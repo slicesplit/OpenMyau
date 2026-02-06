@@ -13,6 +13,7 @@ import net.minecraft.network.login.client.C01PacketEncryptionResponse;
 import net.minecraft.network.play.client.C00PacketKeepAlive;
 import net.minecraft.network.play.client.C01PacketChatMessage;
 import net.minecraft.network.play.client.C03PacketPlayer;
+import net.minecraft.network.play.client.C0FPacketConfirmTransaction;
 import net.minecraft.network.status.client.C00PacketServerQuery;
 import net.minecraft.network.status.client.C01PacketPing;
 import net.minecraft.util.Vec3;
@@ -61,8 +62,13 @@ public class LagManager {
 
     public boolean handlePacket(Packet<?> packet) {
         this.flushQueue();
-        if (packet instanceof C00PacketKeepAlive || packet instanceof C01PacketChatMessage) {
-            return false;
+        
+        // GRIM BYPASS: Never delay critical packets that cause TransactionOrder flags
+        // Transactions must be responded to immediately and in order
+        if (packet instanceof C00PacketKeepAlive || 
+            packet instanceof C01PacketChatMessage || 
+            packet instanceof C0FPacketConfirmTransaction) {
+            return false; // Let these packets through immediately
         } else if ((long) this.tickDelay > 0L) {
             this.packetQueue.offer(new LagPacket(packet));
             return true;

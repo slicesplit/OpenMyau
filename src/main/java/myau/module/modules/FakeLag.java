@@ -12,6 +12,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.client.C03PacketPlayer;
+import net.minecraft.network.play.client.C0FPacketConfirmTransaction;
+import net.minecraft.network.play.client.C00PacketKeepAlive;
 
 import java.util.LinkedList;
 import java.util.Queue;
@@ -76,6 +78,11 @@ public class FakeLag extends Module {
         }
 
         Packet<?> packet = event.getPacket();
+        
+        // GRIM BYPASS: NEVER delay critical packets that cause TransactionOrder flags
+        if (packet instanceof C0FPacketConfirmTransaction || packet instanceof C00PacketKeepAlive) {
+            return; // Let these packets through immediately
+        }
 
         // Only delay movement packets
         if (packet instanceof C03PacketPlayer) {

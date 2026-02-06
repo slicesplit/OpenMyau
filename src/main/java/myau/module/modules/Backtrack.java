@@ -11,6 +11,8 @@ import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.play.server.S18PacketEntityTeleport;
+import net.minecraft.network.play.client.C0FPacketConfirmTransaction;
+import net.minecraft.network.play.server.S32PacketConfirmTransaction;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
@@ -138,6 +140,13 @@ public class Backtrack extends Module {
             return;
         }
 
+        // GRIM BYPASS: Never delay transaction packets (causes TransactionOrder flag)
+        // Grim expects transactions to be responded to immediately in order
+        if (event.getPacket().getClass().getSimpleName().contains("Transaction") || 
+            event.getPacket().getClass().getSimpleName().contains("KeepAlive")) {
+            return; // Let these packets through immediately
+        }
+
         // Only process incoming entity movement packets
         if (event.getType() == EventType.RECEIVE) {
             if (event.getPacket() instanceof S18PacketEntityTeleport) {
@@ -154,6 +163,7 @@ public class Backtrack extends Module {
                     event.setCancelled(true);
                 }
             }
+            // Note: Removed S14PacketEntity handling as it caused compilation errors
         }
     }
 
