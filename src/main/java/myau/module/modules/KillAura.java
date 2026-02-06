@@ -108,6 +108,13 @@ public class KillAura extends Module {
         if (this.mode.getValue() == 2) {
             return 50L;
         }
+        
+        // BRUTAL: If using GRIM autoblock, use faster attack speed
+        if (this.autoBlock.getValue() == 9 && this.isBlocking) {
+            // Ultra-fast blocking attacks (12-16 APS for brutal combat)
+            return (long) (1000.0F / RandomUtil.nextLong(12L, 16L));
+        }
+        
         return this.isBlocking ? (long) (1000.0F / RandomUtil.nextLong(this.autoBlockMinCPS.getValue().longValue(), this.autoBlockMaxCPS.getValue().longValue())) : 1000L / RandomUtil.nextLong(this.minCPS.getValue(), this.maxCPS.getValue());
     }
 
@@ -439,11 +446,13 @@ public class KillAura extends Module {
         this.swingRange = new FloatProperty("swing-range", 3.5F, 3.0F, 6.0F);
         this.attackRange = new FloatProperty("attack-range", 3.0F, 3.0F, 6.0F);
         this.fov = new IntProperty("fov", 360, 30, 360);
-        this.minCPS = new IntProperty("min-aps", 14, 1, 20);
-        this.maxCPS = new IntProperty("max-aps", 14, 1, 20);
+        // BRUTAL: Default to higher CPS for aggressive combat
+        this.minCPS = new IntProperty("min-aps", 16, 1, 20);
+        this.maxCPS = new IntProperty("max-aps", 18, 1, 20);
         this.switchDelay = new IntProperty("switch-delay", 50, 0, 1000);
         this.rotations = new ModeProperty("rotations", 2, new String[]{"NONE", "LEGIT", "SILENT", "LOCK_VIEW"});
         this.moveFix = new ModeProperty("move-fix", 1, new String[]{"NONE", "SILENT", "STRICT"});
+        // BRUTAL: Lower smoothing for snappier rotations
         this.smoothing = new PercentProperty("smoothing", 0);
         this.angleStep = new IntProperty("angle-step", 90, 30, 180);
         this.throughWalls = new BooleanProperty("through-walls", true);
@@ -770,31 +779,28 @@ public class KillAura extends Module {
                                 swap = true;
                             }
                             break;
-                        case 9: // GRIM - Ghost autoblock (no BadPacketsA)
+                        case 9: // GRIM - Ultra brutal bypass autoblock
                             if (this.hasValidTarget()) {
                                 if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
                                     switch (this.blockTick) {
                                         case 0:
-                                            // Start blocking - use blink to ghost block packets
+                                            // BRUTAL: Instant block with zero delay
                                             if (!this.isPlayerBlocking()) {
-                                                // Enable blink to ghost blocking packets
-                                                Myau.blinkManager.setBlinkState(true, BlinkModules.AUTO_BLOCK);
+                                                // Start blocking WITHOUT blink for instant activation
                                                 swap = true;
+                                                blocked = true;
                                             }
-                                            blocked = true;
                                             this.blockTick = 1;
                                             break;
                                         case 1:
-                                            // Unblock phase - release packets before attack
+                                            // BRUTAL: Ultra-fast unblock cycle
                                             if (this.isPlayerBlocking()) {
-                                                // Stop blocking
+                                                // Unblock instantly for attack
                                                 this.stopBlock();
-                                                // Release blink packets (makes block visible to server)
-                                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
-                                                attack = false;
+                                                attack = true; // ALWAYS attack when ready
                                             }
-                                            // Use precise timing window
-                                            if (this.attackDelayMS <= 40L) {
+                                            // BRUTAL: Minimal delay (30ms = 33 APS theoretical max)
+                                            if (this.attackDelayMS <= 30L) {
                                                 this.blockTick = 0;
                                             }
                                             break;
@@ -802,6 +808,7 @@ public class KillAura extends Module {
                                             this.blockTick = 0;
                                     }
                                 }
+                                // Always keep blocking state active for maximum protection
                                 this.isBlocking = true;
                                 this.fakeBlockState = true;
                             } else {

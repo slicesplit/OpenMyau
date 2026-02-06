@@ -1,17 +1,13 @@
 package myau.module.modules;
 
-import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
 import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
-import myau.property.properties.BooleanProperty;
-import myau.property.properties.FloatProperty;
 import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
-import myau.util.TimerUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.Packet;
@@ -20,42 +16,30 @@ import net.minecraft.network.play.client.C03PacketPlayer;
 import java.util.LinkedList;
 import java.util.Queue;
 
+/**
+ * FakeLag - Simulates lag by adding a delay to the packets you send to the server.
+ * 
+ * Mode:
+ * - Latency: Adds a constant amount of delay to your packets.
+ * - Dynamic: Dynamically adjusts your connection speed to give you advantages in combat.
+ * - Repel: Tunes FakeLag with the goal of keeping your opponent as far away from you as possible.
+ * 
+ * Transmission Offset: Higher values may make your connection more unstable.
+ * Delay: The amount of delay (in milliseconds) to wait before sending any given packet to the server.
+ */
 public class FakeLag extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    // Core Settings
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"LATENCY", "DYNAMIC", "REPEL", "GRIM"});
-    public final IntProperty delay = new IntProperty("delay", 100, 0, 1000);
-    public final FloatProperty transmissionOffset = new FloatProperty("transmission-offset", 0.5F, 0.0F, 1.0F);
-    public final IntProperty maxQueuedPackets = new IntProperty("max-queued", 3, 1, 15);
-    public final BooleanProperty smartRelease = new BooleanProperty("smart-release", true);
-    public final IntProperty minReleaseInterval = new IntProperty("min-release-interval", 45, 25, 100, () -> this.smartRelease.getValue());
-    public final BooleanProperty safeMode = new BooleanProperty("safe-mode", true);
+    // Mode Selection
+    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"Latency", "Dynamic", "Repel"});
     
-    // Grim Bypass Settings
-    public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true);
-    public final BooleanProperty transactionTiming = new BooleanProperty("transaction-timing", true, () -> this.grimBypass.getValue());
-    public final IntProperty maxPacketsPerSecond = new IntProperty("max-packets-per-second", 18, 16, 20, () -> this.grimBypass.getValue());
-    public final BooleanProperty respectPostOrder = new BooleanProperty("respect-post-order", true, () -> this.grimBypass.getValue());
-    public final BooleanProperty adaptiveTiming = new BooleanProperty("adaptive-timing", true, () -> this.grimBypass.getValue());
-    public final IntProperty minPacketInterval = new IntProperty("min-packet-interval", 45, 35, 55, () -> this.grimBypass.getValue() && this.adaptiveTiming.getValue());
+    // Settings
+    public final IntProperty delay = new IntProperty("delay", 100, 0, 500);
+    public final IntProperty transmissionOffset = new IntProperty("transmission-offset", 50, 0, 200);
 
     private final Queue<PacketData> delayedPackets = new LinkedList<>();
-    private final TimerUtil releaseTimer = new TimerUtil();
-    private long dynamicDelay = 0L;
-    private boolean inCombat = false;
     private long lastReleaseTime = 0L;
-    private long lastPacketTime = 0L;
-    private int ticksSinceLastPacket = 0;
-    private int packetsThisSecond = 0;
-    private long lastSecondReset = 0L;
-    private boolean shouldSkipNextPacket = false;
-    
-    // Grim bypass tracking
-    private int consecutiveDelays = 0;
-    private long lastPacketSentTime = 0L;
-    private boolean flyingPacketSent = false;
-    private int tickCounter = 0;
+    private EntityPlayer lastTarget = null;
 
     public FakeLag() {
         super("FakeLag", false);
@@ -64,57 +48,31 @@ public class FakeLag extends Module {
     @Override
     public void onEnabled() {
         delayedPackets.clear();
-        releaseTimer.reset();
-        dynamicDelay = 0L;
-        inCombat = false;
         lastReleaseTime = System.currentTimeMillis();
-        lastPacketTime = System.currentTimeMillis();
-        ticksSinceLastPacket = 0;
-        consecutiveDelays = 0;
-        lastPacketSentTime = 0L;
-        flyingPacketSent = false;
-        tickCounter = 0;
+        lastTarget = null;
     }
 
     @Override
     public void onDisabled() {
+        // Release all packets to prevent rubberband
         releaseAllPackets();
         delayedPackets.clear();
     }
 
     @EventTarget(Priority.HIGHEST)
-    public void onPacketSend(PacketEvent event) {
+    public void onPacket(PacketEvent event) {
         if (!this.isEnabled() || event.getType() != EventType.SEND || mc.thePlayer == null) {
             return;
         }
 
         Packet<?> packet = event.getPacket();
 
-        if (shouldDelayPacket(packet)) {
-            long currentTime = System.currentTimeMillis();
+        // Only delay movement packets
+        if (packet instanceof C03PacketPlayer) {
+            event.setCancelled(true);
+            
             long currentDelay = calculateDelay();
-            
-            if (this.safeMode.getValue()) {
-                if (delayedPackets.size() >= this.maxQueuedPackets.getValue()) {
-                    releaseOldestPacket();
-                }
-                
-                if (this.smartRelease.getValue() && currentTime - lastReleaseTime > this.minReleaseInterval.getValue()) {
-                    releaseOldestPacket();
-                    lastReleaseTime = currentTime;
-                }
-                
-                if (ticksSinceLastPacket > 3) {
-                    releaseAllPackets();
-                }
-            }
-            
-            if (currentDelay > 0 && delayedPackets.size() < this.maxQueuedPackets.getValue()) {
-                delayedPackets.add(new PacketData(packet, currentTime + currentDelay));
-                event.setCancelled(true);
-                lastPacketTime = currentTime;
-                ticksSinceLastPacket = 0;
-            }
+            delayedPackets.add(new PacketData(packet, System.currentTimeMillis() + currentDelay));
         }
     }
 
@@ -124,270 +82,103 @@ public class FakeLag extends Module {
             return;
         }
 
-        ticksSinceLastPacket++;
-        tickCounter++;
-        
-        // Grim bypass: Reset flying packet flag each tick
-        if (this.grimBypass.getValue()) {
-            flyingPacketSent = false;
-        }
-        
-        if (this.safeMode.getValue() && ticksSinceLastPacket > 3 && !delayedPackets.isEmpty()) {
-            releaseAllPackets();
-        }
-
-        updateCombatState();
+        // Process delayed packets
         processDelayedPackets();
     }
 
-    private boolean shouldDelayPacket(Packet<?> packet) {
-        if (!(packet instanceof C03PacketPlayer)) {
-            return false;
-        }
-
-        if (mc.thePlayer.ticksExisted < 100) {
-            return false;
-        }
-
-        // Grim bypass: Advanced packet filtering
-        if (this.grimBypass.getValue()) {
-            long currentTime = System.currentTimeMillis();
-            
-            if (currentTime - lastSecondReset > 1000) {
-                packetsThisSecond = 0;
-                lastSecondReset = currentTime;
-            }
-            
-            packetsThisSecond++;
-            
-            // Grim bypass: Respect max packets per second (configurable 16-20)
-            if (packetsThisSecond > this.maxPacketsPerSecond.getValue()) {
-                return false;
-            }
-            
-            // Grim bypass: Respect Post check order
-            if (this.respectPostOrder.getValue()) {
-                // Mark that we've seen a flying packet this tick
-                flyingPacketSent = true;
-                
-                // Don't delay first packet of tick (Grim expects this)
-                if (!flyingPacketSent) {
-                    return false;
-                }
-            }
-            
-            // Grim mode: Use sophisticated pattern
-            if (this.mode.getValue() == 3) {
-                // In Grim mode, let calculateGrimDelay handle the logic
-                return true;
-            }
-            
-            // Legacy Grim bypass logic for other modes
-            if (shouldSkipNextPacket) {
-                shouldSkipNextPacket = false;
-                return false;
-            }
-            
-            if (packetsThisSecond % 4 == 0) {
-                shouldSkipNextPacket = true;
-            }
-        }
-
-        return true;
-    }
+    // ==================== Mode Logic ====================
 
     private long calculateDelay() {
-        switch (this.mode.getValue()) {
-            case 0:
-                return calculateLatencyDelay();
-            case 1:
-                return calculateDynamicDelay();
-            case 2:
-                return calculateRepelDelay();
-            case 3:
-                return calculateGrimDelay();
-            default:
-                return 0L;
-        }
-    }
-    
-    private long calculateGrimDelay() {
-        // Grim mode: Hyper-optimized for GrimAC's Post check and transaction timing
-        long currentTime = System.currentTimeMillis();
-        
-        // Check packets per second limit
-        if (currentTime - lastSecondReset > 1000) {
-            packetsThisSecond = 0;
-            lastSecondReset = currentTime;
-        }
-        
-        // Grim bypass: Never exceed max packets per second
-        if (packetsThisSecond >= this.maxPacketsPerSecond.getValue()) {
-            consecutiveDelays = 0;
-            return 0L; // Must send immediately
-        }
-        
-        // Grim bypass: Adaptive timing based on combat state
-        if (this.adaptiveTiming.getValue()) {
-            long timeSinceLastPacket = currentTime - lastPacketSentTime;
-            
-            // Ensure minimum interval between packets
-            if (timeSinceLastPacket < this.minPacketInterval.getValue()) {
-                return 0L; // Too soon, don't delay
-            }
-            
-            // In combat: Use shorter, more controlled delays
-            if (inCombat) {
-                // Pattern: delay 2, send 1, delay 2, send 1 (mimics high ping)
-                if (consecutiveDelays < 2) {
-                    consecutiveDelays++;
-                    return 50L; // Short delay for combat
-                } else {
-                    consecutiveDelays = 0;
-                    return 0L; // Send immediately
-                }
-            } else {
-                // Out of combat: Can use longer delays
-                if (consecutiveDelays < 3) {
-                    consecutiveDelays++;
-                    return 75L;
-                } else {
-                    consecutiveDelays = 0;
-                    return 0L;
-                }
-            }
-        }
-        
-        // Grim bypass: Transaction timing (respects Grim's transaction order)
-        if (this.transactionTiming.getValue()) {
-            // Don't delay if we haven't sent a flying packet this tick
-            if (!flyingPacketSent) {
-                return 0L;
-            }
-            
-            // Use tick-based timing for more natural pattern
-            if (tickCounter % 3 == 0) {
-                return 60L;
-            }
-        }
-        
-        return 50L; // Default safe delay
-    }
-
-    private long calculateLatencyDelay() {
         long baseDelay = this.delay.getValue();
         
-        if (this.safeMode.getValue() && baseDelay > 150) {
-            baseDelay = 150;
+        switch (mode.getModeString()) {
+            case "Latency":
+                // Constant delay
+                return baseDelay;
+                
+            case "Dynamic":
+                // Dynamic delay based on combat state
+                return calculateDynamicDelay(baseDelay);
+                
+            case "Repel":
+                // Repel mode: Keep enemies away
+                return calculateRepelDelay(baseDelay);
+                
+            default:
+                return baseDelay;
         }
-        
-        if (this.grimBypass.getValue()) {
-            if (baseDelay > 100) {
-                baseDelay = 100;
-            }
-            
-            if (this.transactionTiming.getValue()) {
-                long timeSinceLastRelease = System.currentTimeMillis() - lastReleaseTime;
-                if (timeSinceLastRelease < 40) {
-                    baseDelay = Math.min(baseDelay, 40);
-                }
-            }
-        }
-        
-        double offset = this.transmissionOffset.getValue();
-        
-        if (offset > 0.01F) {
-            double variance = baseDelay * offset;
-            double randomOffset = (Math.random() - 0.5) * variance;
-            return (long) (baseDelay + randomOffset);
-        }
-        
-        return baseDelay;
     }
 
-    private long calculateDynamicDelay() {
-        if (!inCombat) {
-            return Math.min(50L, this.delay.getValue() / 2);
+    private long calculateDynamicDelay(long baseDelay) {
+        // Find closest target
+        EntityPlayer target = findClosestEnemy();
+        
+        if (target == null) {
+            return baseDelay / 2; // Less delay when not in combat
         }
-
-        EntityPlayer nearestEnemy = findNearestEnemy();
-        if (nearestEnemy == null) {
-            return this.delay.getValue() / 2;
-        }
-
-        double distance = mc.thePlayer.getDistanceToEntity(nearestEnemy);
-        double velocityTowards = calculateVelocityTowards(nearestEnemy);
-
-        long calculatedDelay;
-        if (velocityTowards > 0.1) {
-            calculatedDelay = (long) (this.delay.getValue() * 1.5);
-        } else if (distance < 3.0) {
-            calculatedDelay = this.delay.getValue();
+        
+        double distance = mc.thePlayer.getDistanceToEntity(target);
+        
+        // Increase delay when enemy is close (gives advantage)
+        if (distance < 3.0) {
+            return baseDelay + transmissionOffset.getValue();
+        } else if (distance < 5.0) {
+            return baseDelay;
         } else {
-            calculatedDelay = this.delay.getValue() / 2;
+            return baseDelay / 2;
+        }
+    }
+
+    private long calculateRepelDelay(long baseDelay) {
+        EntityPlayer target = findClosestEnemy();
+        
+        if (target == null) {
+            return baseDelay / 2;
         }
         
-        if (this.safeMode.getValue() && calculatedDelay > 150) {
-            calculatedDelay = 150;
-        }
+        double distance = mc.thePlayer.getDistanceToEntity(target);
+        double prevDistance = lastTarget != null ? mc.thePlayer.getDistanceToEntity(lastTarget) : distance;
         
-        return calculatedDelay;
+        lastTarget = target;
+        
+        // If enemy is getting closer, add more lag to push them back
+        if (distance < prevDistance) {
+            return baseDelay + (transmissionOffset.getValue() * 2);
+        } else {
+            return baseDelay;
+        }
     }
 
-    private long calculateRepelDelay() {
-        EntityPlayer nearestEnemy = findNearestEnemy();
-        if (nearestEnemy == null) {
-            return 0L;
-        }
-
-        double distance = mc.thePlayer.getDistanceToEntity(nearestEnemy);
-        double velocityTowards = calculateVelocityTowards(nearestEnemy);
-
-        if (velocityTowards < -0.05) {
-            return 0L;
-        }
-
-        if (distance < 4.0 && velocityTowards > 0.05) {
-            double repelFactor = 1.0 - (distance / 4.0);
-            long calculatedDelay = (long) (this.delay.getValue() * repelFactor);
-            
-            if (this.safeMode.getValue() && calculatedDelay > 150) {
-                calculatedDelay = 150;
-            }
-            
-            return calculatedDelay;
-        }
-
-        return 0L;
-    }
-
-    private void updateCombatState() {
-        EntityPlayer nearestEnemy = findNearestEnemy();
-        inCombat = nearestEnemy != null && mc.thePlayer.getDistanceToEntity(nearestEnemy) < 6.0;
-    }
+    // ==================== Packet Management ====================
 
     private void processDelayedPackets() {
         long currentTime = System.currentTimeMillis();
         
-        if (this.smartRelease.getValue() && currentTime - lastReleaseTime > this.minReleaseInterval.getValue() && !delayedPackets.isEmpty()) {
-            releaseOldestPacket();
-            lastReleaseTime = currentTime;
-        }
-        
+        // Release packets whose delay has expired
         while (!delayedPackets.isEmpty()) {
             PacketData packetData = delayedPackets.peek();
             
-            if (packetData == null) {
+            if (packetData != null && currentTime >= packetData.releaseTime) {
                 delayedPackets.poll();
-                continue;
-            }
-
-            if (currentTime >= packetData.releaseTime) {
-                delayedPackets.poll();
-                sendPacketDirect(packetData.packet);
-                lastReleaseTime = currentTime;
+                
+                if (mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
+                    try {
+                        mc.getNetHandler().getNetworkManager().sendPacket(packetData.packet);
+                    } catch (Exception e) {
+                        // Silently handle packet send errors
+                    }
+                }
             } else {
-                break;
+                break; // No more packets ready to send
+            }
+        }
+        
+        // Anti-rubberband: Force release old packets
+        if (!delayedPackets.isEmpty()) {
+            PacketData oldest = delayedPackets.peek();
+            if (oldest != null && currentTime - oldest.captureTime > 1000) {
+                // Packet is over 1 second old, force release to prevent disconnect
+                releaseAllPackets();
             }
         }
     }
@@ -395,109 +186,55 @@ public class FakeLag extends Module {
     private void releaseAllPackets() {
         while (!delayedPackets.isEmpty()) {
             PacketData packetData = delayedPackets.poll();
-            if (packetData != null) {
-                sendPacketDirect(packetData.packet);
+            
+            if (packetData != null && mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
+                try {
+                    mc.getNetHandler().getNetworkManager().sendPacket(packetData.packet);
+                } catch (Exception e) {
+                    // Silently handle
+                }
             }
         }
         lastReleaseTime = System.currentTimeMillis();
-        ticksSinceLastPacket = 0;
-    }
-    
-    private void releaseOldestPacket() {
-        if (!delayedPackets.isEmpty()) {
-            PacketData packetData = delayedPackets.poll();
-            if (packetData != null) {
-                sendPacketDirect(packetData.packet);
-            }
-        }
     }
 
-    private void sendPacketDirect(Packet<?> packet) {
-        if (mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
-            mc.getNetHandler().getNetworkManager().sendPacket(packet);
-            
-            // Grim bypass: Track when we actually send packets
-            if (this.grimBypass.getValue()) {
-                lastPacketSentTime = System.currentTimeMillis();
-            }
-        }
-    }
+    // ==================== Utility Methods ====================
 
-    private EntityPlayer findNearestEnemy() {
-        EntityPlayer nearest = null;
-        double nearestDistance = Double.MAX_VALUE;
-
+    private EntityPlayer findClosestEnemy() {
+        EntityPlayer closest = null;
+        double closestDistance = Double.MAX_VALUE;
+        
         for (EntityPlayer player : mc.theWorld.playerEntities) {
-            if (player == mc.thePlayer || player.isDead) {
+            if (player == mc.thePlayer || player.isDead || player.isInvisible()) {
                 continue;
             }
-
-            if (!isValidEnemy(player)) {
-                continue;
-            }
-
+            
             double distance = mc.thePlayer.getDistanceToEntity(player);
-            if (distance < nearestDistance) {
-                nearestDistance = distance;
-                nearest = player;
+            if (distance < closestDistance && distance < 20.0) {
+                closestDistance = distance;
+                closest = player;
             }
         }
-
-        return nearest;
+        
+        return closest;
     }
 
-    private boolean isValidEnemy(EntityPlayer player) {
-        if (player == mc.thePlayer || player.isDead || player.getHealth() <= 0) {
-            return false;
-        }
-
-        KillAura killAura = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
-        if (killAura != null && killAura.isEnabled()) {
-            if (!killAura.players.getValue()) {
-                return false;
-            }
-            if (killAura.teams.getValue() && player.isOnSameTeam(mc.thePlayer)) {
-                return false;
-            }
-        }
-
-        return mc.thePlayer.getDistanceToEntity(player) <= 10.0;
-    }
-
-    private double calculateVelocityTowards(EntityPlayer target) {
-        double deltaX = target.posX - mc.thePlayer.posX;
-        double deltaZ = target.posZ - mc.thePlayer.posZ;
-        double distance = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
-
-        if (distance < 0.01) {
-            return 0.0;
-        }
-
-        double normalizedX = deltaX / distance;
-        double normalizedZ = deltaZ / distance;
-
-        return (mc.thePlayer.motionX * normalizedX + mc.thePlayer.motionZ * normalizedZ);
-    }
-
-    public int getQueuedPackets() {
-        return delayedPackets.size();
-    }
-
-    @Override
-    public String[] getSuffix() {
-        if (this.mode.getValue() == 3) {
-            return new String[]{String.format("§7[§aGRIM §e%d§7]", delayedPackets.size())};
-        }
-        return new String[]{String.format("§7[§e%d§7]", delayedPackets.size())};
-    }
+    // ==================== Data Classes ====================
 
     private static class PacketData {
         final Packet<?> packet;
+        final long captureTime;
         final long releaseTime;
 
         PacketData(Packet<?> packet, long releaseTime) {
             this.packet = packet;
+            this.captureTime = System.currentTimeMillis();
             this.releaseTime = releaseTime;
         }
+    }
+    
+    @Override
+    public String[] getSuffix() {
+        return new String[]{String.format("%s (%dms)", mode.getModeString(), delay.getValue())};
     }
 }

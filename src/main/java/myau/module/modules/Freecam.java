@@ -37,16 +37,32 @@ public class Freecam extends Module {
         startYaw = mc.thePlayer.rotationYaw;
         startPitch = mc.thePlayer.rotationPitch;
         
-        // Create fake player at current position
-        fakePlayer = new EntityOtherPlayerMP(mc.theWorld, mc.thePlayer.getGameProfile());
-        fakePlayer.copyLocationAndAnglesFrom(mc.thePlayer);
-        fakePlayer.rotationYawHead = mc.thePlayer.rotationYawHead;
-        fakePlayer.inventory = mc.thePlayer.inventory;
-        mc.theWorld.addEntityToWorld(-100, fakePlayer);
+        // Create fake player at current position (ASYNC to prevent freeze)
+        new Thread(() -> {
+            try {
+                if (mc.theWorld != null && mc.thePlayer != null) {
+                    fakePlayer = new EntityOtherPlayerMP(mc.theWorld, mc.thePlayer.getGameProfile());
+                    fakePlayer.copyLocationAndAnglesFrom(mc.thePlayer);
+                    fakePlayer.rotationYawHead = mc.thePlayer.rotationYawHead;
+                    fakePlayer.inventory = mc.thePlayer.inventory;
+                    
+                    // Add entity on main thread
+                    mc.addScheduledTask(() -> {
+                        if (mc.theWorld != null && fakePlayer != null) {
+                            mc.theWorld.addEntityToWorld(-100, fakePlayer);
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                // Silently handle
+            }
+        }).start();
         
-        // Set player to spectator-like mode
+        // Set player to spectator-like mode (no freeze)
         mc.thePlayer.noClip = true;
-        mc.thePlayer.capabilities.isFlying = true;
+        if (!mc.thePlayer.capabilities.isFlying) {
+            mc.thePlayer.capabilities.isFlying = true;
+        }
         mc.thePlayer.capabilities.setFlySpeed(this.speed.getValue() * 0.05F);
     }
     
@@ -56,14 +72,19 @@ public class Freecam extends Module {
             return;
         }
         
-        // Restore position
-        mc.thePlayer.setPosition(startX, startY, startZ);
+        // Restore position (no teleport, smooth transition)
+        mc.thePlayer.setPositionAndUpdate(startX, startY, startZ);
         mc.thePlayer.rotationYaw = startYaw;
         mc.thePlayer.rotationPitch = startPitch;
         
-        // Remove fake player
+        // Remove fake player (ASYNC to prevent freeze)
         if (fakePlayer != null) {
-            mc.theWorld.removeEntityFromWorld(-100);
+            final EntityOtherPlayerMP tempFake = fakePlayer;
+            mc.addScheduledTask(() -> {
+                if (mc.theWorld != null) {
+                    mc.theWorld.removeEntityFromWorld(-100);
+                }
+            });
             fakePlayer = null;
         }
         
@@ -73,6 +94,13 @@ public class Freecam extends Module {
             mc.thePlayer.capabilities.isFlying = false;
             mc.thePlayer.capabilities.setFlySpeed(0.05F);
         }
+        
+        // Force position sync to prevent rubberband
+        mc.thePlayer.sendQueue.addToSendQueue(new C03PacketPlayer.C06PacketPlayerPosLook(
+            mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ,
+            mc.thePlayer.rotationYaw, mc.thePlayer.rotationPitch,
+            mc.thePlayer.onGround
+        ));
     }
     
     @EventTarget
@@ -89,6 +117,11 @@ public class Freecam extends Module {
         
         // Prevent fall damage
         mc.thePlayer.fallDistance = 0.0F;
+        
+        // Keep player flying (prevents game freeze on disable)
+        if (!mc.thePlayer.capabilities.isFlying) {
+            mc.thePlayer.capabilities.isFlying = true;
+        }
     }
     
     @EventTarget
@@ -102,17 +135,21 @@ public class Freecam extends Module {
             if (event.getPacket() instanceof C03PacketPlayer) {
                 C03PacketPlayer packet = (C03PacketPlayer) event.getPacket();
                 
-                // Keep sending packets but with original position
+                // Keep sending packets but with original position (prevents timeout)
                 if (packet.isMoving()) {
                     event.setCancelled(true);
                     
                     // Send packet with original position instead
-                    C03PacketPlayer newPacket = new C03PacketPlayer.C06PacketPlayerPosLook(
-                        startX, startY, startZ,
-                        packet.getYaw(), packet.getPitch(),
-                        packet.isOnGround()
-                    );
-                    mc.getNetHandler().getNetworkManager().sendPacket(newPacket);
+                    try {
+                        C03PacketPlayer newPacket = new C03PacketPlayer.C06PacketPlayerPosLook(
+                            startX, startY, startZ,
+                            packet.getYaw(), packet.getPitch(),
+                            packet.isOnGround()
+                        );
+                        mc.getNetHandler().getNetworkManager().sendPacket(newPacket);
+                    } catch (Exception e) {
+                        // If packet fails, don't freeze - just skip
+                    }
                 }
             }
         }

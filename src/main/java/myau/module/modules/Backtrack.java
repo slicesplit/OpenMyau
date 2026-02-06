@@ -1,65 +1,68 @@
 package myau.module.modules;
 
-import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
-import myau.event.types.Priority;
 import myau.events.*;
 import myau.module.Module;
 import myau.property.properties.*;
 import myau.mixin.IAccessorRenderManager;
 import myau.util.RenderUtil;
-import myau.util.RotationUtil;
 import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.entity.EntityOtherPlayerMP;
-import net.minecraft.client.renderer.GlStateManager;
-import net.minecraft.client.renderer.entity.RenderManager;
-import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.network.Packet;
-import net.minecraft.network.play.client.C03PacketPlayer;
-import net.minecraft.network.play.server.S14PacketEntity;
 import net.minecraft.network.play.server.S18PacketEntityTeleport;
 import net.minecraft.util.AxisAlignedBB;
-import org.lwjgl.opengl.GL11;
+import net.minecraft.util.MathHelper;
+import net.minecraft.util.Vec3;
 
 import java.awt.*;
 import java.util.*;
-import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * BackTrack - Allows you to hit players at their previous positions.
+ * 
+ * Mode Options:
+ * - Manual: Allows you to directly hit players at their previous positions, without modifying your connection.
+ *   - Render Previous Ticks: Renders opponent's previous positions with a "shadow" of their player avatar.
+ *   - Ticks: How many previous positions should be made available for attacking.
+ * 
+ * - Lag Based: Modifies your connection in a way that allows you to hit players at their previous positions,
+ *   when it is advantageous to you.
+ *   - Render Server Pos: Renders the opponent's last known server side position, while your connection is being controlled.
+ *   - Color: What color to shade the opponent's "shadow" with.
+ *   - Latency: The amount of lag added to your connection at advantageous moments.
+ */
 public class Backtrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
+    
+    // Grim bypass constants (directly from Grim source code)
+    private static final double GRIM_MAX_REACH = 3.0; // Base reach distance
+    private static final double GRIM_REACH_THRESHOLD = 0.0005; // Threshold for reach checks
+    private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // Extra hitbox for 1.7-1.8 clients
+    private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Movement uncertainty
+    private static final double SAFE_REACH_DISTANCE = 2.97; // Stay safely under 3.0
 
-    // Core Settings
-    public final IntProperty ticks = new IntProperty("ticks", 6, 1, 15);
-    public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true);
+    // Mode Selection
+    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"Manual", "Lag Based"});
+    
+    // Manual Mode Settings
+    public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true, () -> mode.getModeString().equals("Manual"));
+    public final IntProperty ticks = new IntProperty("ticks", 6, 1, 15, () -> mode.getModeString().equals("Manual"));
+    
+    // Lag Based Mode Settings
+    public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true, () -> mode.getModeString().equals("Lag Based"));
+    public final IntProperty latency = new IntProperty("latency", 100, 50, 500, () -> mode.getModeString().equals("Lag Based"));
+    
+    // Shared Settings
     public final ColorProperty color = new ColorProperty("color", 0xFF0000);
-    
-    // Ultimate Closet Bypass Settings
-    public final BooleanProperty grimBypass = new BooleanProperty("grim-bypass", true);
-    public final BooleanProperty closetMode = new BooleanProperty("closet-mode", true, () -> this.grimBypass.getValue());
-    public final FloatProperty maxReachDistance = new FloatProperty("max-reach-distance", 2.95F, 2.8F, 3.0F, () -> this.grimBypass.getValue());
-    public final BooleanProperty smartPositionSelect = new BooleanProperty("smart-position-select", true, () -> this.grimBypass.getValue());
-    public final BooleanProperty respectPing = new BooleanProperty("respect-ping", true, () -> this.grimBypass.getValue());
-    public final IntProperty maxBacktrackTime = new IntProperty("max-backtrack-time", 150, 50, 300, () -> this.grimBypass.getValue() && this.respectPing.getValue());
-    public final BooleanProperty onlyOnAdvantage = new BooleanProperty("only-on-advantage", true, () -> this.grimBypass.getValue());
-    public final FloatProperty minAdvantage = new FloatProperty("min-advantage", 0.5F, 0.2F, 1.0F, () -> this.grimBypass.getValue() && this.onlyOnAdvantage.getValue());
-    public final BooleanProperty hitboxCheck = new BooleanProperty("hitbox-check", true, () -> this.grimBypass.getValue());
-    public final BooleanProperty raytraceValidation = new BooleanProperty("raytrace-validation", true, () -> this.grimBypass.getValue());
-    public final IntProperty cooldownHits = new IntProperty("cooldown-hits", 3, 1, 10, () -> this.grimBypass.getValue());
 
+    // Data Storage
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();
-    private final Map<Integer, Long> lastHitTimes = new ConcurrentHashMap<>();
-    private final Map<Integer, Integer> consecutiveHits = new ConcurrentHashMap<>();
-    private int playerPing = 0;
-    
-    // Closet mode state (ultimate bypass)
-    private boolean closetActive = false;
-    private EntityPlayer closetTarget = null;
-    private PositionData closetPosition = null;
-    private long lastBacktrackUse = 0L;
+    private final Map<Integer, PositionData> serverPositions = new ConcurrentHashMap<>();
+    private final Queue<PacketData> delayedPackets = new LinkedList<>();
+    private boolean isLagging = false;
+    private long lagStartTime = 0L;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -68,36 +71,22 @@ public class Backtrack extends Module {
     @Override
     public void onEnabled() {
         entityPositions.clear();
-        lastHitTimes.clear();
-        consecutiveHits.clear();
-        updatePlayerPing();
-        closetActive = false;
-        closetTarget = null;
-        closetPosition = null;
-        lastBacktrackUse = 0L;
+        serverPositions.clear();
+        delayedPackets.clear();
+        isLagging = false;
+        lagStartTime = 0L;
     }
 
     @Override
     public void onDisabled() {
         entityPositions.clear();
-        lastHitTimes.clear();
-        consecutiveHits.clear();
+        serverPositions.clear();
         
-        // Reset closet target if active
-        if (closetActive && closetTarget != null && closetPosition != null) {
-            restoreEntityPosition(closetTarget, closetPosition);
-        }
-        closetActive = false;
-        closetTarget = null;
-        closetPosition = null;
+        // Release all delayed packets
+        releaseAllPackets();
+        isLagging = false;
+        lagStartTime = 0L;
     }
-    
-    private void updatePlayerPing() {
-        if (mc.getNetHandler() != null && mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()) != null) {
-            playerPing = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()).getResponseTime();
-        }
-    }
-
 
     @EventTarget
     public void onTick(TickEvent event) {
@@ -105,59 +94,57 @@ public class Backtrack extends Module {
             return;
         }
 
-        // Update ping for Grim bypass calculations
-        if (this.grimBypass.getValue() && mc.thePlayer.ticksExisted % 20 == 0) {
-            updatePlayerPing();
+        // Manual Mode: Track position history
+        if (mode.getModeString().equals("Manual")) {
+            for (EntityPlayer player : mc.theWorld.playerEntities) {
+                if (player == mc.thePlayer || player.isDead) {
+                    continue;
+                }
+
+                LinkedList<PositionData> positions = entityPositions.computeIfAbsent(player.getEntityId(), k -> new LinkedList<>());
+                
+                positions.addFirst(new PositionData(
+                    player.posX, player.posY, player.posZ,
+                    System.currentTimeMillis()
+                ));
+
+                // Limit to specified ticks
+                while (positions.size() > ticks.getValue()) {
+                    positions.removeLast();
+                }
+            }
+
+            entityPositions.keySet().removeIf(id -> mc.theWorld.getEntityByID(id) == null);
         }
-
-        long currentTime = System.currentTimeMillis();
-
-        for (EntityPlayer player : mc.theWorld.playerEntities) {
-            if (player == mc.thePlayer || player.isDead) {
-                continue;
-            }
-
-            LinkedList<PositionData> positions = entityPositions.computeIfAbsent(player.getEntityId(), k -> new LinkedList<>());
-            
-            positions.addFirst(new PositionData(
-                player.posX, player.posY, player.posZ,
-                player.rotationYaw, player.rotationPitch,
-                player.rotationYawHead, player.limbSwing, player.limbSwingAmount,
-                currentTime
-            ));
-
-            // Grim bypass: Limit backtrack history based on ping and settings
-            int maxTicks = this.ticks.getValue();
-            if (this.grimBypass.getValue() && this.respectPing.getValue()) {
-                // Calculate safe backtrack window based on ping
-                int pingBasedLimit = Math.min((int) Math.ceil(playerPing / 50.0), maxTicks);
-                maxTicks = Math.max(3, pingBasedLimit);
-            }
-
-            while (positions.size() > maxTicks) {
-                positions.removeLast();
-            }
-            
-            // Grim bypass: Remove positions older than max backtrack time
-            if (this.grimBypass.getValue() && this.respectPing.getValue()) {
-                positions.removeIf(pos -> currentTime - pos.timestamp > this.maxBacktrackTime.getValue());
-            }
-        }
-
-        entityPositions.keySet().removeIf(id -> mc.theWorld.getEntityByID(id) == null);
         
-        // Clean old hit times
-        lastHitTimes.entrySet().removeIf(entry -> currentTime - entry.getValue() > 1000);
+        // Lag Based Mode: Process delayed packets
+        if (mode.getModeString().equals("Lag Based")) {
+            processDelayedPackets();
+        }
     }
 
     @EventTarget
-    public void onRender3D(Render3DEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null || mc.theWorld == null) {
+    public void onPacket(PacketEvent event) {
+        if (!this.isEnabled() || mc.thePlayer == null || !mode.getModeString().equals("Lag Based")) {
             return;
         }
 
-        if (this.renderPreviousTicks.getValue()) {
-            renderHistoricalPositions();
+        // Only process incoming entity movement packets
+        if (event.getType() == EventType.RECEIVE) {
+            if (event.getPacket() instanceof S18PacketEntityTeleport) {
+                // Store server-side positions from teleport packets
+                S18PacketEntityTeleport packet = (S18PacketEntityTeleport) event.getPacket();
+                serverPositions.put(packet.getEntityId(), new PositionData(
+                    packet.getX() / 32.0, packet.getY() / 32.0, packet.getZ() / 32.0,
+                    System.currentTimeMillis()
+                ));
+                
+                // Delay packets when lagging
+                if (isLagging) {
+                    delayedPackets.add(new PacketData(event.getPacket(), System.currentTimeMillis()));
+                    event.setCancelled(true);
+                }
+            }
         }
     }
 
@@ -169,272 +156,103 @@ public class Backtrack extends Module {
 
         if (event.getTarget() instanceof EntityPlayer) {
             EntityPlayer target = (EntityPlayer) event.getTarget();
-            LinkedList<PositionData> positions = entityPositions.get(target.getEntityId());
             
-            if (positions != null && !positions.isEmpty()) {
-                PositionData backtrackPos = selectOptimalPosition(positions, target);
-                if (backtrackPos != null && shouldUseBacktrack(target, backtrackPos)) {
-                    PositionData originalPos = positions.getFirst();
-                    
-                    // Apply backtrack position
-                    applyBacktrackPosition(target, backtrackPos);
-                    
-                    // Closet mode: Restore immediately after attack
-                    if (this.grimBypass.getValue() && this.closetMode.getValue()) {
-                        // Restore on next tick (after attack packet sent)
+            if (mode.getModeString().equals("Manual")) {
+                // Manual Mode: Apply backtrack position
+                LinkedList<PositionData> positions = entityPositions.get(target.getEntityId());
+                
+                if (positions != null && !positions.isEmpty()) {
+                    PositionData bestPos = selectBestPosition(positions, target);
+                    if (bestPos != null) {
+                        applyBacktrackPosition(target, bestPos);
+                        
+                        // Restore on next tick
                         new Thread(() -> {
                             try {
-                                Thread.sleep(1); // 1ms delay
-                                if (target != null && !target.isDead) {
-                                    restoreEntityPosition(target, originalPos);
-                                    closetActive = false;
-                                    closetTarget = null;
-                                    closetPosition = null;
+                                Thread.sleep(1);
+                                if (target != null && !target.isDead && !positions.isEmpty()) {
+                                    PositionData currentPos = positions.getFirst();
+                                    applyBacktrackPosition(target, currentPos);
                                 }
                             } catch (InterruptedException ignored) {}
                         }).start();
                     }
                 }
+            } else if (mode.getModeString().equals("Lag Based")) {
+                // Lag Based Mode: Start lagging to create advantage
+                double distance = mc.thePlayer.getDistanceToEntity(target);
+                
+                // Only lag if target is moving away or at edge of reach
+                if (distance > 2.5 && !isLagging) {
+                    startLagging();
+                }
             }
         }
     }
 
+    @EventTarget
+    public void onRender3D(Render3DEvent event) {
+        if (!this.isEnabled() || mc.thePlayer == null || mc.theWorld == null) {
+            return;
+        }
 
-    private PositionData selectOptimalPosition(LinkedList<PositionData> positions, EntityPlayer target) {
+        if (mode.getModeString().equals("Manual") && renderPreviousTicks.getValue()) {
+            renderManualModePositions();
+        } else if (mode.getModeString().equals("Lag Based") && renderServerPos.getValue()) {
+            renderLagBasedPositions();
+        }
+    }
+
+    // ==================== Manual Mode Methods ====================
+
+    private PositionData selectBestPosition(LinkedList<PositionData> positions, EntityPlayer target) {
         if (positions.isEmpty()) {
             return null;
         }
 
         double currentDistance = mc.thePlayer.getDistanceToEntity(target);
-        double maxReach = this.grimBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
-        
         PositionData bestPosition = null;
         double bestDistance = currentDistance;
-        long currentTime = System.currentTimeMillis();
-        
-        // Ultimate Closet Mode: Ultra-safe position selection
-        if (this.grimBypass.getValue() && this.closetMode.getValue() && this.smartPositionSelect.getValue()) {
-            // Prioritize positions that are:
-            // 1. Within safe reach (max 3.0)
-            // 2. Not too old (respect ping)
-            // 3. Provide clear advantage
+
+        for (PositionData pos : positions) {
+            // Use Grim's exact distance calculation method (eye to closest point on hitbox)
+            double distance = calculateGrimReachDistance(pos, target);
             
-            for (PositionData pos : positions) {
-                // Skip positions that are too old (shorter window for closet)
-                if (this.respectPing.getValue() && currentTime - pos.timestamp > this.maxBacktrackTime.getValue()) {
-                    continue;
-                }
-                
-                // Calculate exact distance to hitbox center (like Grim does)
-                double backtrackDistance = calculateExactDistance(pos, target);
-                
-                // Closet mode: NEVER exceed 2.95 (stay well under 3.0)
-                if (backtrackDistance > maxReach) {
-                    continue;
-                }
-                
-                // Raytrace validation: Ensure we can actually hit the hitbox
-                if (this.raytraceValidation.getValue() && !canRaytraceHit(pos, target)) {
-                    continue;
-                }
-                
-                // Hitbox check: Validate we're aiming at valid part
-                if (this.hitboxCheck.getValue() && !isValidHitboxTarget(pos, target)) {
-                    continue;
-                }
-                
-                // Closet: Only use backtrack if advantage is significant
-                if (this.onlyOnAdvantage.getValue()) {
-                    double advantage = currentDistance - backtrackDistance;
-                    if (advantage < this.minAdvantage.getValue()) {
-                        continue; // Not enough advantage
-                    }
-                }
-                
-                // Check if this position is better
-                if (backtrackDistance < currentDistance && backtrackDistance < bestDistance) {
-                    // Prefer more recent positions if distance is similar
-                    if (bestPosition != null) {
-                        double distanceDiff = Math.abs(backtrackDistance - bestDistance);
-                        // Closer time preference for closet mode
-                        if (distanceDiff < 0.1 && pos.timestamp > bestPosition.timestamp) {
-                            bestDistance = backtrackDistance;
-                            bestPosition = pos;
-                        } else if (backtrackDistance < bestDistance) {
-                            bestDistance = backtrackDistance;
-                            bestPosition = pos;
-                        }
-                    } else {
-                        bestDistance = backtrackDistance;
-                        bestPosition = pos;
-                    }
-                }
+            // GRIM BYPASS: Only select positions that pass all Grim checks
+            if (!isPositionSafeForGrim(pos, target, distance)) {
+                continue; // Skip positions that would flag
             }
-        } else {
-            // Simple selection without Grim bypass
-            for (PositionData pos : positions) {
-                double backtrackDistance = Math.sqrt(mc.thePlayer.getDistanceSq(pos.x, pos.y, pos.z));
-                
-                if (backtrackDistance < currentDistance && backtrackDistance <= maxReach) {
-                    if (backtrackDistance < bestDistance) {
-                        bestDistance = backtrackDistance;
-                        bestPosition = pos;
-                    }
-                }
+            
+            if (distance < currentDistance && distance <= SAFE_REACH_DISTANCE && distance < bestDistance) {
+                bestDistance = distance;
+                bestPosition = pos;
             }
         }
-        
+
         return bestPosition;
     }
-
-    private boolean shouldUseBacktrack(EntityPlayer target, PositionData backtrackPos) {
-        double currentDist = mc.thePlayer.getDistanceToEntity(target);
-        double backtrackDist = calculateExactDistance(backtrackPos, target);
-        double maxReach = this.grimBypass.getValue() ? this.maxReachDistance.getValue() : 3.5;
-        
-        if (backtrackDist >= currentDist) {
-            return false;
-        }
-        
-        // Closet mode: NEVER exceed max reach (default 2.95)
-        if (backtrackDist > maxReach) {
-            return false;
-        }
-        
-        if (this.grimBypass.getValue() && this.closetMode.getValue()) {
-            // Check hit cooldown pattern (closet mode)
-            Integer hits = consecutiveHits.getOrDefault(target.getEntityId(), 0);
-            if (hits >= this.cooldownHits.getValue()) {
-                // Force cooldown every N hits
-                Long lastHitTime = lastHitTimes.get(target.getEntityId());
-                if (lastHitTime != null && System.currentTimeMillis() - lastHitTime < 300) {
-                    return false; // Skip this hit
-                } else {
-                    // Reset counter after cooldown
-                    consecutiveHits.put(target.getEntityId(), 0);
-                }
-            }
-            
-            // Global backtrack cooldown (don't spam backtrack)
-            if (System.currentTimeMillis() - lastBacktrackUse < 50) {
-                return false;
-            }
-            
-            // Check vertical distance
-            double eyeHeight = mc.thePlayer.getEyeHeight();
-            double playerEyeY = mc.thePlayer.posY + eyeHeight;
-            double targetCenterY = backtrackPos.y + (target.height / 2.0);
-            double verticalDist = Math.abs(playerEyeY - targetCenterY);
-            
-            if (verticalDist > 2.0) {
-                return false;
-            }
-            
-            // Only use if position is recent
-            if (this.respectPing.getValue()) {
-                long timeSincePosition = System.currentTimeMillis() - backtrackPos.timestamp;
-                if (timeSincePosition > this.maxBacktrackTime.getValue()) {
-                    return false;
-                }
-            }
-            
-            // Check if advantage is significant
-            if (this.onlyOnAdvantage.getValue()) {
-                double advantage = currentDist - backtrackDist;
-                if (advantage < this.minAdvantage.getValue()) {
-                    return false;
-                }
-            }
-            
-            // Raytrace validation
-            if (this.raytraceValidation.getValue() && !canRaytraceHit(backtrackPos, target)) {
-                return false;
-            }
-            
-            // Hitbox validation
-            if (this.hitboxCheck.getValue() && !isValidHitboxTarget(backtrackPos, target)) {
-                return false;
-            }
-        }
-        
-        return true;
-    }
-
-    private void applyBacktrackPosition(EntityPlayer target, PositionData pos) {
-        // Closet mode: Only apply client-side, never send to server
-        if (this.grimBypass.getValue() && this.closetMode.getValue()) {
-            // Store original position for restoration
-            if (!closetActive || closetTarget != target) {
-                closetTarget = target;
-                closetPosition = new PositionData(
-                    target.posX, target.posY, target.posZ,
-                    target.rotationYaw, target.rotationPitch,
-                    target.rotationYawHead, target.limbSwing, target.limbSwingAmount,
-                    System.currentTimeMillis()
-                );
-                closetActive = true;
-            }
-            
-            // Apply backtrack position ONLY client-side
-            target.posX = pos.x;
-            target.posY = pos.y;
-            target.posZ = pos.z;
-            target.lastTickPosX = pos.x;
-            target.lastTickPosY = pos.y;
-            target.lastTickPosZ = pos.z;
-            target.rotationYaw = pos.yaw;
-            target.rotationPitch = pos.pitch;
-            target.rotationYawHead = pos.headYaw;
-            
-            // Update interpolation
-            target.serverPosX = (int)(pos.x * 32.0);
-            target.serverPosY = (int)(pos.y * 32.0);
-            target.serverPosZ = (int)(pos.z * 32.0);
-            
-        } else {
-            // Direct position change for non-closet mode
-            target.setPosition(pos.x, pos.y, pos.z);
-            target.rotationYaw = pos.yaw;
-            target.rotationPitch = pos.pitch;
-            target.rotationYawHead = pos.headYaw;
-        }
-        
-        // Track this hit
-        lastHitTimes.put(target.getEntityId(), System.currentTimeMillis());
-        lastBacktrackUse = System.currentTimeMillis();
-        
-        // Update consecutive hit counter
-        int hits = consecutiveHits.getOrDefault(target.getEntityId(), 0);
-        consecutiveHits.put(target.getEntityId(), hits + 1);
-    }
     
-    private void restoreEntityPosition(EntityPlayer target, PositionData originalPos) {
-        // Restore entity to original position
-        target.posX = originalPos.x;
-        target.posY = originalPos.y;
-        target.posZ = originalPos.z;
-        target.lastTickPosX = originalPos.x;
-        target.lastTickPosY = originalPos.y;
-        target.lastTickPosZ = originalPos.z;
-        target.rotationYaw = originalPos.yaw;
-        target.rotationPitch = originalPos.pitch;
-        target.rotationYawHead = originalPos.headYaw;
-        
-        target.serverPosX = (int)(originalPos.x * 32.0);
-        target.serverPosY = (int)(originalPos.y * 32.0);
-        target.serverPosZ = (int)(originalPos.z * 32.0);
-    }
-    
-    // Calculate exact distance like Grim does (from eye to hitbox)
-    private double calculateExactDistance(PositionData pos, EntityPlayer target) {
+    /**
+     * Calculate reach distance exactly like Grim does (from eye to closest point on hitbox)
+     * This replicates ReachUtils.getMinReachToBox from Grim source
+     */
+    private double calculateGrimReachDistance(PositionData pos, EntityPlayer target) {
         double eyeX = mc.thePlayer.posX;
         double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
         double eyeZ = mc.thePlayer.posZ;
         
-        // Get closest point on hitbox
-        double closestX = Math.max(pos.x - 0.3, Math.min(eyeX, pos.x + 0.3));
-        double closestY = Math.max(pos.y, Math.min(eyeY, pos.y + target.height));
-        double closestZ = Math.max(pos.z - 0.3, Math.min(eyeZ, pos.z + 0.3));
+        // Get closest point on target's hitbox (standard player hitbox: 0.6 width, 1.8 height)
+        double targetMinX = pos.x - 0.3;
+        double targetMaxX = pos.x + 0.3;
+        double targetMinY = pos.y;
+        double targetMaxY = pos.y + 1.8;
+        double targetMinZ = pos.z - 0.3;
+        double targetMaxZ = pos.z + 0.3;
+        
+        // Clamp eye position to hitbox bounds to find closest point
+        double closestX = MathHelper.clamp_double(eyeX, targetMinX, targetMaxX);
+        double closestY = MathHelper.clamp_double(eyeY, targetMinY, targetMaxY);
+        double closestZ = MathHelper.clamp_double(eyeZ, targetMinZ, targetMaxZ);
         
         // Calculate distance from eye to closest point
         double deltaX = eyeX - closestX;
@@ -444,8 +262,51 @@ public class Backtrack extends Module {
         return Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
     }
     
-    // Raytrace validation (mimics Grim's raytrace check)
-    private boolean canRaytraceHit(PositionData pos, EntityPlayer target) {
+    /**
+     * Validates that a backtrack position will pass all Grim AC checks
+     * Checks: Reach, Hitbox, BadPacketsT (interaction vector)
+     */
+    private boolean isPositionSafeForGrim(PositionData pos, EntityPlayer target, double reachDistance) {
+        // 1. REACH CHECK: Must be under safe distance with all margins
+        double maxAllowedReach = GRIM_MAX_REACH - GRIM_REACH_THRESHOLD - GRIM_MOVEMENT_THRESHOLD;
+        if (reachDistance > maxAllowedReach) {
+            return false; // Would flag Reach check
+        }
+        
+        // 2. HITBOX CHECK: Validate we can actually hit this position with our look angle
+        if (!canRaytraceHitGrim(pos, target)) {
+            return false; // Would flag Hitbox check
+        }
+        
+        // 3. BADPACKETS CHECK: Ensure interaction vector is valid
+        // BadPacketsT checks the relative position vector is within bounds
+        double relativeX = pos.x - mc.thePlayer.posX;
+        double relativeY = pos.y - mc.thePlayer.posY;
+        double relativeZ = pos.z - mc.thePlayer.posZ;
+        
+        // Normalize to entity-relative coordinates (what Grim expects)
+        double targetRelativeY = relativeY - pos.y; // Should be within [0, 1.8]
+        
+        if (targetRelativeY < -0.1 || targetRelativeY > 1.9) {
+            return false; // Would flag BadPacketsT
+        }
+        
+        // 4. Ensure we're not attacking from an impossible angle
+        double horizontalDistance = Math.sqrt(relativeX * relativeX + relativeZ * relativeZ);
+        double verticalDistance = Math.abs(mc.thePlayer.posY + mc.thePlayer.getEyeHeight() - (pos.y + 0.9));
+        
+        if (verticalDistance > 2.5) {
+            return false; // Impossible vertical angle
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Check if we can raytrace to the hitbox from our current look angle
+     * Replicates Grim's raytrace validation
+     */
+    private boolean canRaytraceHitGrim(PositionData pos, EntityPlayer target) {
         double eyeX = mc.thePlayer.posX;
         double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
         double eyeZ = mc.thePlayer.posZ;
@@ -454,92 +315,41 @@ public class Backtrack extends Module {
         float yaw = mc.thePlayer.rotationYaw;
         float pitch = mc.thePlayer.rotationPitch;
         
-        double yawRad = Math.toRadians(-yaw);
-        double pitchRad = Math.toRadians(-pitch);
+        Vec3 lookVec = mc.thePlayer.getLookVec();
         
-        double vecX = Math.sin(yawRad) * Math.cos(pitchRad);
-        double vecY = Math.sin(pitchRad);
-        double vecZ = Math.cos(yawRad) * Math.cos(pitchRad);
+        // Extend look vector to max reach distance
+        double distance = GRIM_MAX_REACH + 3.0; // Grim uses reach + 3
+        Vec3 endVec = new Vec3(
+            eyeX + lookVec.xCoord * distance,
+            eyeY + lookVec.yCoord * distance,
+            eyeZ + lookVec.zCoord * distance
+        );
         
-        // Extend vector to reach distance
-        double reachDist = this.maxReachDistance.getValue();
-        double targetX = eyeX + vecX * reachDist;
-        double targetY = eyeY + vecY * reachDist;
-        double targetZ = eyeZ + vecZ * reachDist;
+        // Create target hitbox
+        AxisAlignedBB targetBox = new AxisAlignedBB(
+            pos.x - 0.3, pos.y, pos.z - 0.3,
+            pos.x + 0.3, pos.y + 1.8, pos.z + 0.3
+        );
         
-        // Check if ray intersects with entity hitbox
-        double minX = pos.x - 0.3;
-        double minY = pos.y;
-        double minZ = pos.z - 0.3;
-        double maxX = pos.x + 0.3;
-        double maxY = pos.y + target.height;
-        double maxZ = pos.z + 0.3;
-        
-        // Simple AABB raytrace
-        return rayIntersectsAABB(eyeX, eyeY, eyeZ, targetX, targetY, targetZ, minX, minY, minZ, maxX, maxY, maxZ);
-    }
-    
-    // Check if hitbox target is valid
-    private boolean isValidHitboxTarget(PositionData pos, EntityPlayer target) {
-        // Check vertical distance (Grim checks this)
-        double eyeY = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
-        double targetCenterY = pos.y + (target.height / 2.0);
-        double verticalDist = Math.abs(eyeY - targetCenterY);
-        
-        // Reject if too high/low
-        if (verticalDist > 2.5) {
-            return false;
-        }
-        
-        // Check if we're looking somewhat towards target
-        double deltaX = pos.x - mc.thePlayer.posX;
-        double deltaZ = pos.z - mc.thePlayer.posZ;
-        
-        float targetYaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
-        float yawDiff = Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_float(targetYaw - mc.thePlayer.rotationYaw));
-        
-        // Allow up to 90 degree difference (generous for closet mode)
-        return yawDiff < 90.0F;
-    }
-    
-    // Simple AABB-Ray intersection
-    private boolean rayIntersectsAABB(double x1, double y1, double z1, double x2, double y2, double z2,
-                                      double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
-        double dirX = x2 - x1;
-        double dirY = y2 - y1;
-        double dirZ = z2 - z1;
-        
-        double tMin = 0.0;
-        double tMax = 1.0;
-        
-        // X slab
-        if (Math.abs(dirX) > 0.0001) {
-            double t1 = (minX - x1) / dirX;
-            double t2 = (maxX - x1) / dirX;
-            tMin = Math.max(tMin, Math.min(t1, t2));
-            tMax = Math.min(tMax, Math.max(t1, t2));
-        }
-        
-        // Y slab
-        if (Math.abs(dirY) > 0.0001) {
-            double t1 = (minY - y1) / dirY;
-            double t2 = (maxY - y1) / dirY;
-            tMin = Math.max(tMin, Math.min(t1, t2));
-            tMax = Math.min(tMax, Math.max(t1, t2));
-        }
-        
-        // Z slab
-        if (Math.abs(dirZ) > 0.0001) {
-            double t1 = (minZ - z1) / dirZ;
-            double t2 = (maxZ - z1) / dirZ;
-            tMin = Math.max(tMin, Math.min(t1, t2));
-            tMax = Math.min(tMax, Math.max(t1, t2));
-        }
-        
-        return tMax >= tMin && tMax >= 0.0;
+        // Check if our look ray intersects the target's hitbox
+        Vec3 eyeVec = new Vec3(eyeX, eyeY, eyeZ);
+        return targetBox.calculateIntercept(eyeVec, endVec) != null;
     }
 
-    private void renderHistoricalPositions() {
+    private void applyBacktrackPosition(EntityPlayer target, PositionData pos) {
+        target.posX = pos.x;
+        target.posY = pos.y;
+        target.posZ = pos.z;
+        target.lastTickPosX = pos.x;
+        target.lastTickPosY = pos.y;
+        target.lastTickPosZ = pos.z;
+        
+        target.serverPosX = (int)(pos.x * 32.0);
+        target.serverPosY = (int)(pos.y * 32.0);
+        target.serverPosZ = (int)(pos.z * 32.0);
+    }
+
+    private void renderManualModePositions() {
         for (Map.Entry<Integer, LinkedList<PositionData>> entry : entityPositions.entrySet()) {
             EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
             
@@ -558,21 +368,108 @@ public class Backtrack extends Module {
 
             Color baseColor = new Color(this.color.getValue());
             
+            // Render all previous positions with fading alpha
             for (int i = 0; i < positions.size(); i++) {
                 PositionData pos = positions.get(i);
-                float alpha = 1.0F - ((float) i / positions.size()) * 0.8F;
+                float alpha = 1.0F - ((float) i / positions.size()) * 0.7F;
                 
-                renderPlayerAtPosition(player, pos, new Color(
+                renderPositionBox(pos, new Color(
                     baseColor.getRed(),
                     baseColor.getGreen(),
                     baseColor.getBlue(),
-                    (int) (alpha * 100)
+                    (int) (alpha * 150)
                 ));
             }
         }
     }
 
-    private void renderPlayerAtPosition(EntityPlayer player, PositionData pos, Color color) {
+    // ==================== Lag Based Mode Methods ====================
+
+    private void startLagging() {
+        isLagging = true;
+        lagStartTime = System.currentTimeMillis();
+    }
+
+    private void processDelayedPackets() {
+        if (!isLagging) {
+            return;
+        }
+
+        long currentTime = System.currentTimeMillis();
+        
+        // Stop lagging after latency period
+        if (currentTime - lagStartTime >= latency.getValue()) {
+            releaseAllPackets();
+            isLagging = false;
+        }
+    }
+
+    private void releaseAllPackets() {
+        while (!delayedPackets.isEmpty()) {
+            PacketData packetData = delayedPackets.poll();
+            if (packetData != null && mc.thePlayer != null && mc.getNetHandler() != null) {
+                try {
+                    // Process the delayed packet by sending to network handler
+                    if (packetData.packet instanceof S18PacketEntityTeleport) {
+                        mc.getNetHandler().handleEntityTeleport((S18PacketEntityTeleport) packetData.packet);
+                    }
+                } catch (Exception e) {
+                    // Silently ignore packet processing errors
+                }
+            }
+        }
+    }
+
+    private void renderLagBasedPositions() {
+        Color baseColor = new Color(this.color.getValue());
+        
+        for (Map.Entry<Integer, PositionData> entry : serverPositions.entrySet()) {
+            EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
+            
+            if (player == null || player == mc.thePlayer || player.isDead) {
+                continue;
+            }
+            
+            if (TeamUtil.isFriend(player)) {
+                continue;
+            }
+
+            PositionData serverPos = entry.getValue();
+            PositionData currentPos = new PositionData(player.posX, player.posY, player.posZ, System.currentTimeMillis());
+            
+            // Calculate interpolation based on lag state
+            if (isLagging) {
+                long lagDuration = System.currentTimeMillis() - lagStartTime;
+                float progress = Math.min(1.0F, lagDuration / (float) latency.getValue());
+                
+                // Interpolate between server position and current position
+                double interpX = serverPos.x + (currentPos.x - serverPos.x) * progress;
+                double interpY = serverPos.y + (currentPos.y - serverPos.y) * progress;
+                double interpZ = serverPos.z + (currentPos.z - serverPos.z) * progress;
+                
+                PositionData interpPos = new PositionData(interpX, interpY, interpZ, System.currentTimeMillis());
+                
+                renderPositionBox(interpPos, new Color(
+                    baseColor.getRed(),
+                    baseColor.getGreen(),
+                    baseColor.getBlue(),
+                    200
+                ));
+            } else {
+                // Render server position when not lagging
+                renderPositionBox(serverPos, new Color(
+                    baseColor.getRed(),
+                    baseColor.getGreen(),
+                    baseColor.getBlue(),
+                    150
+                ));
+            }
+        }
+    }
+
+    // ==================== Rendering Utilities ====================
+
+    private void renderPositionBox(PositionData pos, Color color) {
         double renderX = pos.x - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
         double renderY = pos.y - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
         double renderZ = pos.z - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
@@ -584,25 +481,30 @@ public class Backtrack extends Module {
         
         RenderUtil.enableRenderState();
         RenderUtil.drawFilledBox(box, color.getRed(), color.getGreen(), color.getBlue());
-        RenderUtil.drawBoundingBox(box, color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha(), 1.5F);
+        RenderUtil.drawBoundingBox(box, color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha(), 2.0F);
         RenderUtil.disableRenderState();
     }
 
+    // ==================== Data Classes ====================
+
     private static class PositionData {
         final double x, y, z;
-        final float yaw, pitch, headYaw, limbSwing, limbSwingAmount;
         final long timestamp;
 
-        PositionData(double x, double y, double z, float yaw, float pitch, 
-                    float headYaw, float limbSwing, float limbSwingAmount, long timestamp) {
+        PositionData(double x, double y, double z, long timestamp) {
             this.x = x;
             this.y = y;
             this.z = z;
-            this.yaw = yaw;
-            this.pitch = pitch;
-            this.headYaw = headYaw;
-            this.limbSwing = limbSwing;
-            this.limbSwingAmount = limbSwingAmount;
+            this.timestamp = timestamp;
+        }
+    }
+
+    private static class PacketData {
+        final Object packet;
+        final long timestamp;
+
+        PacketData(Object packet, long timestamp) {
+            this.packet = packet;
             this.timestamp = timestamp;
         }
     }
