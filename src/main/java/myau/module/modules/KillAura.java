@@ -118,6 +118,13 @@ public class KillAura extends Module {
             } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2) {
                 return false;
             } else {
+                // GRIM BYPASS: Check if target is within safe reach BEFORE attacking
+                // This applies to ALL autoblock modes including FAKE
+                double targetDistance = RotationUtil.distanceToEntity(this.target.getEntity());
+                if (targetDistance > 2.97) {
+                    return false; // Too far - don't attack to avoid reach flags
+                }
+                
                 long currentTime = System.currentTimeMillis();
                 
                 if (this.mode.getValue() == 2) {
@@ -437,7 +444,8 @@ public class KillAura extends Module {
         this.autoBlockMaxCPS = new FloatProperty("auto-block-max-aps", 10.0F, 1.0F, 20.0F);
         this.autoBlockRange = new FloatProperty("auto-block-range", 6.0F, 3.0F, 8.0F);
         this.swingRange = new FloatProperty("swing-range", 3.5F, 3.0F, 6.0F);
-        this.attackRange = new FloatProperty("attack-range", 3.0F, 3.0F, 6.0F);
+        // GRIM BYPASS: Default to 2.97 to stay under Grim's 3.0 limit
+        this.attackRange = new FloatProperty("attack-range", 2.97F, 2.8F, 6.0F);
         this.fov = new IntProperty("fov", 360, 30, 360);
         this.minCPS = new IntProperty("min-aps", 14, 1, 20);
         this.maxCPS = new IntProperty("max-aps", 14, 1, 20);
@@ -770,9 +778,15 @@ public class KillAura extends Module {
                                 swap = true;
                             }
                             break;
-                        case 9: // GRIM - Ghost autoblock (no BadPacketsA)
+                        case 9: // GRIM - Ghost autoblock (STRICT GRIM BYPASS)
                             if (this.hasValidTarget()) {
                                 if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
+                                    // GRIM BYPASS: Force safe attack range
+                                    float originalAttackRange = this.attackRange.getValue();
+                                    if (originalAttackRange > 2.97F) {
+                                        this.attackRange.setValue(2.97F); // Temporarily limit reach
+                                    }
+                                    
                                     switch (this.blockTick) {
                                         case 0:
                                             // Start blocking - use blink to ghost block packets
@@ -785,14 +799,22 @@ public class KillAura extends Module {
                                             this.blockTick = 1;
                                             break;
                                         case 1:
-                                            // Unblock phase - release packets before attack
+                                            // GRIM BYPASS: Only unblock if target is within SAFE reach
                                             if (this.isPlayerBlocking()) {
-                                                // Stop blocking
-                                                this.stopBlock();
-                                                // Release blink packets (makes block visible to server)
-                                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
-                                                attack = false;
+                                                // Check if target is close enough for safe attack
+                                                double targetDistance = RotationUtil.distanceToEntity(this.target.getEntity());
+                                                
+                                                if (targetDistance <= 2.97) {
+                                                    // Safe to attack
+                                                    this.stopBlock();
+                                                    Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
+                                                    attack = true; // Allow attack
+                                                } else {
+                                                    // Too far, keep blocking and don't attack
+                                                    attack = false;
+                                                }
                                             }
+                                            
                                             // Use precise timing window
                                             if (this.attackDelayMS <= 40L) {
                                                 this.blockTick = 0;
@@ -800,6 +822,11 @@ public class KillAura extends Module {
                                             break;
                                         default:
                                             this.blockTick = 0;
+                                    }
+                                    
+                                    // Restore original attack range
+                                    if (originalAttackRange > 2.97F) {
+                                        this.attackRange.setValue(originalAttackRange);
                                     }
                                 }
                                 this.isBlocking = true;
