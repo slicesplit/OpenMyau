@@ -137,52 +137,31 @@ public class KillAura extends Module {
                 // Get current time first
                 long currentTime = System.currentTimeMillis();
                 
-                // GRIM MODE: Advanced precision and prediction
+                // GRIM MODE: Minimal checks for maximum aggression
                 if (this.autoBlock.getValue() == 9) {
-                    // Only attack if we can actually hit (raytrace check)
+                    // Only skip if no rotations and definitely can't hit
                     if (this.rotations.getValue() == 0 && !this.isBoxInAttackRange(this.target.getBox())) {
                         return false;
                     }
                     
-                    // VELOCITY PREDICTION: Predict where target will be
-                    EntityLivingBase targetEntity = this.target.getEntity();
-                    double targetVelocity = Math.sqrt(
-                        targetEntity.motionX * targetEntity.motionX +
-                        targetEntity.motionZ * targetEntity.motionZ
-                    );
-                    
-                    // If target is moving fast, wait for better moment
-                    if (targetVelocity > 0.3) {
-                        // Calculate if they're moving towards or away
-                        double deltaX = targetEntity.posX - mc.thePlayer.posX;
-                        double deltaZ = targetEntity.posZ - mc.thePlayer.posZ;
-                        double dotProduct = (targetEntity.motionX * deltaX + targetEntity.motionZ * deltaZ);
-                        
-                        // If moving away fast, skip this attack
-                        if (dotProduct < -0.1) {
-                            return false;
-                        }
-                    }
-                    
-                    // OPTIMAL DISTANCE: Attack only at perfect range
-                    // Sweet spot: 2.6 - 2.95 blocks (close enough to hit, far enough to avoid)
-                    if (targetDistance < 2.6 || targetDistance > 2.95) {
+                    // Much more lenient distance check - attack if in reach
+                    if (targetDistance > maxReach) {
                         return false;
                     }
                     
-                    // TIMING VARIATION: Don't attack at same intervals (anti-pattern detection)
+                    // Very fast attacks - minimum 25ms between hits
                     long timeSinceLastAttack = currentTime - lastGrimAttackTime;
-                    if (timeSinceLastAttack < 40L) {
-                        return false; // Too fast, would look like bot
-                    }
-                    
-                    // Add slight randomization to avoid pattern detection
-                    if (grimConsecutiveHits > 3 && timeSinceLastAttack < 50L + RandomUtil.nextLong(0, 20)) {
-                        return false; // Vary timing after multiple hits
+                    if (timeSinceLastAttack < 25L) {
+                        return false;
                     }
                     
                     lastGrimAttackTime = currentTime;
-                    lastTargetDistance = targetDistance;
+                    grimConsecutiveHits++;
+                    
+                    // Reset counter periodically
+                    if (grimConsecutiveHits > 20) {
+                        grimConsecutiveHits = 0;
+                    }
                 }
                 
                 if (this.mode.getValue() == 2) {
@@ -220,34 +199,11 @@ public class KillAura extends Module {
                         PlayerUtil.attackEntity(this.target.getEntity());
                     }
                     
-                    // GRIM MODE: Advanced combat mechanics
+                    // GRIM MODE: Simple sprint management
                     if (this.autoBlock.getValue() == 9) {
-                        // Sprint management for knockback
+                        // Keep sprinting for maximum knockback
                         if (mc.thePlayer.isSprinting()) {
-                            mc.thePlayer.setSprinting(true); // Keep sprinting for knockback
-                        }
-                        
-                        // Track consecutive hits for adaptive behavior
-                        grimConsecutiveHits++;
-                        
-                        // Reset after too many consecutive hits to avoid pattern
-                        if (grimConsecutiveHits > 10) {
-                            grimConsecutiveHits = 0;
-                        }
-                        
-                        // W-TAP simulation: Briefly stop forward movement for extra knockback
-                        // Only do this occasionally to avoid pattern detection
-                        if (grimConsecutiveHits % 3 == 0 && mc.gameSettings.keyBindForward.isKeyDown()) {
-                            // This creates a micro w-tap effect
-                            mc.thePlayer.setSprinting(false);
-                            new Thread(() -> {
-                                try {
-                                    Thread.sleep(1);
-                                    if (mc.thePlayer != null) {
-                                        mc.thePlayer.setSprinting(true);
-                                    }
-                                } catch (InterruptedException ignored) {}
-                            }).start();
+                            mc.thePlayer.setSprinting(true);
                         }
                     }
                     
@@ -870,25 +826,10 @@ public class KillAura extends Module {
                             }
                             break;
                         case 9: // GRIM - ULTRA AGGRESSIVE MODE
-                            // COMPLETE GRIM BYPASS: Fast attacks + precise timing + no flags
-                            if (this.hasValidTarget()) {
-                                if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
-                                    // NO BLOCKING - just pure aggression
-                                    // Blocking causes slowdown and reduces DPS
-                                    this.isBlocking = false;
-                                    this.fakeBlockState = false;
-                                    
-                                    // Override attack delay for MAXIMUM speed
-                                    if (this.attackDelayMS > 30L) {
-                                        this.attackDelayMS = 30L; // Force faster attacks
-                                    }
-                                }
-                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
-                            } else {
-                                this.isBlocking = false;
-                                this.fakeBlockState = false;
-                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
-                            }
+                            // Pure aggression - no blocking, just attack
+                            this.isBlocking = false;
+                            this.fakeBlockState = false;
+                            Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
                             break;
                     }
                 }

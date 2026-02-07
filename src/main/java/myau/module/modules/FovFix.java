@@ -1,7 +1,10 @@
 package myau.module.modules;
 
+import myau.event.EventTarget;
+import myau.event.types.EventType;
+import myau.events.PlayerUpdateEvent;
+import myau.mixin.IAccessorEntityRenderer;
 import myau.module.Module;
-import myau.property.properties.BooleanProperty;
 import myau.property.properties.FloatProperty;
 import myau.property.properties.ModeProperty;
 import net.minecraft.client.Minecraft;
@@ -17,7 +20,7 @@ import net.minecraft.client.Minecraft;
  * - Flying
  * - Any other dynamic FOV modifiers
  * 
- * Works via mixin injection in MixinEntityRenderer
+ * Works by forcing the fovModifierHand value each tick
  */
 public class FovFix extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
@@ -47,33 +50,48 @@ public class FovFix extends Module {
     
     @Override
     public void onDisabled() {
-        // Restore normal FOV behavior
-        if (mc.gameSettings != null && mc.entityRenderer != null) {
-            mc.entityRenderer.updateCameraAndRender(0, 0);
+        // Restore normal FOV behavior - reset modifier
+        if (mc.entityRenderer != null) {
+            try {
+                IAccessorEntityRenderer accessor = (IAccessorEntityRenderer) mc.entityRenderer;
+                accessor.setFovModifierHand(1.0F);
+                accessor.setFovModifierHandPrev(1.0F);
+            } catch (Exception ignored) {
+            }
         }
     }
     
-    /**
-     * Called by mixin to get the fixed FOV value
-     * This is the main method that intercepts FOV changes
-     */
-    public float getFixedFov(float originalFov) {
-        if (mc.thePlayer == null || mc.gameSettings == null) {
-            return originalFov;
+    @EventTarget
+    public void onUpdate(PlayerUpdateEvent event) {
+        if (!this.isEnabled()) {
+            return;
         }
         
-        // Update locked FOV if base FOV changed in settings
-        float baseFov = mc.gameSettings.fovSetting;
-        if (Math.abs(baseFov - lastGameFov) > 0.1F && mode.getValue() == 0) {
-            lockedFov = baseFov;
-            lastGameFov = baseFov;
+        if (mc.thePlayer == null || mc.gameSettings == null || mc.entityRenderer == null) {
+            return;
         }
         
-        // Get target FOV based on mode
-        float targetFov = (mode.getValue() == 1) ? customFov.getValue() : lockedFov;
-        
-        // Return target FOV, effectively blocking all dynamic changes
-        return targetFov;
+        try {
+            // Update locked FOV if base FOV changed in settings
+            float baseFov = mc.gameSettings.fovSetting;
+            if (Math.abs(baseFov - lastGameFov) > 0.1F && mode.getValue() == 0) {
+                lockedFov = baseFov;
+                lastGameFov = baseFov;
+            }
+            
+            // Get target FOV based on mode
+            float targetFov = (mode.getValue() == 1) ? customFov.getValue() : lockedFov;
+            
+            // Force FOV modifier to 1.0 to prevent dynamic changes
+            IAccessorEntityRenderer accessor = (IAccessorEntityRenderer) mc.entityRenderer;
+            accessor.setFovModifierHand(1.0F);
+            accessor.setFovModifierHandPrev(1.0F);
+            
+            // Set the base FOV to our target
+            mc.gameSettings.fovSetting = targetFov;
+            
+        } catch (Exception ignored) {
+        }
     }
     
     @Override

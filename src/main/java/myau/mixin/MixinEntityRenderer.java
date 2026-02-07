@@ -287,28 +287,4 @@ public abstract class MixinEntityRenderer {
         return ((IAccessorEntityLivingBase) entityPlayerSP).getActivePotionsMap().containsKey(potion.id);
     }
 
-    /**
-     * FovFix: Intercept FOV modifier calculation
-     * This prevents dynamic FOV changes from sprinting, speed, etc.
-     */
-    @ModifyVariable(
-            method = {"setupCameraTransform"},
-            at = @At(
-                    value = "STORE",
-                    ordinal = 0
-            ),
-            name = {"f1"}
-    )
-    private float modifyFovModifier(float originalFov) {
-        if (Myau.moduleManager == null) {
-            return originalFov;
-        }
-        
-        FovFix fovFix = (FovFix) Myau.moduleManager.modules.get(FovFix.class);
-        if (fovFix != null && fovFix.isEnabled()) {
-            return fovFix.getFixedFov(originalFov);
-        }
-        
-        return originalFov;
-    }
 }

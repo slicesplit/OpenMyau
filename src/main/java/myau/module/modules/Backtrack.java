@@ -373,18 +373,24 @@ public class Backtrack extends Module {
             double eyeZ = mc.thePlayer.posZ;
             
             // Target hitbox (0.6 wide = ±0.3 from center, 1.8 tall)
-            // LAG-BASED MODE FIX: Add hitbox expansion for high latency
-            double hitboxExpansion = 0.0;
+            // HITBOX EXPANSION: Add expansion for both modes
+            double hitboxExpansion = GRIM_HITBOX_EXPANSION_1_8; // Base 0.1 for 1.7-1.8 clients
+            
             if (mode.getModeString().equals("Lag Based") && isLagging) {
-                // Grim adds 0.1 expansion for 1.7-1.8 clients + additional for high ping
-                hitboxExpansion = GRIM_HITBOX_EXPANSION_1_8;
-                
-                // AGGRESSIVE EXPANSION for high latency (0.03 per 100ms instead of 0.01)
+                // LAG-BASED MODE: Aggressive expansion for high latency
                 // At 2000ms: 0.1 + (20 * 0.03) = 0.7 expansion
                 hitboxExpansion += (latency.getValue() / 100.0) * 0.03;
                 
-                // Cap expansion at 0.8 for ultra-high latency (was 0.3, too conservative)
+                // Cap expansion at 0.8 for ultra-high latency
                 hitboxExpansion = Math.min(0.8, hitboxExpansion);
+            } else if (mode.getModeString().equals("Manual")) {
+                // MANUAL MODE: Expansion based on tick count
+                // More ticks = more time passed = more expansion needed
+                // At 20 ticks (1000ms): 0.1 + (20 * 0.025) = 0.6 expansion
+                hitboxExpansion += (ticks.getValue() / 10.0) * 0.025;
+                
+                // Cap expansion at 0.6 for manual mode
+                hitboxExpansion = Math.min(0.6, hitboxExpansion);
             }
             
             double targetMinX = pos.x - 0.3 - hitboxExpansion;
@@ -429,10 +435,14 @@ public class Backtrack extends Module {
             ping = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()).getResponseTime();
         }
         
-        // LAG-BASED MODE FIX: Add artificial latency to ping calculation
+        // Add artificial latency/tick delay to ping calculation
         if (mode.getModeString().equals("Lag Based") && isLagging) {
-            // Add the artificial latency we're introducing
+            // LAG-BASED MODE: Add the artificial latency we're introducing
             ping += latency.getValue();
+        } else if (mode.getModeString().equals("Manual")) {
+            // MANUAL MODE: Add tick delay (each tick = 50ms)
+            // At 20 ticks: adds 1000ms to ping calculation
+            ping += (ticks.getValue() * 50);
         }
         
         // Grim's uncertainty calculation
@@ -442,22 +452,35 @@ public class Backtrack extends Module {
         uncertainty += 0.0005; // Grim's threshold
         uncertainty += 0.03; // Movement threshold
         
-        // LAG-BASED MODE FIX: Add velocity-based expansion for high latency
+        // Add velocity-based expansion
         if (mode.getModeString().equals("Lag Based") && isLagging) {
-            // Calculate how far target could have moved during latency
+            // LAG-BASED MODE: Aggressive velocity compensation for high latency
             double targetVelocity = Math.sqrt(
                 target.motionX * target.motionX + 
                 target.motionY * target.motionY + 
                 target.motionZ * target.motionZ
             );
             
-            // AGGRESSIVE velocity compensation for high latency
             // At 2000ms with velocity 0.2: 0.2 * 40 = 8.0 blocks compensation
             double velocityCompensation = targetVelocity * (latency.getValue() / 50.0);
             uncertainty += velocityCompensation;
             
             // ADDITIONAL: Add extra margin for lag spikes (0.1 per 500ms)
             uncertainty += (latency.getValue() / 500.0) * 0.1;
+        } else if (mode.getModeString().equals("Manual")) {
+            // MANUAL MODE: Moderate velocity compensation based on ticks
+            double targetVelocity = Math.sqrt(
+                target.motionX * target.motionX + 
+                target.motionY * target.motionY + 
+                target.motionZ * target.motionZ
+            );
+            
+            // At 20 ticks with velocity 0.2: 0.2 * 20 = 4.0 blocks compensation
+            double velocityCompensation = targetVelocity * ticks.getValue();
+            uncertainty += velocityCompensation;
+            
+            // Add extra margin for higher tick counts (0.05 per 5 ticks)
+            uncertainty += (ticks.getValue() / 5.0) * 0.05;
         }
         
         // Total max reach
