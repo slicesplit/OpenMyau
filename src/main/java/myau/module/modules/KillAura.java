@@ -110,6 +110,7 @@ public class KillAura extends Module {
         }
         return this.isBlocking ? (long) (1000.0F / RandomUtil.nextLong(this.autoBlockMinCPS.getValue().longValue(), this.autoBlockMaxCPS.getValue().longValue())) : 1000L / RandomUtil.nextLong(this.minCPS.getValue(), this.maxCPS.getValue());
     }
+    
 
     private boolean performAttack(float yaw, float pitch) {
         if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
@@ -444,8 +445,7 @@ public class KillAura extends Module {
         this.autoBlockMaxCPS = new FloatProperty("auto-block-max-aps", 10.0F, 1.0F, 20.0F);
         this.autoBlockRange = new FloatProperty("auto-block-range", 6.0F, 3.0F, 8.0F);
         this.swingRange = new FloatProperty("swing-range", 3.5F, 3.0F, 6.0F);
-        // GRIM BYPASS: Default to 2.97 to stay under Grim's 3.0 limit
-        this.attackRange = new FloatProperty("attack-range", 2.97F, 2.8F, 6.0F);
+        this.attackRange = new FloatProperty("attack-range", 3.0F, 3.0F, 6.0F);
         this.fov = new IntProperty("fov", 360, 30, 360);
         this.minCPS = new IntProperty("min-aps", 14, 1, 20);
         this.maxCPS = new IntProperty("max-aps", 14, 1, 20);
@@ -778,61 +778,14 @@ public class KillAura extends Module {
                                 swap = true;
                             }
                             break;
-                        case 9: // GRIM - Ghost autoblock (STRICT GRIM BYPASS)
+                        case 9: // GRIM - Fake autoblock (animation safe, no blink)
+                            // Blink causes animation flags - use fake blocking instead
                             if (this.hasValidTarget()) {
-                                if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
-                                    // GRIM BYPASS: Force safe attack range
-                                    float originalAttackRange = this.attackRange.getValue();
-                                    if (originalAttackRange > 2.97F) {
-                                        this.attackRange.setValue(2.97F); // Temporarily limit reach
-                                    }
-                                    
-                                    switch (this.blockTick) {
-                                        case 0:
-                                            // Start blocking - use blink to ghost block packets
-                                            if (!this.isPlayerBlocking()) {
-                                                // Enable blink to ghost blocking packets
-                                                Myau.blinkManager.setBlinkState(true, BlinkModules.AUTO_BLOCK);
-                                                swap = true;
-                                            }
-                                            blocked = true;
-                                            this.blockTick = 1;
-                                            break;
-                                        case 1:
-                                            // GRIM BYPASS: Only unblock if target is within SAFE reach
-                                            if (this.isPlayerBlocking()) {
-                                                // Check if target is close enough for safe attack
-                                                double targetDistance = RotationUtil.distanceToEntity(this.target.getEntity());
-                                                
-                                                if (targetDistance <= 2.97) {
-                                                    // Safe to attack
-                                                    this.stopBlock();
-                                                    Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
-                                                    attack = true; // Allow attack
-                                                } else {
-                                                    // Too far, keep blocking and don't attack
-                                                    attack = false;
-                                                }
-                                            }
-                                            
-                                            // Use precise timing window
-                                            if (this.attackDelayMS <= 40L) {
-                                                this.blockTick = 0;
-                                            }
-                                            break;
-                                        default:
-                                            this.blockTick = 0;
-                                    }
-                                    
-                                    // Restore original attack range
-                                    if (originalAttackRange > 2.97F) {
-                                        this.attackRange.setValue(originalAttackRange);
-                                    }
-                                }
+                                // Just set fake blocking state, no actual blocking
+                                // This prevents animation/block placement flags
                                 this.isBlocking = true;
                                 this.fakeBlockState = true;
                             } else {
-                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
                                 this.isBlocking = false;
                                 this.fakeBlockState = false;
                             }
