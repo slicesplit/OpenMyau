@@ -88,6 +88,10 @@ public class Backtrack extends Module {
     private final Map<Integer, AITargetProfile> targetProfiles = new ConcurrentHashMap<>();
     private int consecutiveBacktrackSuccesses = 0;
     private long lastFlagTime = 0L;
+    
+    // Smooth Interpolation System
+    private final Map<Integer, InterpolatedPositionTracker> interpolationTrackers = new ConcurrentHashMap<>();
+    private long lastRenderTime = 0L;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -102,6 +106,8 @@ public class Backtrack extends Module {
         lagStartTime = 0L;
         backtrackHitCount.clear();
         lastBacktrackTime.clear();
+        interpolationTrackers.clear();
+        lastRenderTime = System.currentTimeMillis();
     }
 
     @Override
@@ -115,6 +121,7 @@ public class Backtrack extends Module {
         lagStartTime = 0L;
         backtrackHitCount.clear();
         lastBacktrackTime.clear();
+        interpolationTrackers.clear();
     }
 
     @EventTarget
@@ -316,10 +323,18 @@ public class Backtrack extends Module {
             return;
         }
 
+        // Calculate delta time for smooth interpolation
+        long currentTime = System.currentTimeMillis();
+        float deltaTime = (currentTime - lastRenderTime) / 1000.0f; // Convert to seconds
+        lastRenderTime = currentTime;
+        
+        // Update interpolation trackers
+        updateInterpolationTrackers(deltaTime);
+
         if (mode.getModeString().equals("Manual") && renderPreviousTicks.getValue()) {
-            renderManualModePositions();
+            renderManualModePositions(event.getPartialTicks());
         } else if (mode.getModeString().equals("Lag Based") && renderServerPos.getValue()) {
-            renderLagBasedPositions();
+            renderLagBasedPositions(event.getPartialTicks());
         }
     }
 
@@ -384,10 +399,16 @@ public class Backtrack extends Module {
                 // Cap expansion at 0.8 for ultra-high latency
                 hitboxExpansion = Math.min(0.8, hitboxExpansion);
             } else if (mode.getModeString().equals("Manual")) {
-                // MANUAL MODE: Expansion based on tick count
-                // More ticks = more time passed = more expansion needed
-                // At 20 ticks (1000ms): 0.1 + (20 * 0.025) = 0.6 expansion
-                hitboxExpansion += (ticks.getValue() / 10.0) * 0.025;
+                // MANUAL MODE: Expansion based on ACTUAL POSITION AGE (timestamp-based)
+                // Calculate how old this position is in milliseconds
+                long positionAge = System.currentTimeMillis() - pos.timestamp;
+                
+                // Convert to ticks (50ms = 1 tick)
+                double ticksOld = positionAge / 50.0;
+                
+                // More time passed = more expansion needed
+                // At 650ms (13 ticks): 0.1 + (13 * 0.025) = 0.425 expansion
+                hitboxExpansion += (ticksOld / 10.0) * 0.025;
                 
                 // Cap expansion at 0.6 for manual mode
                 hitboxExpansion = Math.min(0.6, hitboxExpansion);
@@ -440,9 +461,13 @@ public class Backtrack extends Module {
             // LAG-BASED MODE: Add the artificial latency we're introducing
             ping += latency.getValue();
         } else if (mode.getModeString().equals("Manual")) {
-            // MANUAL MODE: Add tick delay (each tick = 50ms)
-            // At 20 ticks: adds 1000ms to ping calculation
-            ping += (ticks.getValue() * 50);
+            // MANUAL MODE: Calculate ACTUAL position age from timestamp
+            // This is the actual time that has passed since this position was recorded
+            long positionAge = System.currentTimeMillis() - pos.timestamp;
+            
+            // Add the actual position age to ping (not just tick count * 50)
+            // At 13 ticks old (650ms): adds 650ms to ping calculation
+            ping += (int) positionAge;
         }
         
         // Grim's uncertainty calculation
@@ -468,19 +493,23 @@ public class Backtrack extends Module {
             // ADDITIONAL: Add extra margin for lag spikes (0.1 per 500ms)
             uncertainty += (latency.getValue() / 500.0) * 0.1;
         } else if (mode.getModeString().equals("Manual")) {
-            // MANUAL MODE: Moderate velocity compensation based on ticks
+            // MANUAL MODE: Velocity compensation based on ACTUAL position age
             double targetVelocity = Math.sqrt(
                 target.motionX * target.motionX + 
                 target.motionY * target.motionY + 
                 target.motionZ * target.motionZ
             );
             
-            // At 20 ticks with velocity 0.2: 0.2 * 20 = 4.0 blocks compensation
-            double velocityCompensation = targetVelocity * ticks.getValue();
+            // Calculate actual ticks old from timestamp
+            long positionAge = System.currentTimeMillis() - pos.timestamp;
+            double ticksOld = positionAge / 50.0;
+            
+            // At 13 ticks (650ms) with velocity 0.2: 0.2 * 13 = 2.6 blocks compensation
+            double velocityCompensation = targetVelocity * ticksOld;
             uncertainty += velocityCompensation;
             
-            // Add extra margin for higher tick counts (0.05 per 5 ticks)
-            uncertainty += (ticks.getValue() / 5.0) * 0.05;
+            // Add extra margin based on actual age (0.05 per 5 ticks / 250ms)
+            uncertainty += (ticksOld / 5.0) * 0.05;
         }
         
         // Total max reach
@@ -621,7 +650,7 @@ public class Backtrack extends Module {
         target.serverPosZ = (int)(pos.z * 32.0);
     }
 
-    private void renderManualModePositions() {
+    private void renderManualModePositions(float partialTicks) {
         // OPTIMIZATION: Don't render if no positions stored
         if (entityPositions.isEmpty()) {
             return;
@@ -646,15 +675,25 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
+                // Get or create interpolation tracker
+                InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(
+                    entry.getKey(), 
+                    k -> new InterpolatedPositionTracker()
+                );
+                
                 // OPTIMIZATION: Limit render count to prevent freeze
                 int renderCount = Math.min(positions.size(), 10); // Max 10 boxes per player
                 
-                // Render previous positions with fading alpha
+                // Render previous positions with smooth interpolation and fading alpha
                 for (int i = 0; i < renderCount; i++) {
-                    PositionData pos = positions.get(i);
+                    PositionData targetPos = positions.get(i);
+                    
+                    // Get smoothly interpolated position
+                    PositionData smoothPos = tracker.getInterpolatedPosition(i, targetPos, partialTicks);
+                    
                     float alpha = 1.0F - ((float) i / renderCount) * 0.7F;
                     
-                    renderPositionBox(pos, new Color(
+                    renderPositionBox(smoothPos, new Color(
                         baseColor.getRed(),
                         baseColor.getGreen(),
                         baseColor.getBlue(),
@@ -671,19 +710,16 @@ public class Backtrack extends Module {
     
     /**
      * Calculate maximum safe distance for lag-based mode based on latency
-     * Higher latency requires closer initial distance to prevent reach flags
+     * COMPLETE GRIM BYPASS: No reduction needed - Grim's uncertainty system handles all latencies
      */
     private double calculateMaxSafeDistance() {
-        // Base max distance for low latency (200ms)
-        double baseMaxDistance = 2.8;
+        // With proper Grim uncertainty calculations, we can use full 2.9 blocks for ALL latencies
+        // The uncertainty system (ping-based) will automatically compensate:
+        // - 50ms: 3.0 + (1 tick × 0.03) + base = ~3.09 reach (safe at 2.9 initial)
+        // - 500ms: 3.0 + (10 ticks × 0.03) + velocity comp = ~4.0+ reach (safe at 2.9 initial)
+        // - 2000ms: 3.0 + (40 ticks × 0.03) + velocity comp = ~6.0+ reach (safe at 2.9 initial)
         
-        // LESS AGGRESSIVE reduction for high latency (was 0.05, now 0.02 per 100ms)
-        // This allows higher initial distances even with 2000ms
-        int excessLatency = Math.max(0, latency.getValue() - 200);
-        double reduction = (excessLatency / 100.0) * 0.02;
-        
-        // Minimum safe distance is 2.4 blocks (was 2.2, increase range)
-        return Math.max(2.4, baseMaxDistance - reduction);
+        return 2.9; // Maximum safe distance for all latency values 50-2000ms
     }
     
     /**
@@ -745,7 +781,7 @@ public class Backtrack extends Module {
         }
     }
 
-    private void renderLagBasedPositions() {
+    private void renderLagBasedPositions(float partialTicks) {
         // OPTIMIZATION: Don't render if no server positions stored
         if (serverPositions.isEmpty()) {
             return;
@@ -772,29 +808,44 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
+                // Get or create interpolation tracker
+                InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(
+                    entry.getKey(), 
+                    k -> new InterpolatedPositionTracker()
+                );
+                
                 PositionData currentPos = new PositionData(player.posX, player.posY, player.posZ, System.currentTimeMillis());
                 
-                // Calculate interpolation based on lag state
+                // Calculate smooth interpolation based on lag state
+                PositionData renderPos;
                 if (isLagging) {
                     long lagDuration = System.currentTimeMillis() - lagStartTime;
                     float progress = Math.min(1.0F, lagDuration / (float) latency.getValue());
                     
+                    // Apply easing function for smooth acceleration/deceleration
+                    float easedProgress = easeInOutCubic(progress);
+                    
                     // Interpolate between server position and current position
-                    double interpX = serverPos.x + (currentPos.x - serverPos.x) * progress;
-                    double interpY = serverPos.y + (currentPos.y - serverPos.y) * progress;
-                    double interpZ = serverPos.z + (currentPos.z - serverPos.z) * progress;
+                    double interpX = serverPos.x + (currentPos.x - serverPos.x) * easedProgress;
+                    double interpY = serverPos.y + (currentPos.y - serverPos.y) * easedProgress;
+                    double interpZ = serverPos.z + (currentPos.z - serverPos.z) * easedProgress;
                     
-                    PositionData interpPos = new PositionData(interpX, interpY, interpZ, System.currentTimeMillis());
+                    PositionData targetPos = new PositionData(interpX, interpY, interpZ, System.currentTimeMillis());
                     
-                    renderPositionBox(interpPos, new Color(
+                    // Apply additional frame-by-frame smoothing
+                    renderPos = tracker.getInterpolatedPosition(0, targetPos, partialTicks);
+                    
+                    renderPositionBox(renderPos, new Color(
                         baseColor.getRed(),
                         baseColor.getGreen(),
                         baseColor.getBlue(),
                         200
                     ));
                 } else {
-                    // Render server position when not lagging
-                    renderPositionBox(serverPos, new Color(
+                    // Smoothly interpolate to server position when not lagging
+                    renderPos = tracker.getInterpolatedPosition(0, serverPos, partialTicks);
+                    
+                    renderPositionBox(renderPos, new Color(
                         baseColor.getRed(),
                         baseColor.getGreen(),
                         baseColor.getBlue(),
@@ -1003,7 +1054,155 @@ public class Backtrack extends Module {
         }
     }
     
+    // ==================== Interpolation Methods ====================
+    
+    /**
+     * Update all interpolation trackers with delta time
+     */
+    private void updateInterpolationTrackers(float deltaTime) {
+        // Clean up trackers for entities that no longer exist
+        interpolationTrackers.entrySet().removeIf(entry -> 
+            mc.theWorld.getEntityByID(entry.getKey()) == null
+        );
+        
+        // Update all active trackers
+        for (InterpolatedPositionTracker tracker : interpolationTrackers.values()) {
+            tracker.update(deltaTime);
+        }
+    }
+    
+    /**
+     * Easing function: Cubic ease-in-out for smooth acceleration/deceleration
+     * Makes movement feel more natural and fluid
+     */
+    private float easeInOutCubic(float t) {
+        if (t < 0.5f) {
+            return 4.0f * t * t * t;
+        } else {
+            float f = (2.0f * t - 2.0f);
+            return 0.5f * f * f * f + 1.0f;
+        }
+    }
+    
+    /**
+     * Easing function: Exponential ease-out for quick start, slow finish
+     */
+    private float easeOutExpo(float t) {
+        return t == 1.0f ? 1.0f : 1.0f - (float)Math.pow(2.0, -10.0 * t);
+    }
+    
+    /**
+     * Linear interpolation helper
+     */
+    private double lerp(double start, double end, float alpha) {
+        return start + (end - start) * alpha;
+    }
+    
     // ==================== Data Classes ====================
+    
+    /**
+     * Interpolated Position Tracker - Manages smooth position interpolation for multiple positions per entity
+     */
+    private static class InterpolatedPositionTracker {
+        // Store interpolated positions for each index (0 = newest, 1 = older, etc.)
+        private final Map<Integer, SmoothedPosition> smoothedPositions = new HashMap<>();
+        private static final float INTERPOLATION_SPEED = 12.0f; // Higher = snappier, Lower = smoother
+        
+        /**
+         * Get smoothly interpolated position for a specific index
+         */
+        public PositionData getInterpolatedPosition(int index, PositionData targetPos, float partialTicks) {
+            SmoothedPosition smoothed = smoothedPositions.computeIfAbsent(index, k -> new SmoothedPosition());
+            return smoothed.getInterpolated(targetPos, partialTicks);
+        }
+        
+        /**
+         * Update all smoothed positions
+         */
+        public void update(float deltaTime) {
+            for (SmoothedPosition smoothed : smoothedPositions.values()) {
+                smoothed.update(deltaTime);
+            }
+        }
+        
+        /**
+         * Individual smoothed position with velocity-based interpolation
+         */
+        private static class SmoothedPosition {
+            private double currentX = 0;
+            private double currentY = 0;
+            private double currentZ = 0;
+            
+            private double targetX = 0;
+            private double targetY = 0;
+            private double targetZ = 0;
+            
+            private double velocityX = 0;
+            private double velocityY = 0;
+            private double velocityZ = 0;
+            
+            private boolean initialized = false;
+            private long lastUpdateTime = 0;
+            
+            public PositionData getInterpolated(PositionData target, float partialTicks) {
+                // Initialize on first use
+                if (!initialized) {
+                    currentX = target.x;
+                    currentY = target.y;
+                    currentZ = target.z;
+                    targetX = target.x;
+                    targetY = target.y;
+                    targetZ = target.z;
+                    initialized = true;
+                    lastUpdateTime = System.currentTimeMillis();
+                }
+                
+                // Update target position
+                targetX = target.x;
+                targetY = target.y;
+                targetZ = target.z;
+                
+                // Calculate smooth interpolation with partial ticks for ultra-smooth rendering
+                // This ensures smooth motion even between frames
+                double interpX = currentX + velocityX * partialTicks;
+                double interpY = currentY + velocityY * partialTicks;
+                double interpZ = currentZ + velocityZ * partialTicks;
+                
+                return new PositionData(interpX, interpY, interpZ, target.timestamp);
+            }
+            
+            public void update(float deltaTime) {
+                if (deltaTime <= 0 || deltaTime > 1.0f) {
+                    deltaTime = 0.016f; // Fallback to ~60 FPS
+                }
+                
+                // Calculate position difference
+                double deltaX = targetX - currentX;
+                double deltaY = targetY - currentY;
+                double deltaZ = targetZ - currentZ;
+                
+                // Spring-damper system for smooth, physics-based interpolation
+                // Higher INTERPOLATION_SPEED = snappier response
+                // Lower INTERPOLATION_SPEED = smoother, more laggy
+                float smoothFactor = Math.min(1.0f, INTERPOLATION_SPEED * deltaTime);
+                
+                // Update current position using exponential smoothing (no overshoot)
+                currentX += deltaX * smoothFactor;
+                currentY += deltaY * smoothFactor;
+                currentZ += deltaZ * smoothFactor;
+                
+                // Calculate velocity for partial tick interpolation
+                // This allows sub-frame interpolation for silky smooth 60+ FPS rendering
+                long currentTime = System.currentTimeMillis();
+                long timeDelta = Math.max(1, currentTime - lastUpdateTime);
+                lastUpdateTime = currentTime;
+                
+                velocityX = deltaX * smoothFactor / (timeDelta / 1000.0);
+                velocityY = deltaY * smoothFactor / (timeDelta / 1000.0);
+                velocityZ = deltaZ * smoothFactor / (timeDelta / 1000.0);
+            }
+        }
+    }
     
     /**
      * AI Target Profile - Tracks target behavior for intelligent decisions
