@@ -31,7 +31,7 @@ public class AntiVoid extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
     // Mode selection
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"GhostBlock", "Flag", "Blink", "Teleport"});
+    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"GhostBlock", "Flag", "Blink", "Teleport", "Legacy"});
     
     // Void detection
     public final IntProperty voidLevel = new IntProperty("void-level", 0, -64, 128);
@@ -50,11 +50,18 @@ public class AntiVoid extends Module {
     // Teleport mode settings
     public final BooleanProperty teleportSilent = new BooleanProperty("teleport-silent", true, () -> mode.getValue() == 3);
     
+    // Legacy mode settings
+    public final FloatProperty legacyDistance = new FloatProperty("legacy-distance", 5.0F, 1.0F, 16.0F, () -> mode.getValue() == 4);
+    public final FloatProperty legacyTeleportHeight = new FloatProperty("legacy-teleport-height", 5.0F, 1.0F, 10.0F, () -> mode.getValue() == 4);
+    
     // State tracking
     private boolean isLikelyFalling = false;
     private Vec3 rescuePosition = null;
     private int ticksInVoid = 0;
     private boolean actionTaken = false;
+    
+    // Legacy mode state
+    private double lastGroundY = 0.0;
 
     public AntiVoid() {
         super("AntiVoid", false);
@@ -66,6 +73,11 @@ public class AntiVoid extends Module {
         rescuePosition = null;
         ticksInVoid = 0;
         actionTaken = false;
+        
+        // Initialize legacy mode
+        if (mc.thePlayer != null) {
+            lastGroundY = mc.thePlayer.posY;
+        }
     }
 
     @Override
@@ -284,6 +296,8 @@ public class AntiVoid extends Module {
                 return rescueBlink();
             case 3: // Teleport
                 return rescueTeleport();
+            case 4: // Legacy
+                return rescueLegacy();
             default:
                 return false;
         }
@@ -368,6 +382,40 @@ public class AntiVoid extends Module {
         mc.thePlayer.fallDistance = 0;
         mc.thePlayer.motionY = 0;
         return true;
+    }
+
+    /**
+     * Legacy mode: Classic simple teleport up when falling
+     * This is the old-school method used in early clients
+     */
+    private boolean rescueLegacy() {
+        // Track last ground position
+        if (mc.thePlayer.onGround) {
+            lastGroundY = mc.thePlayer.posY;
+        }
+        
+        // Calculate fall distance from last ground
+        double fallDistance = lastGroundY - mc.thePlayer.posY;
+        
+        // If fallen more than distance threshold, teleport up
+        if (fallDistance > legacyDistance.getValue()) {
+            // Simple upward teleport
+            double teleportY = mc.thePlayer.posY + legacyTeleportHeight.getValue();
+            
+            // Set position directly
+            mc.thePlayer.setPosition(mc.thePlayer.posX, teleportY, mc.thePlayer.posZ);
+            
+            // Reset motion and fall distance
+            mc.thePlayer.motionY = 0.0;
+            mc.thePlayer.fallDistance = 0.0F;
+            
+            // Update last ground position
+            lastGroundY = teleportY;
+            
+            return true;
+        }
+        
+        return false;
     }
 
     @Override

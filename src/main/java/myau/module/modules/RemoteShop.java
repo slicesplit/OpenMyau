@@ -1,58 +1,77 @@
 package myau.module.modules;
 
-import myau.Myau;
-import myau.enums.BlinkModules;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.LoadWorldEvent;
 import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
+import myau.module.modules.remoteshop.HypixelRemoteShop;
+import myau.module.modules.remoteshop.IRemoteShop;
+import myau.module.modules.remoteshop.NormalRemoteShop;
 import myau.property.properties.BooleanProperty;
-import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
-import myau.util.PacketUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.inventory.GuiContainer;
 import net.minecraft.client.gui.inventory.GuiInventory;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.passive.EntityVillager;
-import net.minecraft.network.play.client.C02PacketUseEntity;
 import net.minecraft.network.play.client.C0BPacketEntityAction;
-import net.minecraft.network.play.server.S2DPacketOpenWindow;
 import net.minecraft.network.play.server.S2EPacketCloseWindow;
 import org.lwjgl.input.Keyboard;
 
+/**
+ * RemoteShop - Cache and reopen shop GUIs remotely
+ * 
+ * Allows you to access shop menus from anywhere by caching the GUI.
+ * Press HOME key (default) to reopen the last cached shop.
+ * 
+ * Modes:
+ * - Normal: Cache any chest GUI
+ * - Hypixel: Smart detection of Hypixel shop menus
+ * 
+ * Based on KeystrokesMod's architecture
+ */
 public class RemoteShop extends Module {
+    public static final int KEYCODE = Keyboard.KEY_HOME;
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Settings
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"NORMAL", "HYPIXEL"});
-    public final IntProperty activationKey = new IntProperty("activation-key", Keyboard.KEY_HOME, 0, 256);
-    public final BooleanProperty cancelInventory = new BooleanProperty("cancel-inventory", true);
+    // Mode selection with submodes
+    private final IRemoteShop[] modes;
+    public final ModeProperty mode;
+    public final BooleanProperty cancelInventory;
     
     // State tracking
-    private boolean keyPressed = false;
-    private boolean shopActive = false;
-    private Entity shopEntity = null;
-    private int windowId = -1;
+    private boolean isToggled = false;
     
     public RemoteShop() {
         super("RemoteShop", false);
+        
+        // Initialize modes
+        this.modes = new IRemoteShop[]{
+            new NormalRemoteShop("Normal", this),
+            new HypixelRemoteShop("Hypixel", this)
+        };
+        
+        // Create mode property
+        String[] modeNames = new String[modes.length];
+        for (int i = 0; i < modes.length; i++) {
+            modeNames[i] = modes[i].getName();
+        }
+        this.mode = new ModeProperty("mode", 0, modeNames);
+        
+        // Settings
+        this.cancelInventory = new BooleanProperty("cancel-inventory", true);
     }
     
     @Override
     public void onEnabled() {
-        keyPressed = false;
-        shopActive = false;
-        shopEntity = null;
-        windowId = -1;
+        isToggled = false;
+        getSelectedMode().onEnable();
     }
     
     @Override
     public void onDisabled() {
-        forceClose();
-        keyPressed = false;
+        getSelectedMode().onDisable();
+        isToggled = false;
     }
     
     @EventTarget
@@ -61,22 +80,22 @@ public class RemoteShop extends Module {
             return;
         }
         
-        // Handle activation key (RenderTickEvent equivalent)
-        boolean keyDown = Keyboard.isKeyDown(this.activationKey.getValue());
-        
-        if (keyDown && !keyPressed) {
-            keyPressed = true;
-            activateRemoteShop();
-        } else if (!keyDown) {
-            keyPressed = false;
-        }
-        
-        // Keep container open (onUpdate equivalent)
-        if (mc.currentScreen instanceof GuiContainer && 
-            !(mc.currentScreen instanceof GuiInventory && this.cancelInventory.getValue())) {
-            if (shopActive) {
-                openContainer();
+        try {
+            // Handle activation key (like RenderTickEvent in KeystrokesMod)
+            if (!this.isToggled && Keyboard.isKeyDown(KEYCODE)) {
+                getSelectedMode().remoteShop();
+                this.isToggled = true;
+            } else if (!Keyboard.isKeyDown(KEYCODE)) {
+                this.isToggled = false;
             }
+            
+            // Keep container open (onUpdate equivalent)
+            if (mc.currentScreen instanceof GuiContainer && 
+                !(mc.currentScreen instanceof GuiInventory && this.cancelInventory.getValue())) {
+                getSelectedMode().openContainer();
+            }
+        } catch (Throwable ignored) {
+            // Silently catch any errors
         }
     }
     
@@ -88,11 +107,8 @@ public class RemoteShop extends Module {
         
         // Handle incoming packets
         if (event.getType() == EventType.RECEIVE) {
-            if (event.getPacket() instanceof S2DPacketOpenWindow) {
-                S2DPacketOpenWindow packet = (S2DPacketOpenWindow) event.getPacket();
-                windowId = packet.getWindowId();
-            } else if (event.getPacket() instanceof S2EPacketCloseWindow) {
-                forceClose();
+            if (event.getPacket() instanceof S2EPacketCloseWindow) {
+                getSelectedMode().forceClose();
             }
         }
         
@@ -110,80 +126,22 @@ public class RemoteShop extends Module {
     
     @EventTarget
     public void onWorldChange(LoadWorldEvent event) {
-        forceClose();
+        getSelectedMode().forceClose();
     }
     
-    private void activateRemoteShop() {
-        if (mc.thePlayer == null || mc.theWorld == null) {
-            return;
+    /**
+     * Get currently selected mode
+     */
+    private IRemoteShop getSelectedMode() {
+        int index = mode.getValue();
+        if (index >= 0 && index < modes.length) {
+            return modes[index];
         }
-        
-        switch (this.mode.getValue()) {
-            case 0: // NORMAL
-                openNormalShop();
-                break;
-            case 1: // HYPIXEL
-                openHypixelShop();
-                break;
-        }
-    }
-    
-    private void openNormalShop() {
-        // Find nearest villager/shop NPC
-        Entity nearestShop = null;
-        double nearestDistance = Double.MAX_VALUE;
-        
-        for (Entity entity : mc.theWorld.loadedEntityList) {
-            if (entity instanceof EntityVillager && entity != mc.thePlayer) {
-                double distance = mc.thePlayer.getDistanceToEntity(entity);
-                if (distance < nearestDistance && distance < 100.0) { // Within 100 blocks
-                    nearestDistance = distance;
-                    nearestShop = entity;
-                }
-            }
-        }
-        
-        if (nearestShop != null) {
-            shopEntity = nearestShop;
-            shopActive = true;
-            
-            // Interact with entity
-            PacketUtil.sendPacket(new C02PacketUseEntity(nearestShop, C02PacketUseEntity.Action.INTERACT));
-        }
-    }
-    
-    private void openHypixelShop() {
-        // Hypixel mode: Use command
-        if (mc.thePlayer != null) {
-            mc.thePlayer.sendChatMessage("/shop");
-            shopActive = true;
-        }
-    }
-    
-    private void openContainer() {
-        // Keep container interaction active
-        if (shopEntity != null && this.mode.getValue() == 0) {
-            // Re-interact if needed
-            if (mc.currentScreen == null) {
-                PacketUtil.sendPacket(new C02PacketUseEntity(shopEntity, C02PacketUseEntity.Action.INTERACT));
-            }
-        }
-    }
-    
-    private void forceClose() {
-        if (mc.currentScreen instanceof GuiContainer) {
-            mc.thePlayer.closeScreen();
-        }
-        shopActive = false;
-        shopEntity = null;
-        windowId = -1;
+        return modes[0]; // Fallback to Normal
     }
     
     @Override
     public String[] getSuffix() {
-        if (shopActive) {
-            return new String[]{"§a[ACTIVE]"};
-        }
-        return new String[]{this.mode.getModeString()};
+        return new String[]{getSelectedMode().getPrettyName()};
     }
 }

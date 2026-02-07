@@ -269,17 +269,24 @@ public class Backtrack extends Module {
                 // Lag Based Mode: Start lagging to create advantage
                 double distance = mc.thePlayer.getDistanceToEntity(target);
                 
+                // LAG-BASED MODE FIX: Calculate safe distance based on latency
+                // Higher latency = need closer initial distance to avoid reach flags
+                double maxSafeDistance = calculateMaxSafeDistance();
+                
                 // GRIM BYPASS: Only lag if safe distance and not already lagging
                 // Don't lag if target is too far (would cause reach flags)
-                if (distance > 2.3 && distance <= 2.8 && !isLagging) {
-                    startLagging();
-                    
-                    // Track backtrack usage for cooldown
-                    incrementBacktrackHit(target);
-                    
-                    // AI: Record successful backtrack
-                    if (intelligentMode.getValue()) {
-                        recordBacktrackAttempt(target, true);
+                if (distance > 2.0 && distance <= maxSafeDistance && !isLagging) {
+                    // Validate position will be safe AFTER the lag
+                    if (isLaggedPositionSafe(target)) {
+                        startLagging();
+                        
+                        // Track backtrack usage for cooldown
+                        incrementBacktrackHit(target);
+                        
+                        // AI: Record successful backtrack
+                        if (intelligentMode.getValue()) {
+                            recordBacktrackAttempt(target, true);
+                        }
                     }
                 }
             }
@@ -366,12 +373,26 @@ public class Backtrack extends Module {
             double eyeZ = mc.thePlayer.posZ;
             
             // Target hitbox (0.6 wide = ±0.3 from center, 1.8 tall)
-            double targetMinX = pos.x - 0.3;
-            double targetMaxX = pos.x + 0.3;
-            double targetMinY = pos.y;
-            double targetMaxY = pos.y + 1.8;
-            double targetMinZ = pos.z - 0.3;
-            double targetMaxZ = pos.z + 0.3;
+            // LAG-BASED MODE FIX: Add hitbox expansion for high latency
+            double hitboxExpansion = 0.0;
+            if (mode.getModeString().equals("Lag Based") && isLagging) {
+                // Grim adds 0.1 expansion for 1.7-1.8 clients + additional for high ping
+                hitboxExpansion = GRIM_HITBOX_EXPANSION_1_8;
+                
+                // AGGRESSIVE EXPANSION for high latency (0.03 per 100ms instead of 0.01)
+                // At 2000ms: 0.1 + (20 * 0.03) = 0.7 expansion
+                hitboxExpansion += (latency.getValue() / 100.0) * 0.03;
+                
+                // Cap expansion at 0.8 for ultra-high latency (was 0.3, too conservative)
+                hitboxExpansion = Math.min(0.8, hitboxExpansion);
+            }
+            
+            double targetMinX = pos.x - 0.3 - hitboxExpansion;
+            double targetMaxX = pos.x + 0.3 + hitboxExpansion;
+            double targetMinY = pos.y - hitboxExpansion;
+            double targetMaxY = pos.y + 1.8 + hitboxExpansion;
+            double targetMinZ = pos.z - 0.3 - hitboxExpansion;
+            double targetMaxZ = pos.z + 0.3 + hitboxExpansion;
             
             // Find closest point on hitbox (Grim's VectorUtils.cutBoxToVector)
             double closestX = MathHelper.clamp_double(eyeX, targetMinX, targetMaxX);
@@ -394,7 +415,7 @@ public class Backtrack extends Module {
      * Validates that a backtrack position will pass all Grim AC checks
      * Checks: Reach, Hitbox, BadPacketsT (interaction vector)
      * 
-     * LAGRANGE BYPASS: With 1000ms ping, Grim is MUCH more lenient
+     * LAGRANGE BYPASS: With 1000ms+ ping, Grim is MUCH more lenient
      */
     private boolean isPositionSafeForGrim(PositionData pos, EntityPlayer target, double reachDistance) {
         // COMPLETE GRIM BYPASS: Use Grim's EXACT calculation
@@ -408,12 +429,36 @@ public class Backtrack extends Module {
             ping = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()).getResponseTime();
         }
         
+        // LAG-BASED MODE FIX: Add artificial latency to ping calculation
+        if (mode.getModeString().equals("Lag Based") && isLagging) {
+            // Add the artificial latency we're introducing
+            ping += latency.getValue();
+        }
+        
         // Grim's uncertainty calculation
-        double uncertainty = (ping / 50.0) * 0.03; // 0.03 per tick
+        double uncertainty = (ping / 50.0) * 0.03; // 0.03 per tick (50ms = 1 tick)
         
         // Additional uncertainties
         uncertainty += 0.0005; // Grim's threshold
         uncertainty += 0.03; // Movement threshold
+        
+        // LAG-BASED MODE FIX: Add velocity-based expansion for high latency
+        if (mode.getModeString().equals("Lag Based") && isLagging) {
+            // Calculate how far target could have moved during latency
+            double targetVelocity = Math.sqrt(
+                target.motionX * target.motionX + 
+                target.motionY * target.motionY + 
+                target.motionZ * target.motionZ
+            );
+            
+            // AGGRESSIVE velocity compensation for high latency
+            // At 2000ms with velocity 0.2: 0.2 * 40 = 8.0 blocks compensation
+            double velocityCompensation = targetVelocity * (latency.getValue() / 50.0);
+            uncertainty += velocityCompensation;
+            
+            // ADDITIONAL: Add extra margin for lag spikes (0.1 per 500ms)
+            uncertainty += (latency.getValue() / 500.0) * 0.1;
+        }
         
         // Total max reach
         double grimMaxReach = baseReach + uncertainty;
@@ -600,6 +645,47 @@ public class Backtrack extends Module {
     }
 
     // ==================== Lag Based Mode Methods ====================
+    
+    /**
+     * Calculate maximum safe distance for lag-based mode based on latency
+     * Higher latency requires closer initial distance to prevent reach flags
+     */
+    private double calculateMaxSafeDistance() {
+        // Base max distance for low latency (200ms)
+        double baseMaxDistance = 2.8;
+        
+        // LESS AGGRESSIVE reduction for high latency (was 0.05, now 0.02 per 100ms)
+        // This allows higher initial distances even with 2000ms
+        int excessLatency = Math.max(0, latency.getValue() - 200);
+        double reduction = (excessLatency / 100.0) * 0.02;
+        
+        // Minimum safe distance is 2.4 blocks (was 2.2, increase range)
+        return Math.max(2.4, baseMaxDistance - reduction);
+    }
+    
+    /**
+     * Check if the target position will be safe AFTER the lag period
+     * Predicts where the target will be and validates reach/hitbox
+     */
+    private boolean isLaggedPositionSafe(EntityPlayer target) {
+        // Calculate where target will be after latency period
+        double lagSeconds = latency.getValue() / 1000.0;
+        
+        // Predict target position (assuming constant velocity)
+        double predictedX = target.posX + (target.motionX * lagSeconds * 20); // 20 ticks per second
+        double predictedY = target.posY + (target.motionY * lagSeconds * 20);
+        double predictedZ = target.posZ + (target.motionZ * lagSeconds * 20);
+        
+        // Create predicted position
+        PositionData predictedPos = new PositionData(predictedX, predictedY, predictedZ, System.currentTimeMillis());
+        
+        // Calculate predicted distance
+        double predictedDistance = calculateGrimReachDistance(predictedPos, target);
+        
+        // Validate predicted position is safe
+        // For lag-based mode with high latency, we need extra conservative checks
+        return isPositionSafeForGrim(predictedPos, target, predictedDistance);
+    }
 
     private void startLagging() {
         isLagging = true;

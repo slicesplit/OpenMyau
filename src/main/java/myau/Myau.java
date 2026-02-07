@@ -84,6 +84,7 @@ public class Myau {
         moduleManager.modules.put(Freecam.class, new Freecam());
         moduleManager.modules.put(Freeze.class, new Freeze());
         moduleManager.modules.put(Fly.class, new Fly());
+        moduleManager.modules.put(FovFix.class, new FovFix());
         moduleManager.modules.put(FullBright.class, new FullBright());
         moduleManager.modules.put(GhostHand.class, new GhostHand());
         moduleManager.modules.put(GuiModule.class, new GuiModule());

@@ -70,6 +70,11 @@ public class KillAura extends Module {
     private final long[] targetAttackTimes = new long[10];
     private int attacksThisSecond = 0;
     private long lastSecondReset = 0L;
+    
+    // GRIM MODE: Advanced tracking for intelligent attacks
+    private double lastTargetDistance = 0.0;
+    private long lastGrimAttackTime = 0L;
+    private int grimConsecutiveHits = 0;
     public final ModeProperty mode;
     public final ModeProperty sort;
     public final ModeProperty autoBlock;
@@ -116,17 +121,69 @@ public class KillAura extends Module {
         if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
             if (this.isPlayerBlocking() && this.autoBlock.getValue() != 1) {
                 return false;
-            } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2) {
-                return false;
+            } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2 && this.autoBlock.getValue() != 9) {
+                return false; // GRIM mode bypasses attack delay for speed
             } else {
-                // GRIM BYPASS: Check if target is within safe reach BEFORE attacking
-                // This applies to ALL autoblock modes including FAKE
+                // GRIM BYPASS: Enhanced reach calculation for precision
                 double targetDistance = RotationUtil.distanceToEntity(this.target.getEntity());
-                if (targetDistance > 2.97) {
+                
+                // GRIM MODE: Use aggressive reach (up to 2.99)
+                double maxReach = (this.autoBlock.getValue() == 9) ? 2.99 : 2.97;
+                
+                if (targetDistance > maxReach) {
                     return false; // Too far - don't attack to avoid reach flags
                 }
                 
+                // Get current time first
                 long currentTime = System.currentTimeMillis();
+                
+                // GRIM MODE: Advanced precision and prediction
+                if (this.autoBlock.getValue() == 9) {
+                    // Only attack if we can actually hit (raytrace check)
+                    if (this.rotations.getValue() == 0 && !this.isBoxInAttackRange(this.target.getBox())) {
+                        return false;
+                    }
+                    
+                    // VELOCITY PREDICTION: Predict where target will be
+                    EntityLivingBase targetEntity = this.target.getEntity();
+                    double targetVelocity = Math.sqrt(
+                        targetEntity.motionX * targetEntity.motionX +
+                        targetEntity.motionZ * targetEntity.motionZ
+                    );
+                    
+                    // If target is moving fast, wait for better moment
+                    if (targetVelocity > 0.3) {
+                        // Calculate if they're moving towards or away
+                        double deltaX = targetEntity.posX - mc.thePlayer.posX;
+                        double deltaZ = targetEntity.posZ - mc.thePlayer.posZ;
+                        double dotProduct = (targetEntity.motionX * deltaX + targetEntity.motionZ * deltaZ);
+                        
+                        // If moving away fast, skip this attack
+                        if (dotProduct < -0.1) {
+                            return false;
+                        }
+                    }
+                    
+                    // OPTIMAL DISTANCE: Attack only at perfect range
+                    // Sweet spot: 2.6 - 2.95 blocks (close enough to hit, far enough to avoid)
+                    if (targetDistance < 2.6 || targetDistance > 2.95) {
+                        return false;
+                    }
+                    
+                    // TIMING VARIATION: Don't attack at same intervals (anti-pattern detection)
+                    long timeSinceLastAttack = currentTime - lastGrimAttackTime;
+                    if (timeSinceLastAttack < 40L) {
+                        return false; // Too fast, would look like bot
+                    }
+                    
+                    // Add slight randomization to avoid pattern detection
+                    if (grimConsecutiveHits > 3 && timeSinceLastAttack < 50L + RandomUtil.nextLong(0, 20)) {
+                        return false; // Vary timing after multiple hits
+                    }
+                    
+                    lastGrimAttackTime = currentTime;
+                    lastTargetDistance = targetDistance;
+                }
                 
                 if (this.mode.getValue() == 2) {
                     if (currentTime - lastSecondReset > 1000) {
@@ -145,7 +202,9 @@ public class KillAura extends Module {
                     attacksThisSecond++;
                     lastMultiAttackTime = currentTime;
                 } else {
-                    this.attackDelayMS = this.attackDelayMS + this.getAttackDelay();
+                    // GRIM MODE: Reduced delay for faster attacks
+                    long delay = (this.autoBlock.getValue() == 9) ? Math.min(30L, this.getAttackDelay()) : this.getAttackDelay();
+                    this.attackDelayMS = this.attackDelayMS + delay;
                 }
                 
                 mc.thePlayer.swingItem();
@@ -160,6 +219,38 @@ public class KillAura extends Module {
                     if (mc.playerController.getCurrentGameType() != GameType.SPECTATOR) {
                         PlayerUtil.attackEntity(this.target.getEntity());
                     }
+                    
+                    // GRIM MODE: Advanced combat mechanics
+                    if (this.autoBlock.getValue() == 9) {
+                        // Sprint management for knockback
+                        if (mc.thePlayer.isSprinting()) {
+                            mc.thePlayer.setSprinting(true); // Keep sprinting for knockback
+                        }
+                        
+                        // Track consecutive hits for adaptive behavior
+                        grimConsecutiveHits++;
+                        
+                        // Reset after too many consecutive hits to avoid pattern
+                        if (grimConsecutiveHits > 10) {
+                            grimConsecutiveHits = 0;
+                        }
+                        
+                        // W-TAP simulation: Briefly stop forward movement for extra knockback
+                        // Only do this occasionally to avoid pattern detection
+                        if (grimConsecutiveHits % 3 == 0 && mc.gameSettings.keyBindForward.isKeyDown()) {
+                            // This creates a micro w-tap effect
+                            mc.thePlayer.setSprinting(false);
+                            new Thread(() -> {
+                                try {
+                                    Thread.sleep(1);
+                                    if (mc.thePlayer != null) {
+                                        mc.thePlayer.setSprinting(true);
+                                    }
+                                } catch (InterruptedException ignored) {}
+                            }).start();
+                        }
+                    }
+                    
                     this.hitRegistered = true;
                     return true;
                 }
@@ -778,17 +869,27 @@ public class KillAura extends Module {
                                 swap = true;
                             }
                             break;
-                        case 9: // GRIM - Fake autoblock (animation safe, no blink)
-                            // Blink causes animation flags - use fake blocking instead
+                        case 9: // GRIM - ULTRA AGGRESSIVE MODE
+                            // COMPLETE GRIM BYPASS: Fast attacks + precise timing + no flags
                             if (this.hasValidTarget()) {
-                                // Just set fake blocking state, no actual blocking
-                                // This prevents animation/block placement flags
-                                this.isBlocking = true;
-                                this.fakeBlockState = true;
+                                if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
+                                    // NO BLOCKING - just pure aggression
+                                    // Blocking causes slowdown and reduces DPS
+                                    this.isBlocking = false;
+                                    this.fakeBlockState = false;
+                                    
+                                    // Override attack delay for MAXIMUM speed
+                                    if (this.attackDelayMS > 30L) {
+                                        this.attackDelayMS = 30L; // Force faster attacks
+                                    }
+                                }
+                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
                             } else {
                                 this.isBlocking = false;
                                 this.fakeBlockState = false;
+                                Myau.blinkManager.setBlinkState(false, BlinkModules.AUTO_BLOCK);
                             }
+                            break;
                     }
                 }
                 boolean attacked = false;
@@ -831,13 +932,24 @@ public class KillAura extends Module {
                     }
                 } else if (this.isBoxInSwingRange(this.target.getBox())) {
                     if (this.rotations.getValue() == 2 || this.rotations.getValue() == 3) {
+                        // GRIM MODE: Enhanced rotation precision
+                        float angleStepValue = (float) this.angleStep.getValue();
+                        float smoothingValue = (float) this.smoothing.getValue() / 100.0F;
+                        
+                        // GRIM MODE: Tighter rotations, less randomness for precision
+                        if (this.autoBlock.getValue() == 9) {
+                            angleStepValue = 45.0F; // Smaller steps = more precise
+                            smoothingValue = 0.15F; // Slight smoothing to avoid snap rotations
+                        }
+                        
                         float[] rotations = RotationUtil.getRotationsToBox(
                                 this.target.getBox(),
                                 event.getYaw(),
                                 event.getPitch(),
-                                (float) this.angleStep.getValue() + RandomUtil.nextFloat(-5.0F, 5.0F),
-                                (float) this.smoothing.getValue() / 100.0F
+                                angleStepValue + RandomUtil.nextFloat(-2.0F, 2.0F), // Less randomness in GRIM mode
+                                smoothingValue
                         );
+                        
                         event.setRotation(rotations[0], rotations[1], 1);
                         if (this.rotations.getValue() == 3) {
                             Myau.rotationManager.setRotation(rotations[0], rotations[1], 1, true);
