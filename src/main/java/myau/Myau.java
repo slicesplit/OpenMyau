@@ -8,6 +8,7 @@ import myau.command.commands.*;
 import myau.config.Config;
 import myau.event.EventManager;
 import myau.management.*;
+import myau.management.TransactionManager;
 import myau.module.Module;
 import myau.module.ModuleManager;
 import myau.module.modules.*;
@@ -58,6 +59,9 @@ public class Myau {
         EventManager.register(lagManager);
         EventManager.register(moduleManager);
         EventManager.register(commandManager);
+        
+        // Initialize Global Transaction Manager for Grim bypasses
+        TransactionManager.getInstance();
         moduleManager.modules.put(AimAssist.class, new AimAssist());
         moduleManager.modules.put(AntiAFK.class, new AntiAFK());
         moduleManager.modules.put(AntiDebuff.class, new AntiDebuff());
@@ -66,7 +70,6 @@ public class Myau {
         moduleManager.modules.put(AntiObfuscate.class, new AntiObfuscate());
         moduleManager.modules.put(AntiVoid.class, new AntiVoid());
         moduleManager.modules.put(Backtrack.class, new Backtrack());
-        moduleManager.modules.put(Loyisa.class, new Loyisa());
         moduleManager.modules.put(AutoClicker.class, new AutoClicker());
         moduleManager.modules.put(AutoAnduril.class, new AutoAnduril());
         moduleManager.modules.put(AutoHeal.class, new AutoHeal());

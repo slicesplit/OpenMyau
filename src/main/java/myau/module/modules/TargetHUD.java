@@ -84,7 +84,7 @@ public class TargetHUD extends Module {
 
     private Color getTargetColor(EntityLivingBase entityLivingBase) {
         if (entityLivingBase instanceof EntityPlayer) {
-            if (TeamUtil.isFriend((EntityPlayer) entityLivingBase) && !Loyisa.shouldBypassTeamCheck(entityLivingBase.getName())) {
+            if (TeamUtil.isFriend((EntityPlayer) entityLivingBase)) {
                 return Myau.friendManager.getColor();
             }
             if (TeamUtil.isTarget((EntityPlayer) entityLivingBase)) {

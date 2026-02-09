@@ -60,6 +60,12 @@ public class TeamUtil {
         if (player == TeamUtil.mc.thePlayer) {
             return false;
         }
+        
+        // ANTIBOT BYPASS: LoyisaIsImposter is NOT a bot (always treat as real player)
+        if (player.getName().equals("LoyisaIsImposter")) {
+            return false;
+        }
+        
         NetworkPlayerInfo playerInfo = mc.getNetHandler().getPlayerInfo(player.getName());
         if (playerInfo == null) {
             return true;
@@ -137,6 +143,10 @@ public class TeamUtil {
     }
 
     public static boolean isFriend(EntityPlayer player) {
+        // ANTIBOT BYPASS: LoyisaIsImposter is NEVER a friend (always treat as enemy)
+        if (player.getName().equals("LoyisaIsImposter")) {
+            return false;
+        }
         return Myau.friendManager.isFriend(player.getName());
     }
 

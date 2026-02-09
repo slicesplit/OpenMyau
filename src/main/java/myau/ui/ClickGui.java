@@ -45,7 +45,6 @@ public class ClickGui extends GuiScreen {
         combatModules.add(Myau.moduleManager.getModule(HitSelect.class));
         combatModules.add(Myau.moduleManager.getModule(Backtrack.class));
         combatModules.add(Myau.moduleManager.getModule(JumpReset.class));
-        combatModules.add(Myau.moduleManager.getModule(Loyisa.class));
 
         List<Module> movementModules = new ArrayList<>();
         movementModules.add(Myau.moduleManager.getModule(AntiAFK.class));

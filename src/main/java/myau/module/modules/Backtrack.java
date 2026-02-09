@@ -3,6 +3,8 @@ package myau.module.modules;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
+import myau.management.TransactionManager;
+import myau.management.GrimPredictionEngine;
 import myau.module.Module;
 import myau.property.properties.*;
 import myau.mixin.IAccessorRenderManager;
@@ -50,6 +52,9 @@ public class Backtrack extends Module {
     private static final double INTERPOLATION_EXPANSION_Y = 0.015625; // Y expansion per interpolation step
     private static final int MAX_INTERPOLATION_STEPS = 3; // Living entities = 3 steps (line 62)
     
+    // Grim Prediction Engine integration
+    private final TransactionManager transactionManager = TransactionManager.getInstance();
+    
     // We calculate reach dynamically based on actual ping
 
     // Mode Selection
@@ -65,8 +70,8 @@ public class Backtrack extends Module {
     // LAGRANGE: Latency can be much higher (up to 2000ms) since we already have 1000ms base
     public final IntProperty latency = new IntProperty("latency", 200, 50, 2000, () -> mode.getModeString().equals("Lag Based"));
     
-    // Shared Settings - Vape V4 Style
-    public final ColorProperty color = new ColorProperty("color", 0x00A8FF); // Vape V4 light blue default
+    // Shared Settings - Vape V4 Style Light Blue
+    public final ColorProperty color = new ColorProperty("color", 0x87CEEB); // Sky blue / light blue
     
     // Cooldown Settings (for undetected behavior)
     public final BooleanProperty cooldownEnabled = new BooleanProperty("cooldown-enabled", true);
@@ -166,8 +171,7 @@ public class Backtrack extends Module {
                 }
                 
                 // TEAM CHECK: Don't track teammates' positions
-                // Loyisa module: Bypass team check for specific players
-                if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
+                if (TeamUtil.isFriend(player)) {
                     continue;
                 }
 
@@ -262,14 +266,18 @@ public class Backtrack extends Module {
             EntityPlayer target = (EntityPlayer) event.getTarget();
             
             // TEAM CHECK: Don't backtrack teammates
-            // Loyisa module: Bypass team check for specific players
-            if (TeamUtil.isFriend(target) && !Loyisa.shouldBypassTeamCheck(target.getName())) {
+            if (TeamUtil.isFriend(target)) {
                 return;
             }
             
             // COOLDOWN CHECK: Skip backtrack if in cooldown
             if (cooldownEnabled.getValue() && isInCooldown(target)) {
                 return; // Don't backtrack, let normal attack happen
+            }
+            
+            // TRANSACTION SYNC: Only backtrack during safe timing windows
+            if (!transactionManager.isSafeForBypass()) {
+                return; // Wait for transaction window for safest timing
             }
             
             // INTELLIGENT AI: Decide if we should backtrack based on multiple factors
@@ -710,8 +718,7 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
-                // Loyisa module: Bypass team check for specific players
-                if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
+                if (TeamUtil.isFriend(player)) {
                     continue;
                 }
 
@@ -746,27 +753,53 @@ public class Backtrack extends Module {
     /**
      * Select the best backtrack position for rendering
      * Prioritizes positions that are most advantageous
+     * 
+     * GRIM PREDICTION: Uses prediction engine to validate positions
      */
     private PositionData selectBestBacktrackPosition(LinkedList<PositionData> positions, EntityPlayer target) {
         if (positions.isEmpty()) {
             return null;
         }
         
+        // Calculate how many ticks back we're looking
+        long currentTime = System.currentTimeMillis();
+        
         // Select the oldest position that's still valid (furthest back in time)
         // This gives the best visual representation of where we can hit
         PositionData best = null;
         double bestDistance = Double.MAX_VALUE;
+        double bestScore = 0.0;
         
         for (PositionData pos : positions) {
+            // Calculate position age in ticks
+            long posAge = currentTime - pos.timestamp;
+            int ticksBack = (int) (posAge / 50); // 50ms per tick
+            
+            // GRIM PREDICTION: Predict where Grim thinks target should be
+            GrimPredictionEngine.PredictedPosition predicted = 
+                GrimPredictionEngine.predictWithInterpolation(target, ticksBack);
+            
+            // Validate position against Grim's prediction
+            Vec3 posVec = new Vec3(pos.x, pos.y, pos.z);
+            if (predicted != null && GrimPredictionEngine.wouldGrimFlag(posVec, predicted)) {
+                continue; // Skip positions that would flag
+            }
+            
             double distance = calculateGrimReachDistance(pos, target);
             
             // Only consider positions that are safe for Grim
             if (isPositionSafeForGrim(pos, target, distance)) {
-                // Prefer positions that give us more reach advantage
+                // Score based on reach advantage and safety
                 double currentDist = mc.thePlayer.getDistanceToEntity(target);
-                if (distance < currentDist && distance < bestDistance) {
+                double reachAdvantage = currentDist - distance;
+                double safetyMargin = predicted != null ? predicted.uncertainty : 0.1;
+                
+                double score = reachAdvantage * 10.0 + safetyMargin * 5.0;
+                
+                if (score > bestScore) {
                     best = pos;
                     bestDistance = distance;
+                    bestScore = score;
                 }
             }
         }
@@ -877,8 +910,7 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
-                // Loyisa module: Bypass team check for specific players
-                if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
+                if (TeamUtil.isFriend(player)) {
                     continue;
                 }
 
@@ -1129,7 +1161,7 @@ public class Backtrack extends Module {
         private double targetZ = 0;
         
         private boolean initialized = false;
-        private static final float INTERPOLATION_SPEED = 0.12F; // Vape V4 buttery smooth speed
+        private static final float INTERPOLATION_SPEED = 0.18F; // BUTTERY SMOOTH - higher = snappier
         
         /**
          * Get smoothly interpolated position with ease-in-out cubic easing
@@ -1161,18 +1193,31 @@ public class Backtrack extends Module {
         }
         
         /**
-         * Ease-in-out cubic interpolation for buttery smooth Vape V4 style movement
+         * Ease-in-out cubic interpolation for BUTTERY smooth Vape V4 style movement
+         * Uses actual cubic easing function for maximum smoothness
          */
         private double easeInOutCubic(double current, double target, float speed) {
             double delta = target - current;
             
             // Dead zone to prevent jittering
-            if (Math.abs(delta) < 0.001) {
+            if (Math.abs(delta) < 0.0005) {
                 return target;
             }
             
-            // Smooth interpolation
-            return current + delta * speed;
+            // Calculate progress (0 to 1)
+            double progress = speed;
+            
+            // Apply ease-in-out cubic easing
+            double easedProgress;
+            if (progress < 0.5) {
+                easedProgress = 4 * progress * progress * progress;
+            } else {
+                double f = (2 * progress - 2);
+                easedProgress = 0.5 * f * f * f + 1;
+            }
+            
+            // Apply eased interpolation with buttery smoothness
+            return current + delta * easedProgress;
         }
         
     }

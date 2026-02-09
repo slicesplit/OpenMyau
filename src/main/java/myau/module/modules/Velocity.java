@@ -6,6 +6,8 @@ import myau.enums.DelayModules;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
+import myau.management.TransactionManager;
+import myau.management.GrimPredictionEngine;
 import myau.mixin.IAccessorEntity;
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
@@ -14,6 +16,7 @@ import myau.property.properties.ModeProperty;
 import myau.property.properties.PercentProperty;
 import myau.util.ChatUtil;
 import myau.util.MoveUtil;
+import net.minecraft.util.Vec3;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
@@ -34,8 +37,13 @@ public class Velocity extends Module {
 
     private boolean shouldJump = false;
     private int jumpCooldown = 0;
+    
+    // GRIM mode state
+    private final TransactionManager transactionManager = TransactionManager.getInstance();
+    private Vec3 grimPendingVelocity = null;
+    private int grimApplyTick = 0;
 
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"VANILLA", "JUMP", "DELAY", "REVERSE", "LEGIT_TEST"});
+    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"VANILLA", "JUMP", "DELAY", "REVERSE", "LEGIT_TEST", "GRIM"});
     public final IntProperty delayTicks = new IntProperty("delay-ticks", 3, 1, 20, () -> this.mode.getValue() == 2);
     public final PercentProperty delayChance = new PercentProperty("delay-chance", 100, () -> this.mode.getValue() == 2);
     public final PercentProperty chance = new PercentProperty("chance", 100);
@@ -141,6 +149,39 @@ public class Velocity extends Module {
                     jumpCooldown--;
                 }
             }
+            
+            // GRIM MODE: Gradual velocity application over 3 ticks
+            if (this.mode.getValue() == 5 && grimApplyTick > 0 && grimPendingVelocity != null) {
+                // Calculate safe velocity using prediction engine
+                double horizReduce = 1.0 - ((double) this.horizontal.getValue() / 100.0);
+                double vertReduce = 1.0 - ((double) this.vertical.getValue() / 100.0);
+                
+                Vec3 safeVelocity = GrimPredictionEngine.calculateSafeVelocity(
+                    grimPendingVelocity,
+                    Math.max(horizReduce, vertReduce)
+                );
+                
+                if (grimApplyTick == 1) {
+                    // Tick 1: Apply 40% immediately after transaction window
+                    if (transactionManager.isSafeForBypass()) {
+                        mc.thePlayer.motionX = safeVelocity.xCoord * 0.4;
+                        mc.thePlayer.motionY = safeVelocity.yCoord * 0.4;
+                        mc.thePlayer.motionZ = safeVelocity.zCoord * 0.4;
+                        grimApplyTick = 2;
+                    }
+                } else if (grimApplyTick == 2) {
+                    // Tick 2: Add 30% more
+                    mc.thePlayer.motionX += safeVelocity.xCoord * 0.3;
+                    mc.thePlayer.motionZ += safeVelocity.zCoord * 0.3;
+                    grimApplyTick = 3;
+                } else if (grimApplyTick == 3) {
+                    // Tick 3: Add final 30%
+                    mc.thePlayer.motionX += safeVelocity.xCoord * 0.3;
+                    mc.thePlayer.motionZ += safeVelocity.zCoord * 0.3;
+                    grimApplyTick = 0;
+                    grimPendingVelocity = null;
+                }
+            }
         }
     }
 
@@ -160,6 +201,18 @@ public class Velocity extends Module {
             if (event.getPacket() instanceof S12PacketEntityVelocity) {
                 S12PacketEntityVelocity packet = (S12PacketEntityVelocity) event.getPacket();
                 if (packet.getEntityID() == mc.thePlayer.getEntityId()) {
+                    // GRIM MODE: Cancel and store velocity
+                    if (this.mode.getValue() == 5) {
+                        event.setCancelled(true);
+                        grimPendingVelocity = new Vec3(
+                            packet.getMotionX() / 8000.0,
+                            packet.getMotionY() / 8000.0,
+                            packet.getMotionZ() / 8000.0
+                        );
+                        grimApplyTick = 1;
+                        return;
+                    }
+                    
                     LongJump longJump = (LongJump) Myau.moduleManager.modules.get(LongJump.class);
                     if (this.mode.getValue() == 2
                             && !this.reverseFlag

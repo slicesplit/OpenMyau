@@ -42,7 +42,7 @@ public class Tracers extends Module {
         } else if (entityPlayer != mc.thePlayer && entityPlayer != mc.getRenderViewEntity()) {
             if (TeamUtil.isBot(entityPlayer)) {
                 return this.showBots.getValue();
-            } else if (TeamUtil.isFriend(entityPlayer) && !Loyisa.shouldBypassTeamCheck(entityPlayer.getName())) {
+            } else if (TeamUtil.isFriend(entityPlayer)) {
                 return this.showFriends.getValue();
             } else {
                 return TeamUtil.isTarget(entityPlayer) ? this.showEnemies.getValue() : this.showPlayers.getValue();
@@ -53,7 +53,7 @@ public class Tracers extends Module {
     }
 
     private Color getEntityColor(EntityPlayer entityPlayer, float alpha) {
-        if (TeamUtil.isFriend(entityPlayer) && !Loyisa.shouldBypassTeamCheck(entityPlayer.getName())) {
+        if (TeamUtil.isFriend(entityPlayer)) {
             Color color = Myau.friendManager.getColor();
             return new Color((float) color.getRed() / 255.0F, (float) color.getGreen() / 255.0F, (float) color.getBlue() / 255.0F, alpha);
         } else if (TeamUtil.isTarget(entityPlayer)) {

@@ -139,7 +139,7 @@ public class HitBox extends Module {
             case 1:
                 if (entity instanceof EntityPlayer) {
                     EntityPlayer player = (EntityPlayer) entity;
-                    if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
+                    if (TeamUtil.isFriend(player)) {
                         return false;
                     }
                     if (this.teams.getValue() && TeamUtil.isSameTeam(player)) {
@@ -168,7 +168,7 @@ public class HitBox extends Module {
             case 4:
                 if (entity instanceof EntityPlayer) {
                     EntityPlayer player = (EntityPlayer) entity;
-                    if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
+                    if (TeamUtil.isFriend(player)) {
                         return false;
                     }
                     if (this.teams.getValue() && TeamUtil.isSameTeam(player)) {

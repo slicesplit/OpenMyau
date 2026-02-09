@@ -77,7 +77,7 @@ public class NameTags extends Module {
             if (entityLivingBase != mc.thePlayer && entityLivingBase != mc.getRenderViewEntity()) {
                 if (TeamUtil.isBot((EntityPlayer) entityLivingBase)) {
                     return this.bots.getValue();
-                } else if (TeamUtil.isFriend((EntityPlayer) entityLivingBase) && !Loyisa.shouldBypassTeamCheck(entityLivingBase.getName())) {
+                } else if (TeamUtil.isFriend((EntityPlayer) entityLivingBase)) {
                     return this.friends.getValue();
                 } else {
                     return TeamUtil.isTarget((EntityPlayer) entityLivingBase) ? this.enemies.getValue() : this.players.getValue();
@@ -228,7 +228,7 @@ public class NameTags extends Module {
                                     GlStateManager.popMatrix();
                                 }
                             }
-                            if (TeamUtil.isFriend((EntityPlayer) entity) && !Loyisa.shouldBypassTeamCheck(entity.getName())) {
+                            if (TeamUtil.isFriend((EntityPlayer) entity)) {
                                 RenderUtil.enableRenderState();
                                 float x1 = (float) (-width) / 2.0F - 1.0F;
                                 view = (float) (-mc.fontRendererObj.FONT_HEIGHT) - 1.0F;
