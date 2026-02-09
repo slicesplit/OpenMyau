@@ -53,7 +53,7 @@ public class LagRange extends Module {
                 return false;
             } else if (entityPlayer.deathTime > 0) {
                 return false;
-            } else if (TeamUtil.isFriend(entityPlayer)) {
+            } else if (TeamUtil.isFriend(entityPlayer) && !Loyisa.shouldBypassTeamCheck(entityPlayer.getName())) {
                 return false;
             } else {
                 return (!this.teams.getValue() || !TeamUtil.isSameTeam(entityPlayer)) && (!this.botCheck.getValue() || !TeamUtil.isBot(entityPlayer));

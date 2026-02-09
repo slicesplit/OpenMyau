@@ -5,152 +5,101 @@ import myau.event.types.EventType;
 import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
+import myau.property.properties.BooleanProperty;
 import myau.property.properties.FloatProperty;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityOtherPlayerMP;
 import net.minecraft.network.play.client.C03PacketPlayer;
 
 public class Freecam extends Module {
-    private static final Minecraft mc = Minecraft.getMinecraft();
-    
-    public final FloatProperty speed = new FloatProperty("speed", 1.0F, 0.1F, 5.0F);
-    
-    private EntityOtherPlayerMP fakePlayer = null;
+
+    private final Minecraft mc = Minecraft.getMinecraft();
+
+    public final FloatProperty speed = new FloatProperty("Speed", 1.0F, 0.1F, 5.0F);
+    public final BooleanProperty fakePlayer = new BooleanProperty("FakePlayer", true);
+
+    private EntityOtherPlayerMP clone;
+
     private double startX, startY, startZ;
     private float startYaw, startPitch;
-    
+
     public Freecam() {
         super("Freecam", false);
     }
-    
+
     @Override
     public void onEnabled() {
         if (mc.thePlayer == null || mc.theWorld == null) {
-            this.setEnabled(false);
+            setEnabled(false);
             return;
         }
-        
-        // Store starting position
+
+        // Save starting position
         startX = mc.thePlayer.posX;
         startY = mc.thePlayer.posY;
         startZ = mc.thePlayer.posZ;
         startYaw = mc.thePlayer.rotationYaw;
         startPitch = mc.thePlayer.rotationPitch;
-        
-        // Create fake player at current position (ASYNC to prevent freeze)
-        new Thread(() -> {
-            try {
-                if (mc.theWorld != null && mc.thePlayer != null) {
-                    fakePlayer = new EntityOtherPlayerMP(mc.theWorld, mc.thePlayer.getGameProfile());
-                    fakePlayer.copyLocationAndAnglesFrom(mc.thePlayer);
-                    fakePlayer.rotationYawHead = mc.thePlayer.rotationYawHead;
-                    fakePlayer.inventory = mc.thePlayer.inventory;
-                    
-                    // Add entity on main thread
-                    mc.addScheduledTask(() -> {
-                        if (mc.theWorld != null && fakePlayer != null) {
-                            mc.theWorld.addEntityToWorld(-100, fakePlayer);
-                        }
-                    });
-                }
-            } catch (Exception e) {
-                // Silently handle
-            }
-        }).start();
-        
-        // Set player to spectator-like mode (no freeze)
-        mc.thePlayer.noClip = true;
-        if (!mc.thePlayer.capabilities.isFlying) {
-            mc.thePlayer.capabilities.isFlying = true;
+
+        // Spawn fake player
+        if (fakePlayer.getValue()) {
+            clone = new EntityOtherPlayerMP(mc.theWorld, mc.thePlayer.getGameProfile());
+            clone.copyLocationAndAnglesFrom(mc.thePlayer);
+            clone.rotationYawHead = mc.thePlayer.rotationYawHead;
+            clone.inventory = mc.thePlayer.inventory;
+
+            mc.theWorld.addEntityToWorld(-1337, clone);
         }
-        mc.thePlayer.capabilities.setFlySpeed(this.speed.getValue() * 0.05F);
+
+        // Enable freecam
+        mc.thePlayer.noClip = true;
+        mc.thePlayer.capabilities.isFlying = true;
+        mc.thePlayer.capabilities.setFlySpeed(speed.getValue() * 0.05F);
     }
-    
+
     @Override
     public void onDisabled() {
-        if (mc.thePlayer == null || mc.theWorld == null) {
-            return;
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+
+        // Remove clone
+        if (clone != null) {
+            mc.theWorld.removeEntityFromWorld(-1337);
+            clone = null;
         }
-        
-        // Restore position (no teleport, smooth transition)
-        mc.thePlayer.setPositionAndUpdate(startX, startY, startZ);
-        mc.thePlayer.rotationYaw = startYaw;
-        mc.thePlayer.rotationPitch = startPitch;
-        
-        // Remove fake player (ASYNC to prevent freeze)
-        if (fakePlayer != null) {
-            final EntityOtherPlayerMP tempFake = fakePlayer;
-            mc.addScheduledTask(() -> {
-                if (mc.theWorld != null) {
-                    mc.theWorld.removeEntityFromWorld(-100);
-                }
-            });
-            fakePlayer = null;
-        }
-        
-        // Restore player state
+
+        // Restore position
+        mc.thePlayer.setPositionAndRotation(startX, startY, startZ, startYaw, startPitch);
+
+        // Restore movement
         mc.thePlayer.noClip = false;
+
         if (!mc.thePlayer.capabilities.isCreativeMode) {
             mc.thePlayer.capabilities.isFlying = false;
             mc.thePlayer.capabilities.setFlySpeed(0.05F);
         }
-        
-        // Force position sync to prevent rubberband
-        mc.thePlayer.sendQueue.addToSendQueue(new C03PacketPlayer.C06PacketPlayerPosLook(
-            mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ,
-            mc.thePlayer.rotationYaw, mc.thePlayer.rotationPitch,
-            mc.thePlayer.onGround
-        ));
     }
-    
+
     @EventTarget
     public void onTick(TickEvent event) {
-        if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null) {
-            return;
-        }
-        
-        // Update fly speed based on setting
-        mc.thePlayer.capabilities.setFlySpeed(this.speed.getValue() * 0.05F);
-        
-        // Keep noClip enabled
+        if (!isEnabled() || mc.thePlayer == null) return;
+        if (event.getType() != EventType.PRE) return;
+
         mc.thePlayer.noClip = true;
-        
-        // Prevent fall damage
         mc.thePlayer.fallDistance = 0.0F;
-        
-        // Keep player flying (prevents game freeze on disable)
-        if (!mc.thePlayer.capabilities.isFlying) {
-            mc.thePlayer.capabilities.isFlying = true;
-        }
+        mc.thePlayer.capabilities.isFlying = true;
+
+        // Apply speed setting
+        mc.thePlayer.capabilities.setFlySpeed(speed.getValue() * 0.05F);
     }
-    
+
     @EventTarget
     public void onPacket(PacketEvent event) {
-        if (!this.isEnabled()) {
-            return;
-        }
-        
-        // Cancel position packets to prevent server-side movement
+        if (!isEnabled()) return;
+
+        // Cancel movement packets (server never updates your position)
         if (event.getType() == EventType.SEND) {
             if (event.getPacket() instanceof C03PacketPlayer) {
-                C03PacketPlayer packet = (C03PacketPlayer) event.getPacket();
-                
-                // Keep sending packets but with original position (prevents timeout)
-                if (packet.isMoving()) {
-                    event.setCancelled(true);
-                    
-                    // Send packet with original position instead
-                    try {
-                        C03PacketPlayer newPacket = new C03PacketPlayer.C06PacketPlayerPosLook(
-                            startX, startY, startZ,
-                            packet.getYaw(), packet.getPitch(),
-                            packet.isOnGround()
-                        );
-                        mc.getNetHandler().getNetworkManager().sendPacket(newPacket);
-                    } catch (Exception e) {
-                        // If packet fails, don't freeze - just skip
-                    }
-                }
+                event.setCancelled(true);
             }
         }
     }

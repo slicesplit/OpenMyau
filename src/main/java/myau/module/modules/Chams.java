@@ -40,7 +40,7 @@ public class Chams extends Module {
             if (entityLivingBase != mc.thePlayer && entityLivingBase != mc.getRenderViewEntity()) {
                 if (TeamUtil.isBot((EntityPlayer) entityLivingBase)) {
                     return this.bots.getValue();
-                } else if (TeamUtil.isFriend((EntityPlayer) entityLivingBase)) {
+                } else if (TeamUtil.isFriend((EntityPlayer) entityLivingBase) && !Loyisa.shouldBypassTeamCheck(entityLivingBase.getName())) {
                     return this.friends.getValue();
                 } else {
                     return TeamUtil.isTarget((EntityPlayer) entityLivingBase) ? this.enemiess.getValue() : this.players.getValue();

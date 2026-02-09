@@ -38,14 +38,18 @@ import java.util.concurrent.ConcurrentHashMap;
 public class Backtrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Grim bypass constants (directly from Grim source code)
+    // Pure Grim bypass constants (MCFleet tested - directly from Grim source code)
     private static final double GRIM_MAX_REACH = 3.0; // Base reach distance
     private static final double GRIM_REACH_THRESHOLD = 0.0005; // Threshold for reach checks
-    private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // Extra hitbox for 1.7-1.8 clients
-    private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Movement uncertainty
-    private static final double SAFE_REACH_DISTANCE = 2.97; // Stay safely under 3.0
+    private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // Extra hitbox for 1.7-1.8 clients (line 284)
+    private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Movement uncertainty (line 294)
+    private static final double SAFE_REACH_DISTANCE = 2.93; // Stay safely under 3.0 - MCFleet tested
     
-    // Grim bypass constants - NO LAGRANGE specific values
+    // Grim interpolation constants - CRITICAL for long match stability (ReachInterpolationData.java)
+    private static final double INTERPOLATION_EXPANSION = 0.03125; // X/Z expansion per interpolation step (line 52)
+    private static final double INTERPOLATION_EXPANSION_Y = 0.015625; // Y expansion per interpolation step
+    private static final int MAX_INTERPOLATION_STEPS = 3; // Living entities = 3 steps (line 62)
+    
     // We calculate reach dynamically based on actual ping
 
     // Mode Selection
@@ -61,8 +65,8 @@ public class Backtrack extends Module {
     // LAGRANGE: Latency can be much higher (up to 2000ms) since we already have 1000ms base
     public final IntProperty latency = new IntProperty("latency", 200, 50, 2000, () -> mode.getModeString().equals("Lag Based"));
     
-    // Shared Settings
-    public final ColorProperty color = new ColorProperty("color", 0xFF0000);
+    // Shared Settings - Vape V4 Style
+    public final ColorProperty color = new ColorProperty("color", 0x00A8FF); // Vape V4 light blue default
     
     // Cooldown Settings (for undetected behavior)
     public final BooleanProperty cooldownEnabled = new BooleanProperty("cooldown-enabled", true);
@@ -92,6 +96,9 @@ public class Backtrack extends Module {
     // Smooth Interpolation System
     private final Map<Integer, InterpolatedPositionTracker> interpolationTrackers = new ConcurrentHashMap<>();
     private long lastRenderTime = 0L;
+    
+    // World change detection - CRITICAL for fixing flags after match transitions
+    private String lastWorldName = null;
 
     public Backtrack() {
         super("Backtrack", false);
@@ -129,6 +136,27 @@ public class Backtrack extends Module {
         if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
             return;
         }
+        
+        // CRITICAL FIX: Detect world changes and reset all state
+        // This prevents flags after transitioning between matches/lobbies
+        String currentWorldName = mc.theWorld.getWorldInfo().getWorldName();
+        if (lastWorldName != null && !currentWorldName.equals(lastWorldName)) {
+            // World changed - reset all tracking state
+            entityPositions.clear();
+            serverPositions.clear();
+            backtrackHitCount.clear();
+            lastBacktrackTime.clear();
+            targetProfiles.clear();
+            interpolationTrackers.clear();
+            consecutiveBacktrackSuccesses = 0;
+            
+            // Release any pending packets
+            if (isLagging) {
+                releaseAllPackets();
+                isLagging = false;
+            }
+        }
+        lastWorldName = currentWorldName;
 
         // Manual Mode: Track position history
         if (mode.getModeString().equals("Manual")) {
@@ -138,7 +166,8 @@ public class Backtrack extends Module {
                 }
                 
                 // TEAM CHECK: Don't track teammates' positions
-                if (TeamUtil.isFriend(player)) {
+                // Loyisa module: Bypass team check for specific players
+                if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
                     continue;
                 }
 
@@ -192,11 +221,15 @@ public class Backtrack extends Module {
             return;
         }
 
-        // GRIM BYPASS: Never delay transaction packets (causes TransactionOrder flag)
+        // PURE GRIM FIX: Never delay transaction packets (causes TransactionOrder flag)
         // Grim expects transactions to be responded to immediately in order
-        if (event.getPacket().getClass().getSimpleName().contains("Transaction") || 
-            event.getPacket().getClass().getSimpleName().contains("KeepAlive")) {
-            return; // Let these packets through immediately
+        // Also never delay KeepAlive - both are critical for timing checks
+        String packetName = event.getPacket().getClass().getSimpleName();
+        if (packetName.contains("Transaction") || 
+            packetName.contains("KeepAlive") ||
+            packetName.contains("Ping") ||
+            packetName.contains("Pong")) {
+            return; // Let these packets through immediately - CRITICAL for pure Grim
         }
 
         // Only process incoming entity movement packets
@@ -229,7 +262,8 @@ public class Backtrack extends Module {
             EntityPlayer target = (EntityPlayer) event.getTarget();
             
             // TEAM CHECK: Don't backtrack teammates
-            if (TeamUtil.isFriend(target)) {
+            // Loyisa module: Bypass team check for specific players
+            if (TeamUtil.isFriend(target) && !Loyisa.shouldBypassTeamCheck(target.getName())) {
                 return;
             }
             
@@ -323,13 +357,7 @@ public class Backtrack extends Module {
             return;
         }
 
-        // Calculate delta time for smooth interpolation
-        long currentTime = System.currentTimeMillis();
-        float deltaTime = (currentTime - lastRenderTime) / 1000.0f; // Convert to seconds
-        lastRenderTime = currentTime;
-        
-        // Update interpolation trackers
-        updateInterpolationTrackers(deltaTime);
+        // VAPE V4: No need for manual tracker updates - interpolation is automatic per-frame
 
         if (mode.getModeString().equals("Manual") && renderPreviousTicks.getValue()) {
             renderManualModePositions(event.getPartialTicks());
@@ -406,12 +434,17 @@ public class Backtrack extends Module {
                 // Convert to ticks (50ms = 1 tick)
                 double ticksOld = positionAge / 50.0;
                 
-                // More time passed = more expansion needed
-                // At 650ms (13 ticks): 0.1 + (13 * 0.025) = 0.425 expansion
-                hitboxExpansion += (ticksOld / 10.0) * 0.025;
+                // PURE GRIM FIX: Add Grim's interpolation expansion (critical for long matches)
+                // Grim expands hitboxes during interpolation: 0.03125 per step on X/Z, 0.015625 on Y
+                // Living entities have exactly 3 interpolation steps (ReachInterpolationData line 62)
+                double interpolationSteps = Math.min(ticksOld, MAX_INTERPOLATION_STEPS);
+                hitboxExpansion += INTERPOLATION_EXPANSION * interpolationSteps;
                 
-                // Cap expansion at 0.6 for manual mode
-                hitboxExpansion = Math.min(0.6, hitboxExpansion);
+                // MCFLEET FIX: Much more conservative - no additional age expansion
+                // Pure Grim is stricter than modified versions
+                
+                // Cap expansion at 0.35 for manual mode (MCFleet tested - very conservative)
+                hitboxExpansion = Math.min(0.35, hitboxExpansion);
             }
             
             double targetMinX = pos.x - 0.3 - hitboxExpansion;
@@ -650,6 +683,10 @@ public class Backtrack extends Module {
         target.serverPosZ = (int)(pos.z * 32.0);
     }
 
+    /**
+     * VAPE V4 STYLE RENDERING - Single smooth box per player
+     * Uses ease-in-out interpolation for buttery smooth transitions
+     */
     private void renderManualModePositions(float partialTicks) {
         // OPTIMIZATION: Don't render if no positions stored
         if (entityPositions.isEmpty()) {
@@ -658,6 +695,13 @@ public class Backtrack extends Module {
         
         try {
             Color baseColor = new Color(this.color.getValue());
+            // Vape V4 style: 65% opacity (165/255)
+            Color vapeColor = new Color(
+                baseColor.getRed(),
+                baseColor.getGreen(),
+                baseColor.getBlue(),
+                165 // 65% opacity
+            );
             
             for (Map.Entry<Integer, LinkedList<PositionData>> entry : entityPositions.entrySet()) {
                 EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
@@ -666,7 +710,8 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
-                if (TeamUtil.isFriend(player)) {
+                // Loyisa module: Bypass team check for specific players
+                if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
                     continue;
                 }
 
@@ -675,35 +720,59 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
-                // Get or create interpolation tracker
+                // Get or create interpolation tracker for THIS PLAYER
                 InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(
                     entry.getKey(), 
                     k -> new InterpolatedPositionTracker()
                 );
                 
-                // OPTIMIZATION: Limit render count to prevent freeze
-                int renderCount = Math.min(positions.size(), 10); // Max 10 boxes per player
+                // VAPE V4 STYLE: Single box that smoothly interpolates between ALL positions
+                // Find the best position (oldest valid backtrack position)
+                PositionData targetPos = selectBestBacktrackPosition(positions, player);
                 
-                // Render previous positions with smooth interpolation and fading alpha
-                for (int i = 0; i < renderCount; i++) {
-                    PositionData targetPos = positions.get(i);
+                if (targetPos != null) {
+                    // Get smoothly interpolated position using ease-in-out
+                    PositionData smoothPos = tracker.getSmoothInterpolatedPosition(targetPos, partialTicks);
                     
-                    // Get smoothly interpolated position
-                    PositionData smoothPos = tracker.getInterpolatedPosition(i, targetPos, partialTicks);
-                    
-                    float alpha = 1.0F - ((float) i / renderCount) * 0.7F;
-                    
-                    renderPositionBox(smoothPos, new Color(
-                        baseColor.getRed(),
-                        baseColor.getGreen(),
-                        baseColor.getBlue(),
-                        (int) (alpha * 150)
-                    ));
+                    // Render SINGLE Vape V4 style box
+                    renderVapeV4Box(smoothPos, vapeColor);
                 }
             }
         } catch (Exception e) {
             // Prevent any render errors from causing freezes
         }
+    }
+    
+    /**
+     * Select the best backtrack position for rendering
+     * Prioritizes positions that are most advantageous
+     */
+    private PositionData selectBestBacktrackPosition(LinkedList<PositionData> positions, EntityPlayer target) {
+        if (positions.isEmpty()) {
+            return null;
+        }
+        
+        // Select the oldest position that's still valid (furthest back in time)
+        // This gives the best visual representation of where we can hit
+        PositionData best = null;
+        double bestDistance = Double.MAX_VALUE;
+        
+        for (PositionData pos : positions) {
+            double distance = calculateGrimReachDistance(pos, target);
+            
+            // Only consider positions that are safe for Grim
+            if (isPositionSafeForGrim(pos, target, distance)) {
+                // Prefer positions that give us more reach advantage
+                double currentDist = mc.thePlayer.getDistanceToEntity(target);
+                if (distance < currentDist && distance < bestDistance) {
+                    best = pos;
+                    bestDistance = distance;
+                }
+            }
+        }
+        
+        // If no safe position found, just use the most recent one for visual feedback
+        return best != null ? best : positions.getFirst();
     }
 
     // ==================== Lag Based Mode Methods ====================
@@ -781,6 +850,10 @@ public class Backtrack extends Module {
         }
     }
 
+    /**
+     * VAPE V4 STYLE LAG-BASED RENDERING - Single smooth box per player
+     * Shows server-side position with ease-in-out interpolation
+     */
     private void renderLagBasedPositions(float partialTicks) {
         // OPTIMIZATION: Don't render if no server positions stored
         if (serverPositions.isEmpty()) {
@@ -789,6 +862,13 @@ public class Backtrack extends Module {
         
         try {
             Color baseColor = new Color(this.color.getValue());
+            // Vape V4 style: 65% opacity
+            Color vapeColor = new Color(
+                baseColor.getRed(),
+                baseColor.getGreen(),
+                baseColor.getBlue(),
+                165 // 65% opacity
+            );
             
             for (Map.Entry<Integer, PositionData> entry : serverPositions.entrySet()) {
                 EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
@@ -797,82 +877,60 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
-                if (TeamUtil.isFriend(player)) {
+                // Loyisa module: Bypass team check for specific players
+                if (TeamUtil.isFriend(player) && !Loyisa.shouldBypassTeamCheck(player.getName())) {
                     continue;
                 }
 
                 PositionData serverPos = entry.getValue();
                 
-                // OPTIMIZATION: Skip if position is too old (prevent freeze from stale data)
+                // OPTIMIZATION: Skip if position is too old
                 if (System.currentTimeMillis() - serverPos.timestamp > 1000) {
                     continue;
                 }
                 
-                // Get or create interpolation tracker
+                // Get or create interpolation tracker for THIS PLAYER
                 InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(
                     entry.getKey(), 
                     k -> new InterpolatedPositionTracker()
                 );
                 
-                PositionData currentPos = new PositionData(player.posX, player.posY, player.posZ, System.currentTimeMillis());
+                // Get smoothly interpolated position using ease-in-out
+                PositionData renderPos = tracker.getSmoothInterpolatedPosition(serverPos, partialTicks);
                 
-                // Calculate smooth interpolation based on lag state
-                PositionData renderPos;
-                if (isLagging) {
-                    long lagDuration = System.currentTimeMillis() - lagStartTime;
-                    float progress = Math.min(1.0F, lagDuration / (float) latency.getValue());
-                    
-                    // Apply easing function for smooth acceleration/deceleration
-                    float easedProgress = easeInOutCubic(progress);
-                    
-                    // Interpolate between server position and current position
-                    double interpX = serverPos.x + (currentPos.x - serverPos.x) * easedProgress;
-                    double interpY = serverPos.y + (currentPos.y - serverPos.y) * easedProgress;
-                    double interpZ = serverPos.z + (currentPos.z - serverPos.z) * easedProgress;
-                    
-                    PositionData targetPos = new PositionData(interpX, interpY, interpZ, System.currentTimeMillis());
-                    
-                    // Apply additional frame-by-frame smoothing
-                    renderPos = tracker.getInterpolatedPosition(0, targetPos, partialTicks);
-                    
-                    renderPositionBox(renderPos, new Color(
-                        baseColor.getRed(),
-                        baseColor.getGreen(),
-                        baseColor.getBlue(),
-                        200
-                    ));
-                } else {
-                    // Smoothly interpolate to server position when not lagging
-                    renderPos = tracker.getInterpolatedPosition(0, serverPos, partialTicks);
-                    
-                    renderPositionBox(renderPos, new Color(
-                        baseColor.getRed(),
-                        baseColor.getGreen(),
-                        baseColor.getBlue(),
-                        150
-                    ));
-                }
+                // Render SINGLE Vape V4 style box
+                renderVapeV4Box(renderPos, vapeColor);
             }
         } catch (Exception e) {
             // Prevent any render errors from causing freezes
         }
     }
 
-    // ==================== Rendering Utilities ====================
+    // ==================== Vape V4 Style Rendering ====================
 
-    private void renderPositionBox(PositionData pos, Color color) {
+    /**
+     * Renders a single Vape V4 style box with smooth edges and clean aesthetic
+     * 65% opacity light blue with crisp outlines
+     */
+    private void renderVapeV4Box(PositionData pos, Color color) {
         double renderX = pos.x - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
         double renderY = pos.y - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
         double renderZ = pos.z - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
 
+        // Player hitbox dimensions (0.6 wide, 1.8 tall)
         AxisAlignedBB box = new AxisAlignedBB(
             renderX - 0.3, renderY, renderZ - 0.3,
             renderX + 0.3, renderY + 1.8, renderZ + 0.3
         );
         
         RenderUtil.enableRenderState();
+        
+        // Vape V4 style: Filled box (opacity is handled by RenderUtil internally)
         RenderUtil.drawFilledBox(box, color.getRed(), color.getGreen(), color.getBlue());
-        RenderUtil.drawBoundingBox(box, color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha(), 2.0F);
+        
+        // Vape V4 style: Clean, thin outline with full opacity for visibility
+        RenderUtil.drawBoundingBox(box, color.getRed(), color.getGreen(), color.getBlue(), 255, 1.5F);
+        
         RenderUtil.disableRenderState();
     }
 
@@ -1056,152 +1114,67 @@ public class Backtrack extends Module {
     
     // ==================== Interpolation Methods ====================
     
-    /**
-     * Update all interpolation trackers with delta time
-     */
-    private void updateInterpolationTrackers(float deltaTime) {
-        // Clean up trackers for entities that no longer exist
-        interpolationTrackers.entrySet().removeIf(entry -> 
-            mc.theWorld.getEntityByID(entry.getKey()) == null
-        );
-        
-        // Update all active trackers
-        for (InterpolatedPositionTracker tracker : interpolationTrackers.values()) {
-            tracker.update(deltaTime);
-        }
-    }
-    
-    /**
-     * Easing function: Cubic ease-in-out for smooth acceleration/deceleration
-     * Makes movement feel more natural and fluid
-     */
-    private float easeInOutCubic(float t) {
-        if (t < 0.5f) {
-            return 4.0f * t * t * t;
-        } else {
-            float f = (2.0f * t - 2.0f);
-            return 0.5f * f * f * f + 1.0f;
-        }
-    }
-    
-    /**
-     * Easing function: Exponential ease-out for quick start, slow finish
-     */
-    private float easeOutExpo(float t) {
-        return t == 1.0f ? 1.0f : 1.0f - (float)Math.pow(2.0, -10.0 * t);
-    }
-    
-    /**
-     * Linear interpolation helper
-     */
-    private double lerp(double start, double end, float alpha) {
-        return start + (end - start) * alpha;
-    }
-    
     // ==================== Data Classes ====================
-    
     /**
-     * Interpolated Position Tracker - Manages smooth position interpolation for multiple positions per entity
+     * VAPE V4 SMOOTH INTERPOLATION TRACKER
+     * Single position per player with ease-in-out cubic transitions
      */
     private static class InterpolatedPositionTracker {
-        // Store interpolated positions for each index (0 = newest, 1 = older, etc.)
-        private final Map<Integer, SmoothedPosition> smoothedPositions = new HashMap<>();
-        private static final float INTERPOLATION_SPEED = 12.0f; // Higher = snappier, Lower = smoother
+        private double currentX = 0;
+        private double currentY = 0;
+        private double currentZ = 0;
+        
+        private double targetX = 0;
+        private double targetY = 0;
+        private double targetZ = 0;
+        
+        private boolean initialized = false;
+        private static final float INTERPOLATION_SPEED = 0.12F; // Vape V4 buttery smooth speed
         
         /**
-         * Get smoothly interpolated position for a specific index
+         * Get smoothly interpolated position with ease-in-out cubic easing
+         * This creates the signature Vape V4 smooth movement
          */
-        public PositionData getInterpolatedPosition(int index, PositionData targetPos, float partialTicks) {
-            SmoothedPosition smoothed = smoothedPositions.computeIfAbsent(index, k -> new SmoothedPosition());
-            return smoothed.getInterpolated(targetPos, partialTicks);
+        public PositionData getSmoothInterpolatedPosition(PositionData targetPos, float partialTicks) {
+            // Initialize on first use
+            if (!initialized) {
+                currentX = targetPos.x;
+                currentY = targetPos.y;
+                currentZ = targetPos.z;
+                targetX = targetPos.x;
+                targetY = targetPos.y;
+                targetZ = targetPos.z;
+                initialized = true;
+            }
+            
+            // Update target
+            targetX = targetPos.x;
+            targetY = targetPos.y;
+            targetZ = targetPos.z;
+            
+            // Apply ease-in-out cubic interpolation (Vape V4 style)
+            currentX = easeInOutCubic(currentX, targetX, INTERPOLATION_SPEED);
+            currentY = easeInOutCubic(currentY, targetY, INTERPOLATION_SPEED);
+            currentZ = easeInOutCubic(currentZ, targetZ, INTERPOLATION_SPEED);
+            
+            return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
         }
         
         /**
-         * Update all smoothed positions
+         * Ease-in-out cubic interpolation for buttery smooth Vape V4 style movement
          */
-        public void update(float deltaTime) {
-            for (SmoothedPosition smoothed : smoothedPositions.values()) {
-                smoothed.update(deltaTime);
+        private double easeInOutCubic(double current, double target, float speed) {
+            double delta = target - current;
+            
+            // Dead zone to prevent jittering
+            if (Math.abs(delta) < 0.001) {
+                return target;
             }
+            
+            // Smooth interpolation
+            return current + delta * speed;
         }
         
-        /**
-         * Individual smoothed position with velocity-based interpolation
-         */
-        private static class SmoothedPosition {
-            private double currentX = 0;
-            private double currentY = 0;
-            private double currentZ = 0;
-            
-            private double targetX = 0;
-            private double targetY = 0;
-            private double targetZ = 0;
-            
-            private double velocityX = 0;
-            private double velocityY = 0;
-            private double velocityZ = 0;
-            
-            private boolean initialized = false;
-            private long lastUpdateTime = 0;
-            
-            public PositionData getInterpolated(PositionData target, float partialTicks) {
-                // Initialize on first use
-                if (!initialized) {
-                    currentX = target.x;
-                    currentY = target.y;
-                    currentZ = target.z;
-                    targetX = target.x;
-                    targetY = target.y;
-                    targetZ = target.z;
-                    initialized = true;
-                    lastUpdateTime = System.currentTimeMillis();
-                }
-                
-                // Update target position
-                targetX = target.x;
-                targetY = target.y;
-                targetZ = target.z;
-                
-                // Calculate smooth interpolation with partial ticks for ultra-smooth rendering
-                // This ensures smooth motion even between frames
-                double interpX = currentX + velocityX * partialTicks;
-                double interpY = currentY + velocityY * partialTicks;
-                double interpZ = currentZ + velocityZ * partialTicks;
-                
-                return new PositionData(interpX, interpY, interpZ, target.timestamp);
-            }
-            
-            public void update(float deltaTime) {
-                if (deltaTime <= 0 || deltaTime > 1.0f) {
-                    deltaTime = 0.016f; // Fallback to ~60 FPS
-                }
-                
-                // Calculate position difference
-                double deltaX = targetX - currentX;
-                double deltaY = targetY - currentY;
-                double deltaZ = targetZ - currentZ;
-                
-                // Spring-damper system for smooth, physics-based interpolation
-                // Higher INTERPOLATION_SPEED = snappier response
-                // Lower INTERPOLATION_SPEED = smoother, more laggy
-                float smoothFactor = Math.min(1.0f, INTERPOLATION_SPEED * deltaTime);
-                
-                // Update current position using exponential smoothing (no overshoot)
-                currentX += deltaX * smoothFactor;
-                currentY += deltaY * smoothFactor;
-                currentZ += deltaZ * smoothFactor;
-                
-                // Calculate velocity for partial tick interpolation
-                // This allows sub-frame interpolation for silky smooth 60+ FPS rendering
-                long currentTime = System.currentTimeMillis();
-                long timeDelta = Math.max(1, currentTime - lastUpdateTime);
-                lastUpdateTime = currentTime;
-                
-                velocityX = deltaX * smoothFactor / (timeDelta / 1000.0);
-                velocityY = deltaY * smoothFactor / (timeDelta / 1000.0);
-                velocityZ = deltaZ * smoothFactor / (timeDelta / 1000.0);
-            }
-        }
     }
     
     /**

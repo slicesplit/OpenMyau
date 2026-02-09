@@ -54,7 +54,7 @@ public class ESP extends Module {
         } else if (entityPlayer != mc.thePlayer && entityPlayer != mc.getRenderViewEntity()) {
             if (TeamUtil.isBot(entityPlayer)) {
                 return this.bots.getValue();
-            } else if (TeamUtil.isFriend(entityPlayer)) {
+            } else if (TeamUtil.isFriend(entityPlayer) && !Loyisa.shouldBypassTeamCheck(entityPlayer.getName())) {
                 return this.friends.getValue();
             } else {
                 return TeamUtil.isTarget(entityPlayer) ? this.enemies.getValue() : this.players.getValue();
@@ -65,7 +65,7 @@ public class ESP extends Module {
     }
 
     private Color getEntityColor(EntityPlayer entityPlayer) {
-        if (TeamUtil.isFriend(entityPlayer)) {
+        if (TeamUtil.isFriend(entityPlayer) && !Loyisa.shouldBypassTeamCheck(entityPlayer.getName())) {
             return Myau.friendManager.getColor();
         } else if (TeamUtil.isTarget(entityPlayer)) {
             return Myau.targetManager.getColor();

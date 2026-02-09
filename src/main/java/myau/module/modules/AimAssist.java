@@ -45,7 +45,7 @@ public class AimAssist extends Module {
                 return false;
             } else if (RotationUtil.rayTrace(entityPlayer) != null) {
                 return false;
-            } else if (TeamUtil.isFriend(entityPlayer)) {
+            } else if (TeamUtil.isFriend(entityPlayer) && !Loyisa.shouldBypassTeamCheck(entityPlayer.getName())) {
                 return false;
             } else {
                 return (!this.team.getValue() || !TeamUtil.isSameTeam(entityPlayer)) && (!this.botChecks.getValue() || !TeamUtil.isBot(entityPlayer));
