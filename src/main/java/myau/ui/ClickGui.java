@@ -110,6 +110,7 @@ public class ClickGui extends GuiScreen {
         miscModules.add(Myau.moduleManager.getModule(InventoryClicker.class));
         miscModules.add(Myau.moduleManager.getModule(FakeLag.class));
         miscModules.add(Myau.moduleManager.getModule(RemoteShop.class));
+        miscModules.add(Myau.moduleManager.getModule(InfHealthExploit.class));
 
         Comparator<Module> comparator = Comparator.comparing(m -> m.getName().toLowerCase());
         combatModules.sort(comparator);
