@@ -41,21 +41,21 @@ import java.util.stream.Collectors;
 public class Backtrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Enhanced Grim bypass constants - more aggressive hitbox safety
+    // Enhanced Grim bypass constants - accurate reach limits
     private static final double GRIM_MAX_REACH = 3.0; // Base reach distance
     private static final double GRIM_REACH_THRESHOLD = 0.0005; // Threshold for reach checks
-    private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.15; // Increased from 0.1 to 0.15 for safer hitbox
-    private static final double GRIM_MOVEMENT_THRESHOLD = 0.05; // Increased from 0.03 for more tolerance
-    private static final double SAFE_REACH_DISTANCE = 2.85; // Reduced from 2.93 to 2.85 for extra safety
+    private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // Standard 1.8 hitbox expansion
+    private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Standard movement threshold
+    private static final double SAFE_REACH_DISTANCE = 2.95; // Safe distance with 0.05 buffer from 3.0
     
-    // Grim interpolation constants - enhanced for bypass
-    private static final double INTERPOLATION_EXPANSION = 0.04; // Increased from 0.03125 to 0.04
-    private static final double INTERPOLATION_EXPANSION_Y = 0.02; // Increased from 0.015625 to 0.02
+    // Grim interpolation constants - standard values
+    private static final double INTERPOLATION_EXPANSION = 0.03125; // Grim's standard interpolation expansion
+    private static final double INTERPOLATION_EXPANSION_Y = 0.015625; // Y-axis interpolation expansion
     private static final int MAX_INTERPOLATION_STEPS = 3; // Living entities = 3 steps
     
-    // Additional safety margins
-    private static final double EXTRA_HITBOX_MARGIN = 0.08; // Extra margin for hitbox calculations
-    private static final double REACH_SAFETY_BUFFER = 0.15; // Buffer to stay well under max reach
+    // Safety margins - minimal to avoid false positives
+    private static final double EXTRA_HITBOX_MARGIN = 0.0; // No extra margin - use standard hitbox only
+    private static final double REACH_SAFETY_BUFFER = 0.05; // Small buffer (0.05 blocks from 3.0 limit)
     
     // Grim Prediction Engine integration
     private final TransactionManager transactionManager = TransactionManager.getInstance();
@@ -568,8 +568,8 @@ public class Backtrack extends Module {
             double eyeZ = mc.thePlayer.posZ;
             
             // Target hitbox (0.6 wide = ±0.3 from center, 1.8 tall)
-            // HITBOX EXPANSION: Add expansion for both modes with extra safety margin
-            double hitboxExpansion = GRIM_HITBOX_EXPANSION_1_8 + EXTRA_HITBOX_MARGIN; // Base 0.15 + 0.08 = 0.23 for safer hitbox
+            // HITBOX EXPANSION: Standard 1.8 expansion only
+            double hitboxExpansion = GRIM_HITBOX_EXPANSION_1_8; // 0.1 blocks standard expansion
             
             if (mode.getModeString().equals("Lag Based") && isLagging) {
                 // LAG-BASED MODE: Aggressive expansion for high latency with enhanced bypass
@@ -1343,9 +1343,9 @@ public class Backtrack extends Module {
      * Single position per player with ease-in-out cubic transitions
      */
     /**
-     * BUTTERY SMOOTH interpolation tracker for backtrack rendering
-     * Uses advanced Catmull-Rom spline interpolation with velocity prediction
-     * Creates fluid, natural-looking movement like Vape V4
+     * SPEED-ADAPTIVE interpolation tracker for backtrack rendering
+     * Fast movement = smooth interpolation, Stopped = instant snap
+     * Anti-flicker system for far distances
      */
     private static class InterpolatedPositionTracker {
         private double currentX, currentY, currentZ;
@@ -1353,12 +1353,19 @@ public class Backtrack extends Module {
         private double lastTargetX, lastTargetY, lastTargetZ;
         private boolean initialized = false;
         
-        // FLUID INTERPOLATION: Slower = smoother, more natural movement
-        private static final float LERP_SPEED = 12.0f; // Increased for more responsiveness
-        private static final float VELOCITY_LERP_SPEED = 6.0f; // Smooth velocity transitions
+        // ADAPTIVE INTERPOLATION: Speed changes based on distance and velocity
+        private static final float MIN_LERP_SPEED = 15.0f; // Fast snap when stopped
+        private static final float MAX_LERP_SPEED = 25.0f; // Ultra-fast for instant response
+        private static final float VELOCITY_LERP_SPEED = 20.0f; // Quick velocity adaptation
         
-        // Smoothing factor for extra fluidity
-        private static final float SMOOTHING_FACTOR = 0.92f; // Higher = smoother (0.9-0.95 is ideal)
+        // Distance thresholds for adaptive behavior
+        private static final double SNAP_DISTANCE = 0.05; // Instant snap if within 5cm
+        private static final double MIN_VELOCITY = 0.01; // Consider stopped if velocity < this
+        
+        // Anti-flicker system
+        private static final double FLICKER_THRESHOLD = 0.02; // Ignore micro-movements (2cm)
+        private static final double FAR_DISTANCE = 20.0; // Consider "far" if > 20 blocks away
+        private long lastUpdateTime = 0L;
         
         public PositionData update(PositionData targetPos, Vec3 predictedVelocity, float deltaTime, float partialTicks) {
             // Initialize on first update
@@ -1373,13 +1380,12 @@ public class Backtrack extends Module {
                 velocityY = predictedVelocity.yCoord;
                 velocityZ = predictedVelocity.zCoord;
                 initialized = true;
+                lastUpdateTime = System.currentTimeMillis();
                 return targetPos;
             }
             
-            // BUTTERY SMOOTH: Smoothly interpolate velocity (cubic easing for natural acceleration)
+            // ADAPTIVE VELOCITY UPDATE: Quick response to velocity changes
             float velocityAlpha = 1.0f - (float) Math.exp(-VELOCITY_LERP_SPEED * deltaTime);
-            velocityAlpha = easeInOutCubic(velocityAlpha); // Cubic easing for smoother feel
-            
             velocityX += (predictedVelocity.xCoord - velocityX) * velocityAlpha;
             velocityY += (predictedVelocity.yCoord - velocityY) * velocityAlpha;
             velocityZ += (predictedVelocity.zCoord - velocityZ) * velocityAlpha;
@@ -1389,67 +1395,68 @@ public class Backtrack extends Module {
             double targetY = targetPos.y + velocityY * partialTicks;
             double targetZ = targetPos.z + velocityZ * partialTicks;
             
-            // CATMULL-ROM SPLINE: Ultra-smooth interpolation between previous, current, and target
-            // This creates natural curved paths instead of linear interpolation
-            double splineX = catmullRomSpline(lastTargetX, currentX, targetX, velocityX, partialTicks);
-            double splineY = catmullRomSpline(lastTargetY, currentY, targetY, velocityY, partialTicks);
-            double splineZ = catmullRomSpline(lastTargetZ, currentZ, targetZ, velocityZ, partialTicks);
+            // Calculate distance to target
+            double dx = targetX - currentX;
+            double dy = targetY - currentY;
+            double dz = targetZ - currentZ;
+            double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
             
-            // EXPONENTIAL SMOOTHING: Blend spline result with exponential smoothing
-            float alpha = 1.0f - (float) Math.exp(-LERP_SPEED * deltaTime);
-            alpha = easeInOutCubic(alpha); // Cubic easing for extra smoothness
+            // Calculate distance from player (for far-distance stabilization)
+            double distanceFromPlayer = Math.sqrt(
+                targetX * targetX + targetY * targetY + targetZ * targetZ
+            );
             
-            // Blend between current and spline target
-            double nextX = currentX + (splineX - currentX) * alpha;
-            double nextY = currentY + (splineY - currentY) * alpha;
-            double nextZ = currentZ + (splineZ - currentZ) * alpha;
+            // Calculate current velocity magnitude
+            double velocityMag = Math.sqrt(velocityX * velocityX + velocityY * velocityY + velocityZ * velocityZ);
             
-            // EXTRA SMOOTHING: Apply smoothing factor for buttery feel
-            currentX = currentX * SMOOTHING_FACTOR + nextX * (1.0f - SMOOTHING_FACTOR);
-            currentY = currentY * SMOOTHING_FACTOR + nextY * (1.0f - SMOOTHING_FACTOR);
-            currentZ = currentZ * SMOOTHING_FACTOR + nextZ * (1.0f - SMOOTHING_FACTOR);
+            // ANTI-FLICKER: Ignore micro-movements at far distances to prevent jitter
+            long currentTime = System.currentTimeMillis();
+            if (distanceFromPlayer > FAR_DISTANCE && distance < FLICKER_THRESHOLD) {
+                // Far away + tiny movement = ignore to prevent flicker
+                // Only update if enough time has passed (100ms)
+                if (currentTime - lastUpdateTime < 100) {
+                    return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
+                }
+            }
+            lastUpdateTime = currentTime;
             
-            // Update last target for spline calculation
+            // INSTANT SNAP: If very close to target, snap immediately
+            if (distance < SNAP_DISTANCE) {
+                currentX = targetX;
+                currentY = targetY;
+                currentZ = targetZ;
+                lastTargetX = targetX;
+                lastTargetY = targetY;
+                lastTargetZ = targetZ;
+                return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
+            }
+            
+            // ADAPTIVE LERP SPEED: Faster when stopped, consistent speed otherwise
+            float adaptiveLerpSpeed;
+            if (velocityMag < MIN_VELOCITY) {
+                // STOPPED: Ultra-fast snap to position
+                adaptiveLerpSpeed = MAX_LERP_SPEED;
+            } else {
+                // MOVING: Consistent interpolation time regardless of speed
+                // Use distance-normalized speed for same accel/decel time
+                adaptiveLerpSpeed = MIN_LERP_SPEED + (MAX_LERP_SPEED - MIN_LERP_SPEED) * 0.5f;
+            }
+            
+            // EXPONENTIAL SMOOTHING: Same interpolation time for all speeds
+            float alpha = 1.0f - (float) Math.exp(-adaptiveLerpSpeed * deltaTime);
+            
+            // Direct interpolation - no extra smoothing layers
+            currentX += dx * alpha;
+            currentY += dy * alpha;
+            currentZ += dz * alpha;
+            
+            // Update last target
             lastTargetX = targetX;
             lastTargetY = targetY;
             lastTargetZ = targetZ;
             
-            // Return ultra-smooth position
+            // Return position
             return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
-        }
-        
-        /**
-         * Catmull-Rom spline interpolation for smooth curved paths
-         * Creates natural movement curves instead of linear paths
-         */
-        private double catmullRomSpline(double p0, double p1, double p2, double velocity, float t) {
-            // P0 = previous point, P1 = current, P2 = target
-            // Use velocity to extrapolate P3 (future point)
-            double p3 = p2 + velocity * 0.1; // Predict future position
-            
-            // Catmull-Rom formula with tau = 0.5 (standard)
-            double t2 = t * t;
-            double t3 = t2 * t;
-            
-            return 0.5 * (
-                (2.0 * p1) +
-                (-p0 + p2) * t +
-                (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
-                (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
-            );
-        }
-        
-        /**
-         * Ease-in-out cubic function for smoother interpolation
-         * Creates natural acceleration and deceleration
-         */
-        private float easeInOutCubic(float t) {
-            if (t < 0.5f) {
-                return 4.0f * t * t * t;
-            } else {
-                float f = (2.0f * t - 2.0f);
-                return 0.5f * f * f * f + 1.0f;
-            }
         }
     }
     
