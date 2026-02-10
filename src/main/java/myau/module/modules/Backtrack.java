@@ -22,6 +22,7 @@ import net.minecraft.util.Vec3;
 import java.awt.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * BackTrack - Allows you to hit players at their previous positions.
@@ -369,13 +370,138 @@ public class Backtrack extends Module {
             return;
         }
 
-        // VAPE V4: No need for manual tracker updates - interpolation is automatic per-frame
+        // REALTIME RENDERING: Update positions for ALL players every frame
+        updateAllPlayerPositions();
 
         if (mode.getModeString().equals("Manual") && renderPreviousTicks.getValue()) {
             renderManualModePositions(event.getPartialTicks());
         } else if (mode.getModeString().equals("Lag Based") && renderServerPos.getValue()) {
             renderLagBasedPositions(event.getPartialTicks());
         }
+    }
+    
+    /**
+     * Update positions for ALL players in real-time every render frame
+     * This ensures boxes are ALWAYS rendered consistently for all players
+     * Handles dynamic player registration and unregistration
+     */
+    private void updateAllPlayerPositions() {
+        if (mc.theWorld == null || mc.theWorld.playerEntities == null) {
+            return;
+        }
+        
+        long currentTime = System.currentTimeMillis();
+        
+        // Track currently active player IDs
+        Set<Integer> activePlayerIds = new HashSet<>();
+        
+        // REGISTRATION: Add/update all active players
+        for (EntityPlayer player : mc.theWorld.playerEntities) {
+            if (player == null || player == mc.thePlayer || player.isDead) {
+                continue;
+            }
+            
+            // Skip teammates
+            if (TeamUtil.isFriend(player)) {
+                continue;
+            }
+            
+            int entityId = player.getEntityId();
+            activePlayerIds.add(entityId);
+            
+            // Manual Mode: Ensure position is always tracked
+            if (mode.getModeString().equals("Manual")) {
+                LinkedList<PositionData> positions = entityPositions.computeIfAbsent(entityId, k -> {
+                    // NEW PLAYER REGISTERED
+                    LinkedList<PositionData> newList = new LinkedList<>();
+                    // Initialize interpolation tracker for smooth entry
+                    interpolationTrackers.put(entityId, new InterpolatedPositionTracker());
+                    return newList;
+                });
+                
+                // Only add new position if enough time has passed (1 tick = 50ms)
+                if (positions.isEmpty() || (currentTime - positions.getFirst().timestamp) >= 50) {
+                    positions.addFirst(new PositionData(
+                        player.posX, player.posY, player.posZ,
+                        currentTime
+                    ));
+                    
+                    // Limit to specified ticks
+                    while (positions.size() > ticks.getValue()) {
+                        positions.removeLast();
+                    }
+                }
+            }
+            
+            // Lag Based Mode: Always track current server position
+            if (mode.getModeString().equals("Lag Based")) {
+                PositionData currentServerPos = serverPositions.get(entityId);
+                
+                // NEW PLAYER REGISTRATION
+                if (currentServerPos == null) {
+                    serverPositions.put(entityId, new PositionData(
+                        player.posX, player.posY, player.posZ,
+                        currentTime
+                    ));
+                    // Initialize interpolation tracker for smooth entry
+                    interpolationTrackers.put(entityId, new InterpolatedPositionTracker());
+                } else if ((currentTime - currentServerPos.timestamp) > 100) {
+                    // Update existing position
+                    serverPositions.put(entityId, new PositionData(
+                        player.posX, player.posY, player.posZ,
+                        currentTime
+                    ));
+                }
+            }
+        }
+        
+        // UNREGISTRATION: Clean up players that left/died
+        unregisterInactivePlayers(activePlayerIds);
+    }
+    
+    /**
+     * Unregister players that are no longer active (left server, died, changed teams)
+     * This prevents memory leaks and ensures clean state
+     */
+    private void unregisterInactivePlayers(Set<Integer> activePlayerIds) {
+        // Remove from position tracking
+        entityPositions.keySet().removeIf(id -> {
+            if (!activePlayerIds.contains(id)) {
+                // PLAYER UNREGISTERED - clean up all related data
+                cleanupPlayerData(id);
+                return true;
+            }
+            return false;
+        });
+        
+        serverPositions.keySet().removeIf(id -> {
+            if (!activePlayerIds.contains(id)) {
+                // PLAYER UNREGISTERED - clean up all related data
+                cleanupPlayerData(id);
+                return true;
+            }
+            return false;
+        });
+    }
+    
+    /**
+     * Clean up all data associated with a player
+     * Called when player leaves/dies
+     */
+    private void cleanupPlayerData(int entityId) {
+        // Remove interpolation tracker
+        interpolationTrackers.remove(entityId);
+        
+        // Remove cooldown data
+        backtrackHitCount.remove(entityId);
+        lastBacktrackTime.remove(entityId);
+        
+        // Remove AI profile
+        targetProfiles.remove(entityId);
+        
+        // Clear from both tracking maps (in case called from one)
+        entityPositions.remove(entityId);
+        serverPositions.remove(entityId);
     }
 
     // ==================== Manual Mode Methods ====================
@@ -735,13 +861,21 @@ public class Backtrack extends Module {
                 // Find the best position (oldest valid backtrack position)
                 PositionData targetPos = selectBestBacktrackPosition(positions, player);
                 
-                if (targetPos != null) {
-                    // GRIM PREDICTION ENGINE: Predict smooth position based on velocity and knockback
-                    PositionData smoothPos = getSmoothInterpolatedPosition(entityId, targetPos, player, partialTicks, deltaTime);
-                    
-                    // Render smooth box - never teleports!
-                    renderVapeV4Box(smoothPos, lightBlueColor);
+                // ALWAYS RENDER: If no best backtrack position, use current player position
+                if (targetPos == null && !positions.isEmpty()) {
+                    targetPos = positions.getFirst(); // Use most recent position
                 }
+                
+                if (targetPos == null) {
+                    // Fallback to current player position
+                    targetPos = new PositionData(player.posX, player.posY, player.posZ, currentTime);
+                }
+                
+                // GRIM PREDICTION ENGINE: Predict smooth position based on velocity and knockback
+                PositionData smoothPos = getSmoothInterpolatedPosition(entityId, targetPos, player, partialTicks, deltaTime);
+                
+                // Render smooth box - never teleports!
+                renderVapeV4Box(smoothPos, lightBlueColor);
             }
         } catch (Exception e) {
             // Prevent any render errors from causing freezes
@@ -934,9 +1068,9 @@ public class Backtrack extends Module {
 
                 PositionData serverPos = entry.getValue();
                 
-                // OPTIMIZATION: Skip if position is too old
+                // ALWAYS RENDER: Even if position is old, use current player position as fallback
                 if (currentTime - serverPos.timestamp > 1000) {
-                    continue;
+                    serverPos = new PositionData(player.posX, player.posY, player.posZ, currentTime);
                 }
                 
                 // GRIM PREDICTION ENGINE: Predict smooth position based on velocity and knockback
