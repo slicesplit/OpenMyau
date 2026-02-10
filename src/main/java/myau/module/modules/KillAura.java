@@ -127,8 +127,8 @@ public class KillAura extends Module {
                 // GRIM BYPASS: Enhanced reach calculation for precision
                 double targetDistance = RotationUtil.distanceToEntity(this.target.getEntity());
                 
-                // GRIM MODE: Use aggressive reach (up to 2.99)
-                double maxReach = (this.autoBlock.getValue() == 9) ? 2.99 : 2.97;
+                // GRIM MODE: Safer reach limits (reduced from 2.99 to 2.92)
+                double maxReach = (this.autoBlock.getValue() == 9) ? 2.92 : 2.90;
                 
                 if (targetDistance > maxReach) {
                     return false; // Too far - don't attack to avoid reach flags
@@ -490,7 +490,8 @@ public class KillAura extends Module {
         this.autoBlockRequirePress = new BooleanProperty("auto-block-require-press", false);
         this.autoBlockMinCPS = new FloatProperty("auto-block-min-aps", 8.0F, 1.0F, 20.0F);
         this.autoBlockMaxCPS = new FloatProperty("auto-block-max-aps", 10.0F, 1.0F, 20.0F);
-        this.autoBlockRange = new FloatProperty("auto-block-range", 6.0F, 3.0F, 8.0F);
+        // GRIM BYPASS: Reduced max range from 8.0 to 6.0 for safer autoblock
+        this.autoBlockRange = new FloatProperty("auto-block-range", 5.5F, 3.0F, 6.0F);
         this.swingRange = new FloatProperty("swing-range", 3.5F, 3.0F, 6.0F);
         this.attackRange = new FloatProperty("attack-range", 3.0F, 3.0F, 6.0F);
         this.fov = new IntProperty("fov", 360, 30, 360);

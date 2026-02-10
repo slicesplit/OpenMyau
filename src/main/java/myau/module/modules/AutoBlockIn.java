@@ -31,7 +31,11 @@ public class AutoBlockIn extends Module {
     private final Map<String, Integer> BLOCK_SCORE = new HashMap<>();
     private long lastPlaceTime = 0;
     
-    public final FloatProperty range = new FloatProperty("range", 4.5f, 3.0f, 6.0f);
+    // Enhanced Grim bypass - reduced range and improved safety
+    private static final double GRIM_SAFE_REACH = 4.3; // Reduced from 4.5 to 4.3 for safer block placement
+    private static final double EXTRA_SAFETY_MARGIN = 0.1; // Additional safety margin
+    
+    public final FloatProperty range = new FloatProperty("range", 4.3f, 3.0f, 4.5f); // Max reduced from 6.0 to 4.5
     public final IntProperty speed = new IntProperty("speed", 20, 5, 100);
     public final IntProperty placeDelay = new IntProperty("place-delay", 50, 0, 200);
     public final IntProperty rotationTolerance = new IntProperty("rotation-tolerance", 25, 5, 100);
@@ -284,7 +288,8 @@ public class AutoBlockIn extends Module {
         BlockPos feetPos = new BlockPos(playerPos.xCoord, playerPos.yCoord, playerPos.zCoord);
 
         Vec3 eye = mc.thePlayer.getPositionEyes(1.0f);
-        double reach = range.getValue().doubleValue();
+        // GRIM BYPASS: Use safer reach with margin
+        double reach = Math.min(range.getValue().doubleValue(), GRIM_SAFE_REACH - EXTRA_SAFETY_MARGIN);
         double reachSq = reach * reach;
         double rp12 = (reach + 1) * (reach + 1);
 
@@ -609,7 +614,9 @@ public class AutoBlockIn extends Module {
         double z = Math.cos(yawRad) * Math.cos(pitchRad);
         
         Vec3 start = mc.thePlayer.getPositionEyes(1.0f);
-        Vec3 end = start.addVector(x * range, y * range, z * range);
+        // GRIM BYPASS: Apply safety margin to raytrace distance
+        double safeRange = Math.min(range, GRIM_SAFE_REACH - EXTRA_SAFETY_MARGIN);
+        Vec3 end = start.addVector(x * safeRange, y * safeRange, z * safeRange);
         
         return mc.theWorld.rayTraceBlocks(start, end);
     }

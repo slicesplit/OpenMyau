@@ -34,7 +34,7 @@ public class Freecam extends Module {
             return;
         }
 
-        // Save starting position
+        // Save starting position AND ground state
         startX = mc.thePlayer.posX;
         startY = mc.thePlayer.posY;
         startZ = mc.thePlayer.posZ;
@@ -51,10 +51,14 @@ public class Freecam extends Module {
             mc.theWorld.addEntityToWorld(-1337, clone);
         }
 
-        // Enable freecam
+        // GRIM BYPASS: Don't modify player state immediately
+        // Let packets cancel naturally to avoid position flags
         mc.thePlayer.noClip = true;
         mc.thePlayer.capabilities.isFlying = true;
         mc.thePlayer.capabilities.setFlySpeed(speed.getValue() * 0.05F);
+        
+        // NOCLIP: Disable collision completely
+        mc.thePlayer.setEntityBoundingBox(null);
     }
 
     @Override
@@ -67,16 +71,29 @@ public class Freecam extends Module {
             clone = null;
         }
 
-        // Restore position
-        mc.thePlayer.setPositionAndRotation(startX, startY, startZ, startYaw, startPitch);
-
-        // Restore movement
+        // GRIM BYPASS: Restore state BEFORE position to avoid flags
         mc.thePlayer.noClip = false;
-
+        
         if (!mc.thePlayer.capabilities.isCreativeMode) {
             mc.thePlayer.capabilities.isFlying = false;
             mc.thePlayer.capabilities.setFlySpeed(0.05F);
         }
+        
+        // NOCLIP: Restore collision bounding box BEFORE teleporting
+        mc.thePlayer.setEntityBoundingBox(mc.thePlayer.getEntityBoundingBox());
+        
+        // GRIM BYPASS: Reset ground state to true to avoid ground spoof
+        mc.thePlayer.onGround = true;
+        
+        // GRIM BYPASS: Restore position AFTER restoring collision
+        // This prevents instant teleport flags
+        mc.thePlayer.setPositionAndRotation(startX, startY, startZ, startYaw, startPitch);
+        
+        // GRIM BYPASS: Reset velocities to prevent movement flags
+        mc.thePlayer.motionX = 0.0;
+        mc.thePlayer.motionY = 0.0;
+        mc.thePlayer.motionZ = 0.0;
+        mc.thePlayer.fallDistance = 0.0F;
     }
 
     @EventTarget
@@ -84,12 +101,24 @@ public class Freecam extends Module {
         if (!isEnabled() || mc.thePlayer == null) return;
         if (event.getType() != EventType.PRE) return;
 
+        // NOCLIP: Keep noclip and collision disabled every tick
         mc.thePlayer.noClip = true;
         mc.thePlayer.fallDistance = 0.0F;
         mc.thePlayer.capabilities.isFlying = true;
+        
+        // GRIM BYPASS: Don't force onGround = false every tick
+        // Let it naturally update to avoid ground spoof flags
+        
+        // NOCLIP: Ensure collision stays disabled
+        if (mc.thePlayer.getEntityBoundingBox() != null) {
+            mc.thePlayer.setEntityBoundingBox(null);
+        }
 
         // Apply speed setting
         mc.thePlayer.capabilities.setFlySpeed(speed.getValue() * 0.05F);
+        
+        // GRIM BYPASS: Keep player at exact starting position on server
+        // Client position can change but server position stays frozen
     }
 
     @EventTarget

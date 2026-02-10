@@ -70,6 +70,7 @@ public class Myau {
         moduleManager.modules.put(AntiObfuscate.class, new AntiObfuscate());
         moduleManager.modules.put(AntiVoid.class, new AntiVoid());
         moduleManager.modules.put(Backtrack.class, new Backtrack());
+        moduleManager.modules.put(InfHealthExploit.class, new InfHealthExploit());
         moduleManager.modules.put(AutoClicker.class, new AutoClicker());
         moduleManager.modules.put(AutoAnduril.class, new AutoAnduril());
         moduleManager.modules.put(AutoHeal.class, new AutoHeal());
@@ -136,6 +137,7 @@ public class Myau {
         moduleManager.modules.put(ViewClip.class, new ViewClip());
         moduleManager.modules.put(Wtap.class, new Wtap());
         moduleManager.modules.put(Xray.class, new Xray());
+        moduleManager.modules.put(RearView.class, new RearView());
         commandManager.commands.add(new BindCommand());
         commandManager.commands.add(new ConfigCommand());
         commandManager.commands.add(new DenickCommand());

@@ -24,4 +24,7 @@ public interface IAccessorEntityRenderer {
     
     @Accessor("fovModifierHandPrev")
     void setFovModifierHandPrev(float value);
+    
+    @Invoker("renderWorldPass")
+    void callRenderWorldPass(int pass, float partialTicks, long finishTimeNano);
 }

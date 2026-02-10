@@ -52,16 +52,24 @@ public class UsernameGenerator {
     
     private static final Set<String> recentlyGenerated = Collections.synchronizedSet(new LinkedHashSet<String>());
 
+    /**
+     * Generate username in MILITARY-GRADE format matching: ythz_ieYai_01_21
+     * Format: prefix_random_month_day
+     * - prefix: 4 random lowercase letters
+     * - random: 5 random mixed-case letters
+     * - month: 2-digit month (01-12)
+     * - day: 2-digit day (01-31)
+     * Total: 4 + 1 + 5 + 1 + 2 + 1 + 2 = 16 characters (Mojang limit)
+     */
     public static String generateUnique() {
         String username;
         int attempts = 0;
         
         do {
-            username = generate();
+            username = generateFormatted();
             attempts++;
             
             if (attempts > 100) {
-                username = generateComplex();
                 break;
             }
         } while (recentlyGenerated.contains(username.toLowerCase()));
@@ -79,29 +87,86 @@ public class UsernameGenerator {
         return username;
     }
 
-    private static String generate() {
-        int strategy = random.nextInt(10);
+    /**
+     * Generate username in format: prefix_random_month_day
+     * Examples: ythz_ieYai_01_21, xqpw_KmNaB_07_15, mnjk_QwErT_12_31
+     * 
+     * Format breakdown:
+     * - prefix: 4 random lowercase letters (a-z)
+     * - _: underscore separator
+     * - random: 5 random mixed-case letters (A-Z, a-z)
+     * - _: underscore separator
+     * - month: 2-digit month (01-12)
+     * - _: underscore separator
+     * - day: 2-digit day (01-31)
+     * 
+     * Total: 4 + 1 + 5 + 1 + 2 + 1 + 2 = 16 characters (Mojang username limit)
+     */
+    private static String generateFormatted() {
+        StringBuilder username = new StringBuilder();
         
-        switch (strategy) {
-            case 0:
-            case 1:
-                return generatePrefixSuffix();
-            case 2:
-            case 3:
-                return generatePrefixSuffixNumbers();
-            case 4:
-                return generateStandalone();
-            case 5:
-                return generateStandaloneNumbers();
-            case 6:
-                return generateLeetSpeak();
-            case 7:
-                return generateUnderscoreStyle();
-            case 8:
-                return generateMixedCase();
-            default:
-                return generateComplex();
+        // Part 1: prefix (4 lowercase letters: a-z)
+        for (int i = 0; i < 4; i++) {
+            username.append(randomLowercaseLetter());
         }
+        
+        // Underscore separator
+        username.append('_');
+        
+        // Part 2: random (5 mixed-case letters: A-Z, a-z)
+        for (int i = 0; i < 5; i++) {
+            username.append(randomLetter());
+        }
+        
+        // Underscore separator
+        username.append('_');
+        
+        // Part 3: month (01-12, zero-padded 2 digits)
+        int month = random.nextInt(12) + 1; // 1-12
+        username.append(String.format("%02d", month));
+        
+        // Underscore separator
+        username.append('_');
+        
+        // Part 4: day (01-31, zero-padded 2 digits)
+        int day = random.nextInt(31) + 1; // 1-31
+        username.append(String.format("%02d", day));
+        
+        // Result: prefix_random_month_day = 16 characters exactly
+        // Example: ythz_ieYai_01_21
+        return username.toString();
+    }
+    
+    /**
+     * Generate random uppercase letter (A-Z)
+     */
+    private static char randomUppercaseLetter() {
+        return (char) ('A' + random.nextInt(26));
+    }
+    
+    /**
+     * Generate random lowercase letter (a-z)
+     */
+    private static char randomLowercaseLetter() {
+        return (char) ('a' + random.nextInt(26));
+    }
+    
+    /**
+     * Generate random letter (either uppercase or lowercase)
+     */
+    private static char randomLetter() {
+        return random.nextBoolean() ? randomUppercaseLetter() : randomLowercaseLetter();
+    }
+    
+    /**
+     * Generate random digit (0-9)
+     */
+    private static char randomDigit() {
+        return (char) ('0' + random.nextInt(10));
+    }
+
+    private static String generate() {
+        return generateFormatted();
     }
 
     private static String generatePrefixSuffix() {

@@ -84,6 +84,10 @@ public class Scaffold extends Module {
     public final BooleanProperty infiniteClutch = new BooleanProperty("infinite-clutch", false);
     public final BooleanProperty grimClutchBypass = new BooleanProperty("grim-clutch-bypass", true, () -> this.infiniteClutch.getValue());
     public final PercentProperty clutchVoidDistance = new PercentProperty("clutch-void-distance", 5, 3, 10, () -> this.infiniteClutch.getValue());
+    public final BooleanProperty thirdPersonView = new BooleanProperty("third-person-view", true);
+    
+    // Store original perspective to restore on disable
+    private int originalPerspective = 0;
 
     private boolean shouldStopSprint() {
         if (this.isTowering()) {
@@ -833,12 +837,23 @@ public class Scaffold extends Module {
         this.towerTick = 0;
         this.towerDelay = 0;
         this.towering = false;
+        
+        // Switch to third-person back perspective if enabled
+        if (this.thirdPersonView.getValue() && mc.gameSettings != null) {
+            this.originalPerspective = mc.gameSettings.thirdPersonView;
+            mc.gameSettings.thirdPersonView = 1; // 1 = third person back
+        }
     }
 
     @Override
     public void onDisabled() {
         if (mc.thePlayer != null && this.lastSlot != -1) {
             mc.thePlayer.inventory.currentItem = this.lastSlot;
+        }
+        
+        // Restore original perspective
+        if (this.thirdPersonView.getValue() && mc.gameSettings != null) {
+            mc.gameSettings.thirdPersonView = this.originalPerspective;
         }
     }
 

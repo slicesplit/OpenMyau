@@ -1,4 +1,4 @@
-name: Create Pre-release
+name: Create Latest Release
 
 on:
   workflow_dispatch:
@@ -24,17 +24,30 @@ jobs:
         id: commit
         run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
       
+      - name: Get timestamp
+        id: timestamp
+        run: echo "time=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
+      
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'gradle'
+      
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: false
+          gradle-home-cache-cleanup: true
       
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       
       - name: Build with Gradle
-        run: ./gradlew build --no-daemon
+        run: ./gradlew build --build-cache --parallel --no-daemon --max-workers=4
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx3g -XX:+HeapDumpOnOutOfMemoryError -XX:+UseParallelGC"
       
       - name: Find JAR file
         id: find_jar
@@ -43,25 +56,35 @@ jobs:
           echo "jar_path=$JAR_FILE" >> $GITHUB_OUTPUT
           echo "jar_name=$(basename $JAR_FILE)" >> $GITHUB_OUTPUT
       
-      - name: Create Pre-release
+      - name: Delete existing latest release
+        continue-on-error: true
+        run: |
+          gh release delete latest --yes || true
+          git push --delete origin latest || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create Latest Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "pre-${{ steps.commit.outputs.hash }}"
-          name: "${{ steps.commit.outputs.hash }}"
-          prerelease: true
+          tag_name: "latest"
+          name: "Latest Release (${{ steps.timestamp.outputs.time }})"
+          prerelease: false
+          make_latest: true
           body: |
-            Pre-release build from commit ${{ steps.commit.outputs.hash }}
+            Latest stable build from commit ${{ steps.commit.outputs.hash }}
             
-            **Commit Details:**
-            - Hash: `${{ github.sha }}`
+            **Build Information:**
+            - Build Time: ${{ steps.timestamp.outputs.time }}
+            - Commit Hash: `${{ github.sha }}`
             - Author: ${{ github.actor }}
-            - Timestamp: ${{ github.event.head_commit.timestamp }}
+            - Branch: ${{ github.ref_name }}
             
-            **Changes:**
+            **Recent Changes:**
             ${{ github.event.head_commit.message }}
             
             ---
-            *This is an automated pre-release build. Use at your own risk.*
+            *This is an automated latest release build.*
           files: |
             ${{ steps.find_jar.outputs.jar_path }}
         env:

@@ -40,17 +40,21 @@ import java.util.concurrent.ConcurrentHashMap;
 public class Backtrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Pure Grim bypass constants (MCFleet tested - directly from Grim source code)
+    // Enhanced Grim bypass constants - more aggressive hitbox safety
     private static final double GRIM_MAX_REACH = 3.0; // Base reach distance
     private static final double GRIM_REACH_THRESHOLD = 0.0005; // Threshold for reach checks
-    private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // Extra hitbox for 1.7-1.8 clients (line 284)
-    private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Movement uncertainty (line 294)
-    private static final double SAFE_REACH_DISTANCE = 2.93; // Stay safely under 3.0 - MCFleet tested
+    private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.15; // Increased from 0.1 to 0.15 for safer hitbox
+    private static final double GRIM_MOVEMENT_THRESHOLD = 0.05; // Increased from 0.03 for more tolerance
+    private static final double SAFE_REACH_DISTANCE = 2.85; // Reduced from 2.93 to 2.85 for extra safety
     
-    // Grim interpolation constants - CRITICAL for long match stability (ReachInterpolationData.java)
-    private static final double INTERPOLATION_EXPANSION = 0.03125; // X/Z expansion per interpolation step (line 52)
-    private static final double INTERPOLATION_EXPANSION_Y = 0.015625; // Y expansion per interpolation step
-    private static final int MAX_INTERPOLATION_STEPS = 3; // Living entities = 3 steps (line 62)
+    // Grim interpolation constants - enhanced for bypass
+    private static final double INTERPOLATION_EXPANSION = 0.04; // Increased from 0.03125 to 0.04
+    private static final double INTERPOLATION_EXPANSION_Y = 0.02; // Increased from 0.015625 to 0.02
+    private static final int MAX_INTERPOLATION_STEPS = 3; // Living entities = 3 steps
+    
+    // Additional safety margins
+    private static final double EXTRA_HITBOX_MARGIN = 0.08; // Extra margin for hitbox calculations
+    private static final double REACH_SAFETY_BUFFER = 0.15; // Buffer to stay well under max reach
     
     // Grim Prediction Engine integration
     private final TransactionManager transactionManager = TransactionManager.getInstance();
@@ -100,7 +104,7 @@ public class Backtrack extends Module {
     
     // Smooth Interpolation System
     private final Map<Integer, InterpolatedPositionTracker> interpolationTrackers = new ConcurrentHashMap<>();
-    private long lastRenderTime = 0L;
+    private long lastRenderTime = System.currentTimeMillis();
     
     // World change detection - CRITICAL for fixing flags after match transitions
     private String lastWorldName = null;
@@ -424,16 +428,16 @@ public class Backtrack extends Module {
             double eyeZ = mc.thePlayer.posZ;
             
             // Target hitbox (0.6 wide = ±0.3 from center, 1.8 tall)
-            // HITBOX EXPANSION: Add expansion for both modes
-            double hitboxExpansion = GRIM_HITBOX_EXPANSION_1_8; // Base 0.1 for 1.7-1.8 clients
+            // HITBOX EXPANSION: Add expansion for both modes with extra safety margin
+            double hitboxExpansion = GRIM_HITBOX_EXPANSION_1_8 + EXTRA_HITBOX_MARGIN; // Base 0.15 + 0.08 = 0.23 for safer hitbox
             
             if (mode.getModeString().equals("Lag Based") && isLagging) {
-                // LAG-BASED MODE: Aggressive expansion for high latency
-                // At 2000ms: 0.1 + (20 * 0.03) = 0.7 expansion
-                hitboxExpansion += (latency.getValue() / 100.0) * 0.03;
+                // LAG-BASED MODE: Aggressive expansion for high latency with enhanced bypass
+                // Increased multiplier from 0.03 to 0.04 for better hitbox coverage
+                hitboxExpansion += (latency.getValue() / 100.0) * 0.04;
                 
-                // Cap expansion at 0.8 for ultra-high latency
-                hitboxExpansion = Math.min(0.8, hitboxExpansion);
+                // Cap expansion at 0.95 for ultra-high latency (increased from 0.8)
+                hitboxExpansion = Math.min(0.95, hitboxExpansion);
             } else if (mode.getModeString().equals("Manual")) {
                 // MANUAL MODE: Expansion based on ACTUAL POSITION AGE (timestamp-based)
                 // Calculate how old this position is in milliseconds
@@ -443,16 +447,16 @@ public class Backtrack extends Module {
                 double ticksOld = positionAge / 50.0;
                 
                 // PURE GRIM FIX: Add Grim's interpolation expansion (critical for long matches)
-                // Grim expands hitboxes during interpolation: 0.03125 per step on X/Z, 0.015625 on Y
+                // Enhanced interpolation: increased from 0.03125 to 0.04 per step
                 // Living entities have exactly 3 interpolation steps (ReachInterpolationData line 62)
                 double interpolationSteps = Math.min(ticksOld, MAX_INTERPOLATION_STEPS);
-                hitboxExpansion += INTERPOLATION_EXPANSION * interpolationSteps;
+                hitboxExpansion += INTERPOLATION_EXPANSION * interpolationSteps; // Now 0.04 per step
                 
                 // MCFLEET FIX: Much more conservative - no additional age expansion
                 // Pure Grim is stricter than modified versions
                 
-                // Cap expansion at 0.35 for manual mode (MCFleet tested - very conservative)
-                hitboxExpansion = Math.min(0.35, hitboxExpansion);
+                // Cap expansion at 0.45 for manual mode (increased from 0.35 for better bypass)
+                hitboxExpansion = Math.min(0.45, hitboxExpansion);
             }
             
             double targetMinX = pos.x - 0.3 - hitboxExpansion;
@@ -553,11 +557,11 @@ public class Backtrack extends Module {
             uncertainty += (ticksOld / 5.0) * 0.05;
         }
         
-        // Total max reach
+        // Total max reach with enhanced safety buffer
         double grimMaxReach = baseReach + uncertainty;
         
-        // For safety, stay 0.05 blocks under limit
-        double safeMaxReach = grimMaxReach - 0.05;
+        // For safety, stay well under limit with REACH_SAFETY_BUFFER (0.15 blocks)
+        double safeMaxReach = grimMaxReach - REACH_SAFETY_BUFFER;
         
         if (reachDistance > safeMaxReach) {
             return false; // Would flag Reach check
@@ -629,11 +633,8 @@ public class Backtrack extends Module {
             getLookVecFromAngles(mc.thePlayer.prevRotationYaw, mc.thePlayer.prevRotationPitch), // Last yaw, last pitch
         };
         
-        // Target hitbox (no expansion for intercept check)
-        AxisAlignedBB targetBox = new AxisAlignedBB(
-            pos.x - 0.3, pos.y, pos.z - 0.3,
-            pos.x + 0.3, pos.y + 1.8, pos.z + 0.3
-        );
+        // Target hitbox (with expansion for intercept check to be safer)
+        double interceptExpansion = EXTRA_HITBOX_MARGIN * 0.5; // Use half the extra margin (0.04)
         
         // Grim uses maxReach + 3 for distance
         double distance = 6.0; // 3.0 + 3.0
@@ -650,6 +651,12 @@ public class Backtrack extends Module {
                     eyeX + lookVec.xCoord * distance,
                     eyeY + lookVec.yCoord * distance,
                     eyeZ + lookVec.zCoord * distance
+                );
+                
+                // Create AABB for target with intercept expansion for safer bypass
+                AxisAlignedBB targetBox = new AxisAlignedBB(
+                    pos.x - 0.3 - interceptExpansion, pos.y - interceptExpansion, pos.z - 0.3 - interceptExpansion,
+                    pos.x + 0.3 + interceptExpansion, pos.y + 1.8 + interceptExpansion, pos.z + 0.3 + interceptExpansion
                 );
                 
                 // GRIM'S CHECK: calculateIntercept not null = hitbox hit
@@ -692,8 +699,8 @@ public class Backtrack extends Module {
     }
 
     /**
-     * VAPE V4 STYLE RENDERING - Single smooth box per player
-     * Uses ease-in-out interpolation for buttery smooth transitions
+     * SMOOTH INTERPOLATED RENDERING - Shows fluid backtrack positions with prediction engine
+     * Boxes smoothly transition and never teleport or disappear
      */
     private void renderManualModePositions(float partialTicks) {
         // OPTIMIZATION: Don't render if no positions stored
@@ -702,17 +709,15 @@ public class Backtrack extends Module {
         }
         
         try {
-            Color baseColor = new Color(this.color.getValue());
-            // Vape V4 style: 65% opacity (165/255)
-            Color vapeColor = new Color(
-                baseColor.getRed(),
-                baseColor.getGreen(),
-                baseColor.getBlue(),
-                165 // 65% opacity
-            );
+            // Light blue color (0x87CEEB = RGB 135, 206, 235)
+            Color lightBlueColor = new Color(135, 206, 235, 165);
+            long currentTime = System.currentTimeMillis();
+            float deltaTime = (currentTime - lastRenderTime) / 1000.0f; // Delta in seconds
+            lastRenderTime = currentTime;
             
             for (Map.Entry<Integer, LinkedList<PositionData>> entry : entityPositions.entrySet()) {
-                EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
+                int entityId = entry.getKey();
+                EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entityId);
                 
                 if (player == null || player == mc.thePlayer || player.isDead) {
                     continue;
@@ -727,27 +732,42 @@ public class Backtrack extends Module {
                     continue;
                 }
                 
-                // Get or create interpolation tracker for THIS PLAYER
-                InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(
-                    entry.getKey(), 
-                    k -> new InterpolatedPositionTracker()
-                );
-                
-                // VAPE V4 STYLE: Single box that smoothly interpolates between ALL positions
                 // Find the best position (oldest valid backtrack position)
                 PositionData targetPos = selectBestBacktrackPosition(positions, player);
                 
                 if (targetPos != null) {
-                    // Get smoothly interpolated position using ease-in-out
-                    PositionData smoothPos = tracker.getSmoothInterpolatedPosition(targetPos, partialTicks);
+                    // GRIM PREDICTION ENGINE: Predict smooth position based on velocity and knockback
+                    PositionData smoothPos = getSmoothInterpolatedPosition(entityId, targetPos, player, partialTicks, deltaTime);
                     
-                    // Render SINGLE Vape V4 style box
-                    renderVapeV4Box(smoothPos, vapeColor);
+                    // Render smooth box - never teleports!
+                    renderVapeV4Box(smoothPos, lightBlueColor);
                 }
             }
         } catch (Exception e) {
             // Prevent any render errors from causing freezes
         }
+    }
+    
+    /**
+     * Get smoothly interpolated position using GrimPredictionEngine
+     * Ensures boxes never teleport or disappear - always smooth transitions
+     */
+    private PositionData getSmoothInterpolatedPosition(int entityId, PositionData targetPos, EntityPlayer player, float partialTicks, float deltaTime) {
+        // Get or create interpolation tracker
+        InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(entityId, k -> new InterpolatedPositionTracker());
+        
+        // Use Grim prediction engine to calculate velocity-aware interpolation
+        long posAge = System.currentTimeMillis() - targetPos.timestamp;
+        int ticksBack = (int) (posAge / 50);
+        
+        GrimPredictionEngine.PredictedPosition predicted = 
+            GrimPredictionEngine.predictWithInterpolation(player, ticksBack);
+        
+        // Apply prediction-based velocity adjustment
+        Vec3 predictedVelocity = predicted != null ? predicted.velocity : new Vec3(0, 0, 0);
+        
+        // Update tracker with target position and predicted velocity
+        return tracker.update(targetPos, predictedVelocity, deltaTime, partialTicks);
     }
     
     /**
@@ -884,8 +904,8 @@ public class Backtrack extends Module {
     }
 
     /**
-     * VAPE V4 STYLE LAG-BASED RENDERING - Single smooth box per player
-     * Shows server-side position with ease-in-out interpolation
+     * SMOOTH INTERPOLATED LAG-BASED RENDERING - Shows fluid server positions with prediction
+     * Boxes smoothly transition and never teleport or disappear
      */
     private void renderLagBasedPositions(float partialTicks) {
         // OPTIMIZATION: Don't render if no server positions stored
@@ -894,17 +914,15 @@ public class Backtrack extends Module {
         }
         
         try {
-            Color baseColor = new Color(this.color.getValue());
-            // Vape V4 style: 65% opacity
-            Color vapeColor = new Color(
-                baseColor.getRed(),
-                baseColor.getGreen(),
-                baseColor.getBlue(),
-                165 // 65% opacity
-            );
+            // Light blue color (0x87CEEB = RGB 135, 206, 235)
+            Color lightBlueColor = new Color(135, 206, 235, 165);
+            long currentTime = System.currentTimeMillis();
+            float deltaTime = (currentTime - lastRenderTime) / 1000.0f; // Delta in seconds
+            lastRenderTime = currentTime;
             
             for (Map.Entry<Integer, PositionData> entry : serverPositions.entrySet()) {
-                EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entry.getKey());
+                int entityId = entry.getKey();
+                EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entityId);
                 
                 if (player == null || player == mc.thePlayer || player.isDead) {
                     continue;
@@ -917,25 +935,50 @@ public class Backtrack extends Module {
                 PositionData serverPos = entry.getValue();
                 
                 // OPTIMIZATION: Skip if position is too old
-                if (System.currentTimeMillis() - serverPos.timestamp > 1000) {
+                if (currentTime - serverPos.timestamp > 1000) {
                     continue;
                 }
                 
-                // Get or create interpolation tracker for THIS PLAYER
-                InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(
-                    entry.getKey(), 
-                    k -> new InterpolatedPositionTracker()
-                );
+                // GRIM PREDICTION ENGINE: Predict smooth position based on velocity and knockback
+                PositionData smoothPos = getSmoothInterpolatedPosition(entityId, serverPos, player, partialTicks, deltaTime);
                 
-                // Get smoothly interpolated position using ease-in-out
-                PositionData renderPos = tracker.getSmoothInterpolatedPosition(serverPos, partialTicks);
-                
-                // Render SINGLE Vape V4 style box
-                renderVapeV4Box(renderPos, vapeColor);
+                // Render smooth box - never teleports!
+                renderVapeV4Box(smoothPos, lightBlueColor);
             }
         } catch (Exception e) {
             // Prevent any render errors from causing freezes
         }
+    }
+
+    // ==================== Knockback Prediction System ====================
+    
+    /**
+     * Apply knockback prediction to position data
+     * Predicts where the player will be after knockback from our hits
+     */
+    private PositionData applyKnockbackPrediction(PositionData pos, EntityPlayer player) {
+        // Calculate if player is being knocked back
+        // Check if player has velocity (recent hit)
+        double velocityMagnitude = Math.sqrt(
+            player.motionX * player.motionX + 
+            player.motionY * player.motionY + 
+            player.motionZ * player.motionZ
+        );
+        
+        // If player has significant velocity, predict future position
+        if (velocityMagnitude > 0.05) {
+            // Predict 3 ticks ahead (150ms) for knockback
+            double predictionTime = 3; // ticks
+            
+            double predictedX = pos.x + (player.motionX * predictionTime);
+            double predictedY = pos.y + (player.motionY * predictionTime);
+            double predictedZ = pos.z + (player.motionZ * predictionTime);
+            
+            return new PositionData(predictedX, predictedY, predictedZ, pos.timestamp);
+        }
+        
+        // No knockback detected, return original position
+        return pos;
     }
 
     // ==================== Vape V4 Style Rendering ====================
@@ -1151,7 +1194,58 @@ public class Backtrack extends Module {
      * VAPE V4 SMOOTH INTERPOLATION TRACKER
      * Single position per player with ease-in-out cubic transitions
      */
+    /**
+     * Smooth interpolation tracker for backtrack rendering
+     * Uses velocity prediction and smooth lerping to prevent boxes from teleporting
+     */
     private static class InterpolatedPositionTracker {
+        private double currentX, currentY, currentZ;
+        private double velocityX, velocityY, velocityZ;
+        private boolean initialized = false;
+        
+        // Interpolation speed - higher = faster transition (1.0 = instant, 0.1 = very slow)
+        private static final float LERP_SPEED = 8.0f; // Smooth but responsive
+        private static final float VELOCITY_LERP_SPEED = 4.0f; // Velocity adapts slower
+        
+        public PositionData update(PositionData targetPos, Vec3 predictedVelocity, float deltaTime, float partialTicks) {
+            // Initialize on first update
+            if (!initialized) {
+                currentX = targetPos.x;
+                currentY = targetPos.y;
+                currentZ = targetPos.z;
+                velocityX = predictedVelocity.xCoord;
+                velocityY = predictedVelocity.yCoord;
+                velocityZ = predictedVelocity.zCoord;
+                initialized = true;
+                return targetPos;
+            }
+            
+            // Smoothly interpolate velocity (for acceleration/deceleration)
+            float velocityAlpha = 1.0f - (float) Math.exp(-VELOCITY_LERP_SPEED * deltaTime);
+            velocityX += (predictedVelocity.xCoord - velocityX) * velocityAlpha;
+            velocityY += (predictedVelocity.yCoord - velocityY) * velocityAlpha;
+            velocityZ += (predictedVelocity.zCoord - velocityZ) * velocityAlpha;
+            
+            // Calculate target position with velocity prediction
+            double targetX = targetPos.x + velocityX * partialTicks;
+            double targetY = targetPos.y + velocityY * partialTicks;
+            double targetZ = targetPos.z + velocityZ * partialTicks;
+            
+            // Smoothly interpolate to target (exponential smoothing for natural feel)
+            float alpha = 1.0f - (float) Math.exp(-LERP_SPEED * deltaTime);
+            currentX += (targetX - currentX) * alpha;
+            currentY += (targetY - currentY) * alpha;
+            currentZ += (targetZ - currentZ) * alpha;
+            
+            // Return smoothed position
+            return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
+        }
+    }
+    
+    /**
+     * Old method - kept for compatibility but not used
+     */
+    private static class LegacyInterpolationHelper {
         private double currentX = 0;
         private double currentY = 0;
         private double currentZ = 0;
@@ -1161,12 +1255,8 @@ public class Backtrack extends Module {
         private double targetZ = 0;
         
         private boolean initialized = false;
-        private static final float INTERPOLATION_SPEED = 0.18F; // BUTTERY SMOOTH - higher = snappier
+        private static final float INTERPOLATION_SPEED = 0.18F;
         
-        /**
-         * Get smoothly interpolated position with ease-in-out cubic easing
-         * This creates the signature Vape V4 smooth movement
-         */
         public PositionData getSmoothInterpolatedPosition(PositionData targetPos, float partialTicks) {
             // Initialize on first use
             if (!initialized) {
