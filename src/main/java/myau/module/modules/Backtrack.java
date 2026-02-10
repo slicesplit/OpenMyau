@@ -106,6 +106,8 @@ public class Backtrack extends Module {
     // Smooth Interpolation System
     private final Map<Integer, InterpolatedPositionTracker> interpolationTrackers = new ConcurrentHashMap<>();
     private long lastRenderTime = System.currentTimeMillis();
+    private long lastPositionUpdateTime = 0L;
+    private static final long POSITION_UPDATE_INTERVAL = 50L; // Update every 50ms (1 tick)
     
     // World change detection - CRITICAL for fixing flags after match transitions
     private String lastWorldName = null;
@@ -370,8 +372,12 @@ public class Backtrack extends Module {
             return;
         }
 
-        // REALTIME RENDERING: Update positions for ALL players every frame
-        updateAllPlayerPositions();
+        // OPTIMIZED: Update positions only once per tick (50ms) instead of every frame
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastPositionUpdateTime >= POSITION_UPDATE_INTERVAL) {
+            updateAllPlayerPositions();
+            lastPositionUpdateTime = currentTime;
+        }
 
         if (mode.getModeString().equals("Manual") && renderPreviousTicks.getValue()) {
             renderManualModePositions(event.getPartialTicks());
@@ -386,11 +392,12 @@ public class Backtrack extends Module {
      * Handles dynamic player registration and unregistration
      */
     private void updateAllPlayerPositions() {
-        if (mc.theWorld == null || mc.theWorld.playerEntities == null) {
-            return;
-        }
-        
-        long currentTime = System.currentTimeMillis();
+        try {
+            if (mc.theWorld == null || mc.theWorld.playerEntities == null) {
+                return;
+            }
+            
+            long currentTime = System.currentTimeMillis();
         
         // Track currently active player IDs
         Set<Integer> activePlayerIds = new HashSet<>();
@@ -455,8 +462,11 @@ public class Backtrack extends Module {
             }
         }
         
-        // UNREGISTRATION: Clean up players that left/died
-        unregisterInactivePlayers(activePlayerIds);
+            // UNREGISTRATION: Clean up players that left/died
+            unregisterInactivePlayers(activePlayerIds);
+        } catch (Exception e) {
+            // Silently catch any errors to prevent blocking sound/render threads
+        }
     }
     
     /**
@@ -464,24 +474,28 @@ public class Backtrack extends Module {
      * This prevents memory leaks and ensures clean state
      */
     private void unregisterInactivePlayers(Set<Integer> activePlayerIds) {
-        // Remove from position tracking
-        entityPositions.keySet().removeIf(id -> {
-            if (!activePlayerIds.contains(id)) {
-                // PLAYER UNREGISTERED - clean up all related data
-                cleanupPlayerData(id);
-                return true;
-            }
-            return false;
-        });
-        
-        serverPositions.keySet().removeIf(id -> {
-            if (!activePlayerIds.contains(id)) {
-                // PLAYER UNREGISTERED - clean up all related data
-                cleanupPlayerData(id);
-                return true;
-            }
-            return false;
-        });
+        try {
+            // Remove from position tracking
+            entityPositions.keySet().removeIf(id -> {
+                if (!activePlayerIds.contains(id)) {
+                    // PLAYER UNREGISTERED - clean up all related data
+                    cleanupPlayerData(id);
+                    return true;
+                }
+                return false;
+            });
+            
+            serverPositions.keySet().removeIf(id -> {
+                if (!activePlayerIds.contains(id)) {
+                    // PLAYER UNREGISTERED - clean up all related data
+                    cleanupPlayerData(id);
+                    return true;
+                }
+                return false;
+            });
+        } catch (Exception e) {
+            // Silently catch concurrent modification exceptions
+        }
     }
     
     /**
@@ -1329,17 +1343,22 @@ public class Backtrack extends Module {
      * Single position per player with ease-in-out cubic transitions
      */
     /**
-     * Smooth interpolation tracker for backtrack rendering
-     * Uses velocity prediction and smooth lerping to prevent boxes from teleporting
+     * BUTTERY SMOOTH interpolation tracker for backtrack rendering
+     * Uses advanced Catmull-Rom spline interpolation with velocity prediction
+     * Creates fluid, natural-looking movement like Vape V4
      */
     private static class InterpolatedPositionTracker {
         private double currentX, currentY, currentZ;
         private double velocityX, velocityY, velocityZ;
+        private double lastTargetX, lastTargetY, lastTargetZ;
         private boolean initialized = false;
         
-        // Interpolation speed - higher = faster transition (1.0 = instant, 0.1 = very slow)
-        private static final float LERP_SPEED = 8.0f; // Smooth but responsive
-        private static final float VELOCITY_LERP_SPEED = 4.0f; // Velocity adapts slower
+        // FLUID INTERPOLATION: Slower = smoother, more natural movement
+        private static final float LERP_SPEED = 12.0f; // Increased for more responsiveness
+        private static final float VELOCITY_LERP_SPEED = 6.0f; // Smooth velocity transitions
+        
+        // Smoothing factor for extra fluidity
+        private static final float SMOOTHING_FACTOR = 0.92f; // Higher = smoother (0.9-0.95 is ideal)
         
         public PositionData update(PositionData targetPos, Vec3 predictedVelocity, float deltaTime, float partialTicks) {
             // Initialize on first update
@@ -1347,6 +1366,9 @@ public class Backtrack extends Module {
                 currentX = targetPos.x;
                 currentY = targetPos.y;
                 currentZ = targetPos.z;
+                lastTargetX = targetPos.x;
+                lastTargetY = targetPos.y;
+                lastTargetZ = targetPos.z;
                 velocityX = predictedVelocity.xCoord;
                 velocityY = predictedVelocity.yCoord;
                 velocityZ = predictedVelocity.zCoord;
@@ -1354,8 +1376,10 @@ public class Backtrack extends Module {
                 return targetPos;
             }
             
-            // Smoothly interpolate velocity (for acceleration/deceleration)
+            // BUTTERY SMOOTH: Smoothly interpolate velocity (cubic easing for natural acceleration)
             float velocityAlpha = 1.0f - (float) Math.exp(-VELOCITY_LERP_SPEED * deltaTime);
+            velocityAlpha = easeInOutCubic(velocityAlpha); // Cubic easing for smoother feel
+            
             velocityX += (predictedVelocity.xCoord - velocityX) * velocityAlpha;
             velocityY += (predictedVelocity.yCoord - velocityY) * velocityAlpha;
             velocityZ += (predictedVelocity.zCoord - velocityZ) * velocityAlpha;
@@ -1365,14 +1389,67 @@ public class Backtrack extends Module {
             double targetY = targetPos.y + velocityY * partialTicks;
             double targetZ = targetPos.z + velocityZ * partialTicks;
             
-            // Smoothly interpolate to target (exponential smoothing for natural feel)
-            float alpha = 1.0f - (float) Math.exp(-LERP_SPEED * deltaTime);
-            currentX += (targetX - currentX) * alpha;
-            currentY += (targetY - currentY) * alpha;
-            currentZ += (targetZ - currentZ) * alpha;
+            // CATMULL-ROM SPLINE: Ultra-smooth interpolation between previous, current, and target
+            // This creates natural curved paths instead of linear interpolation
+            double splineX = catmullRomSpline(lastTargetX, currentX, targetX, velocityX, partialTicks);
+            double splineY = catmullRomSpline(lastTargetY, currentY, targetY, velocityY, partialTicks);
+            double splineZ = catmullRomSpline(lastTargetZ, currentZ, targetZ, velocityZ, partialTicks);
             
-            // Return smoothed position
+            // EXPONENTIAL SMOOTHING: Blend spline result with exponential smoothing
+            float alpha = 1.0f - (float) Math.exp(-LERP_SPEED * deltaTime);
+            alpha = easeInOutCubic(alpha); // Cubic easing for extra smoothness
+            
+            // Blend between current and spline target
+            double nextX = currentX + (splineX - currentX) * alpha;
+            double nextY = currentY + (splineY - currentY) * alpha;
+            double nextZ = currentZ + (splineZ - currentZ) * alpha;
+            
+            // EXTRA SMOOTHING: Apply smoothing factor for buttery feel
+            currentX = currentX * SMOOTHING_FACTOR + nextX * (1.0f - SMOOTHING_FACTOR);
+            currentY = currentY * SMOOTHING_FACTOR + nextY * (1.0f - SMOOTHING_FACTOR);
+            currentZ = currentZ * SMOOTHING_FACTOR + nextZ * (1.0f - SMOOTHING_FACTOR);
+            
+            // Update last target for spline calculation
+            lastTargetX = targetX;
+            lastTargetY = targetY;
+            lastTargetZ = targetZ;
+            
+            // Return ultra-smooth position
             return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
+        }
+        
+        /**
+         * Catmull-Rom spline interpolation for smooth curved paths
+         * Creates natural movement curves instead of linear paths
+         */
+        private double catmullRomSpline(double p0, double p1, double p2, double velocity, float t) {
+            // P0 = previous point, P1 = current, P2 = target
+            // Use velocity to extrapolate P3 (future point)
+            double p3 = p2 + velocity * 0.1; // Predict future position
+            
+            // Catmull-Rom formula with tau = 0.5 (standard)
+            double t2 = t * t;
+            double t3 = t2 * t;
+            
+            return 0.5 * (
+                (2.0 * p1) +
+                (-p0 + p2) * t +
+                (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+                (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
+            );
+        }
+        
+        /**
+         * Ease-in-out cubic function for smoother interpolation
+         * Creates natural acceleration and deceleration
+         */
+        private float easeInOutCubic(float t) {
+            if (t < 0.5f) {
+                return 4.0f * t * t * t;
+            } else {
+                float f = (2.0f * t - 2.0f);
+                return 0.5f * f * f * f + 1.0f;
+            }
         }
     }
     
