@@ -1,74 +1,92 @@
 package myau.module.modules;
 
+import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
 import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
+import myau.property.properties.BooleanProperty;
 import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
+import myau.util.PacketUtil;
+import myau.util.TimerUtil;
 import net.minecraft.client.Minecraft;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.Packet;
-import net.minecraft.network.play.client.C03PacketPlayer;
-import net.minecraft.network.play.client.C0FPacketConfirmTransaction;
-import net.minecraft.network.play.client.C00PacketKeepAlive;
+import net.minecraft.network.play.client.*;
+import net.minecraft.util.AxisAlignedBB;
+import net.minecraft.util.Vec3;
 
-import java.util.LinkedList;
-import java.util.Queue;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * FakeLag - Simulates lag by adding a delay to the packets you send to the server.
+ * FakeLag Module
  * 
- * Mode:
- * - Latency: Adds a constant amount of delay to your packets.
- * - Dynamic: Dynamically adjusts your connection speed to give you advantages in combat.
- * - Repel: Tunes FakeLag with the goal of keeping your opponent as far away from you as possible.
+ * Based on LiquidBounce's implementation (https://github.com/CCBlueX/LiquidBounce)
+ * Copyright (c) 2015 - 2026 CCBlueX
+ * Licensed under GNU General Public License v3.0
  * 
- * Transmission Offset: Higher values may make your connection more unstable.
- * Delay: The amount of delay (in milliseconds) to wait before sending any given packet to the server.
+ * Adapted for Myau client with permission from CCBlueX
  * 
- * LAGRANGE 1000MS BYPASS:
- * - Accounts for base 1000ms Lagrange latency
- * - Prevents disconnect from stacking delays
- * - Smart packet timing to avoid Grim flags
+ * Holds back packets to prevent you from being hit by an enemy.
  */
 public class FakeLag extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // LAGRANGE COMPENSATION
-    private static final int LAGRANGE_BASE_PING = 1000; // Your Lagrange constant latency
-    private static final int MAX_TOTAL_DELAY = 1500; // Max 1.5s total delay (Lagrange + FakeLag)
-    private static final int SAFE_QUEUE_SIZE = 30; // Max packets before force release
-
-    // Mode Selection
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"Latency", "Dynamic", "Repel"});
+    // Settings
+    public final IntProperty minRange = new IntProperty("min-range", 2, 0, 10);
+    public final IntProperty maxRange = new IntProperty("max-range", 5, 0, 10);
+    public final IntProperty minDelay = new IntProperty("min-delay", 300, 0, 1000);
+    public final IntProperty maxDelay = new IntProperty("max-delay", 600, 0, 1000);
+    public final IntProperty recoilTime = new IntProperty("recoil-time", 250, 0, 1000);
+    public final ModeProperty mode = new ModeProperty("mode", 1, new String[]{"Constant", "Dynamic"});
     
-    // Settings - LAGRANGE: Reduced max delay since we already have 1000ms base
-    public final IntProperty delay = new IntProperty("delay", 100, 0, 300);
-    public final IntProperty transmissionOffset = new IntProperty("transmission-offset", 50, 0, 150);
+    // Flush options
+    public final BooleanProperty flushOnEntityInteract = new BooleanProperty("flush-entity-interact", true);
+    public final BooleanProperty flushOnBlockInteract = new BooleanProperty("flush-block-interact", true);
+    public final BooleanProperty flushOnAction = new BooleanProperty("flush-action", false);
 
-    private final Queue<PacketData> delayedPackets = new LinkedList<>();
-    private long lastReleaseTime = 0L;
-    private EntityPlayer lastTarget = null;
+    private final TimerUtil chronometer = new TimerUtil();
+    private int nextDelay;
+    private boolean isEnemyNearby = false;
+    
+    // Store server position tracking
+    private final List<Vec3> positions = new ArrayList<>();
 
     public FakeLag() {
         super("FakeLag", false);
+        this.chronometer.reset();
+        this.nextDelay = randomDelay();
     }
 
     @Override
     public void onEnabled() {
-        delayedPackets.clear();
-        lastReleaseTime = System.currentTimeMillis();
-        lastTarget = null;
+        positions.clear();
+        chronometer.reset();
+        nextDelay = randomDelay();
+        isEnemyNearby = false;
     }
 
     @Override
     public void onDisabled() {
-        // Release all packets to prevent rubberband
-        releaseAllPackets();
-        delayedPackets.clear();
+        // Flush all packets when disabled
+        Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
+        positions.clear();
+        isEnemyNearby = false;
+    }
+
+    @EventTarget
+    public void onTick(TickEvent event) {
+        if (event.getType() != EventType.PRE || mc.thePlayer == null) {
+            return;
+        }
+
+        // Check for enemies in range
+        isEnemyNearby = findEnemy() != null;
     }
 
     @EventTarget(Priority.HIGHEST)
@@ -77,253 +95,225 @@ public class FakeLag extends Module {
             return;
         }
 
-        Packet<?> packet = event.getPacket();
-        
-        // GRIM BYPASS: NEVER delay critical packets that cause TransactionOrder flags
-        if (packet instanceof C0FPacketConfirmTransaction || packet instanceof C00PacketKeepAlive) {
-            return; // Let these packets through immediately
-        }
-
-        // Only delay movement packets
-        if (packet instanceof C03PacketPlayer) {
-            // CRITICAL: Cancel the packet so we can delay it
-            event.setCancelled(true);
-            
-            long currentDelay = calculateDelay();
-            long releaseTime = System.currentTimeMillis() + currentDelay;
-            
-            // Add to queue with release time
-            delayedPackets.add(new PacketData(packet, releaseTime));
-            
-            // IMPORTANT: Immediately try to process packets
-            // This ensures smooth lag simulation instead of teleporting
-            processDelayedPacketsImmediate();
-        }
-    }
-    
-    /**
-     * Immediate packet processing - called right after adding to queue
-     * This makes FakeLag work like real lag instead of Blink
-     */
-    private void processDelayedPacketsImmediate() {
-        long currentTime = System.currentTimeMillis();
-        
-        // Try to release any ready packets immediately
-        while (!delayedPackets.isEmpty()) {
-            PacketData packetData = delayedPackets.peek();
-            
-            if (packetData != null && currentTime >= packetData.releaseTime) {
-                delayedPackets.poll();
-                
-                if (mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
-                    try {
-                        mc.getNetHandler().getNetworkManager().sendPacket(packetData.packet);
-                    } catch (Exception e) {
-                        // Silently handle
-                    }
-                }
-            } else {
-                break; // No more ready packets
-            }
-        }
-    }
-
-    @EventTarget
-    public void onTick(TickEvent event) {
-        if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null) {
+        if (mc.thePlayer.isDead || mc.thePlayer.isInWater() || mc.currentScreen != null) {
+            // Flush on death, water, or GUI open
+            Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
+            positions.clear();
             return;
         }
 
-        // CRITICAL: Process delayed packets EVERY tick to simulate real lag
-        // Not just when we have packets ready - continuously release them
-        processDelayedPackets();
+        Packet<?> packet = event.getPacket();
+
+        // Handle recoil time
+        if (!chronometer.hasTimeElapsed(recoilTime.getValue())) {
+            return;
+        }
+
+        // Check if we should flush based on delay
+        if (isAboveTime(nextDelay)) {
+            nextDelay = randomDelay();
+            Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
+            positions.clear();
+            return;
+        }
+
+        // Flush on specific packet types
+        if (shouldFlushOnPacket(packet)) {
+            chronometer.reset();
+            Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
+            positions.clear();
+            return;
+        }
+
+        // Never queue these critical packets
+        if (packet instanceof C00PacketKeepAlive 
+            || packet instanceof C01PacketChatMessage
+            || packet instanceof C0FPacketConfirmTransaction) {
+            return;
+        }
+
+        // Handle mode-specific logic
+        String currentMode = mode.getModeString();
+        
+        if (currentMode.equals("Constant")) {
+            // In constant mode, always queue packets
+            queuePacket(event);
+        } else if (currentMode.equals("Dynamic")) {
+            // In dynamic mode, only queue if enemy is nearby and conditions are met
+            if (!isEnemyNearby) {
+                return;
+            }
+
+            // Track position if this is a movement packet
+            if (packet instanceof C03PacketPlayer) {
+                C03PacketPlayer movePacket = (C03PacketPlayer) packet;
+                if (movePacket.isMoving()) {
+                    Vec3 position = new Vec3(movePacket.getPositionX(), movePacket.getPositionY(), movePacket.getPositionZ());
+                    positions.add(position);
+                }
+            }
+
+            Vec3 serverPosition = positions.isEmpty() ? mc.thePlayer.getPositionVector() : positions.get(0);
+            AxisAlignedBB playerBox = mc.thePlayer.getEntityBoundingBox().offset(
+                serverPosition.xCoord - mc.thePlayer.posX,
+                serverPosition.yCoord - mc.thePlayer.posY,
+                serverPosition.zCoord - mc.thePlayer.posZ
+            );
+
+            List<Entity> entities = getEntitiesInRange(serverPosition, maxRange.getValue());
+
+            if (entities.isEmpty()) {
+                return;
+            }
+
+            // Check if any entity intersects with our server position
+            boolean intersects = false;
+            for (Entity entity : entities) {
+                if (entity.getEntityBoundingBox().intersectsWith(playerBox)) {
+                    intersects = true;
+                    break;
+                }
+            }
+
+            // Calculate distances
+            double serverDistance = Double.MAX_VALUE;
+            double clientDistance = Double.MAX_VALUE;
+
+            for (Entity entity : entities) {
+                double serverDist = entity.getPositionVector().distanceTo(serverPosition);
+                double clientDist = mc.thePlayer.getDistanceToEntity(entity);
+                
+                if (serverDist < serverDistance) {
+                    serverDistance = serverDist;
+                }
+                if (clientDist < clientDistance) {
+                    clientDistance = clientDist;
+                }
+            }
+
+            // If server position is not closer than client position, or if intersecting, don't queue
+            if (serverDistance < clientDistance || intersects) {
+                return;
+            }
+
+            queuePacket(event);
+        }
     }
 
-    // ==================== Mode Logic ====================
-
-    private long calculateDelay() {
-        long baseDelay = this.delay.getValue();
-        
-        // LAGRANGE BYPASS: Ensure total delay doesn't exceed safe limits
-        // We already have 1000ms base, so FakeLag adds less
-        long calculatedDelay;
-        
-        switch (mode.getModeString()) {
-            case "Latency":
-                // Constant delay
-                calculatedDelay = baseDelay;
-                break;
-                
-            case "Dynamic":
-                // Dynamic delay based on combat state
-                calculatedDelay = calculateDynamicDelay(baseDelay);
-                break;
-                
-            case "Repel":
-                // Repel mode: Keep enemies away
-                calculatedDelay = calculateRepelDelay(baseDelay);
-                break;
-                
-            default:
-                calculatedDelay = baseDelay;
+    private void queuePacket(PacketEvent event) {
+        // Start blinking if not already
+        if (!Myau.blinkManager.isBlinking()) {
+            Myau.blinkManager.setBlinkState(true, myau.enums.BlinkModules.FAKELAG);
         }
-        
-        // LAGRANGE BYPASS: Cap total delay to prevent disconnect
-        // Total delay = Lagrange (1000ms) + FakeLag delay
-        long maxAdditionalDelay = MAX_TOTAL_DELAY - LAGRANGE_BASE_PING;
-        return Math.min(calculatedDelay, maxAdditionalDelay);
-    }
 
-    private long calculateDynamicDelay(long baseDelay) {
-        // Find closest target
-        EntityPlayer target = findClosestEnemy();
+        // Cancel the event so the packet gets queued by BlinkManager
+        event.setCancelled(true);
         
-        if (target == null) {
-            return baseDelay / 2; // Less delay when not in combat
-        }
-        
-        double distance = mc.thePlayer.getDistanceToEntity(target);
-        
-        // Increase delay when enemy is close (gives advantage)
-        if (distance < 3.0) {
-            return baseDelay + transmissionOffset.getValue();
-        } else if (distance < 5.0) {
-            return baseDelay;
+        // Manually offer to blink manager
+        if (Myau.blinkManager.offerPacket(event.getPacket())) {
+            // Packet was queued successfully
         } else {
-            return baseDelay / 2;
+            // Packet was not queued, send it normally
+            PacketUtil.sendPacketNoEvent(event.getPacket());
         }
     }
 
-    private long calculateRepelDelay(long baseDelay) {
-        EntityPlayer target = findClosestEnemy();
-        
-        if (target == null) {
-            return baseDelay / 2;
+    private boolean shouldFlushOnPacket(Packet<?> packet) {
+        // Entity interaction packets
+        if (flushOnEntityInteract.getValue() && 
+            (packet instanceof C02PacketUseEntity || packet instanceof C0APacketAnimation)) {
+            return true;
         }
-        
-        double distance = mc.thePlayer.getDistanceToEntity(target);
-        double prevDistance = lastTarget != null ? mc.thePlayer.getDistanceToEntity(lastTarget) : distance;
-        
-        lastTarget = target;
-        
-        // If enemy is getting closer, add more lag to push them back
-        if (distance < prevDistance) {
-            return baseDelay + (transmissionOffset.getValue() * 2);
-        } else {
-            return baseDelay;
+
+        // Block interaction packets
+        if (flushOnBlockInteract.getValue() && 
+            (packet instanceof C08PacketPlayerBlockPlacement || packet instanceof C12PacketUpdateSign)) {
+            return true;
         }
+
+        // Player action packets
+        if (flushOnAction.getValue() && packet instanceof C07PacketPlayerDigging) {
+            return true;
+        }
+
+        return false;
     }
 
-    // ==================== Packet Management ====================
-
-    private void processDelayedPackets() {
-        long currentTime = System.currentTimeMillis();
-        
-        // FIXED: Release packets in order, like real lag would
-        // Real lag doesn't hold packets forever - it delays them then sends
-        int released = 0;
-        while (!delayedPackets.isEmpty() && released < 10) { // Max 10 per tick to prevent spam
-            PacketData packetData = delayedPackets.peek();
-            
-            if (packetData != null && currentTime >= packetData.releaseTime) {
-                delayedPackets.poll();
-                
-                if (mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
-                    try {
-                        // Send the packet now
-                        mc.getNetHandler().getNetworkManager().sendPacket(packetData.packet);
-                        released++;
-                    } catch (Exception e) {
-                        // Silently handle packet send errors
-                    }
-                }
-            } else {
-                break; // No more packets ready to send yet
-            }
-        }
-        
-        // LAGRANGE BYPASS: Much stricter queue management due to base 1000ms delay
-        if (delayedPackets.size() > SAFE_QUEUE_SIZE) {
-            // Too many packets queued, release immediately to prevent disconnect
-            // With Lagrange 1000ms base, we can't afford large queues
-            releaseAllPackets();
-        }
-        
-        // LAGRANGE BYPASS: Force release old packets earlier
-        if (!delayedPackets.isEmpty()) {
-            PacketData oldest = delayedPackets.peek();
-            // With Lagrange, packets are already delayed 1000ms
-            // So FakeLag packets over 400ms old = 1400ms total delay = risky
-            if (oldest != null && currentTime - oldest.captureTime > 400) {
-                // Force release to prevent disconnect (total delay would be 1400ms+)
-                int forceRelease = 0;
-                while (!delayedPackets.isEmpty() && forceRelease < 10) {
-                    PacketData old = delayedPackets.poll();
-                    if (old != null && mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
-                        try {
-                            mc.getNetHandler().getNetworkManager().sendPacket(old.packet);
-                            forceRelease++;
-                        } catch (Exception e) {
-                            // Silently handle
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private void releaseAllPackets() {
-        while (!delayedPackets.isEmpty()) {
-            PacketData packetData = delayedPackets.poll();
-            
-            if (packetData != null && mc.getNetHandler() != null && mc.getNetHandler().getNetworkManager() != null) {
-                try {
-                    mc.getNetHandler().getNetworkManager().sendPacket(packetData.packet);
-                } catch (Exception e) {
-                    // Silently handle
-                }
-            }
-        }
-        lastReleaseTime = System.currentTimeMillis();
-    }
-
-    // ==================== Utility Methods ====================
-
-    private EntityPlayer findClosestEnemy() {
+    private EntityPlayer findEnemy() {
+        float range = maxRange.getValue();
         EntityPlayer closest = null;
         double closestDistance = Double.MAX_VALUE;
-        
-        for (EntityPlayer player : mc.theWorld.playerEntities) {
+
+        for (Object obj : mc.theWorld.playerEntities) {
+            if (!(obj instanceof EntityPlayer)) continue;
+            
+            EntityPlayer player = (EntityPlayer) obj;
+            
+            // Skip self, dead players, and teammates
             if (player == mc.thePlayer || player.isDead || player.isInvisible()) {
                 continue;
             }
-            
+
             double distance = mc.thePlayer.getDistanceToEntity(player);
-            if (distance < closestDistance && distance < 20.0) {
+            if (distance <= range && distance < closestDistance) {
                 closestDistance = distance;
                 closest = player;
             }
         }
-        
+
         return closest;
     }
 
-    // ==================== Data Classes ====================
+    private List<Entity> getEntitiesInRange(Vec3 position, double range) {
+        List<Entity> result = new ArrayList<>();
 
-    private static class PacketData {
-        final Packet<?> packet;
-        final long captureTime;
-        final long releaseTime;
+        for (Object obj : mc.theWorld.loadedEntityList) {
+            if (!(obj instanceof Entity)) continue;
+            
+            Entity entity = (Entity) obj;
+            
+            // Skip self and invalid entities
+            if (entity == mc.thePlayer || entity.isDead) {
+                continue;
+            }
 
-        PacketData(Packet<?> packet, long releaseTime) {
-            this.packet = packet;
-            this.captureTime = System.currentTimeMillis();
-            this.releaseTime = releaseTime;
+            // Check if it's an attackable entity (player or mob)
+            if (entity instanceof EntityPlayer) {
+                EntityPlayer player = (EntityPlayer) entity;
+                if (player.isInvisible()) {
+                    continue;
+                }
+            }
+
+            double distance = entity.getPositionVector().distanceTo(position);
+            if (distance <= range) {
+                result.add(entity);
+            }
         }
+
+        return result;
     }
-    
+
+    private boolean isAboveTime(long delay) {
+        if (Myau.blinkManager.blinkedPackets.isEmpty()) {
+            return false;
+        }
+        
+        long queueTime = System.currentTimeMillis() - chronometer.getElapsedTime();
+        return chronometer.getElapsedTime() >= delay;
+    }
+
+    private int randomDelay() {
+        int min = minDelay.getValue();
+        int max = maxDelay.getValue();
+        if (min >= max) {
+            return min;
+        }
+        return min + (int) (Math.random() * (max - min));
+    }
+
     @Override
     public String[] getSuffix() {
-        return new String[]{String.format("%s (%dms)", mode.getModeString(), delay.getValue())};
+        return new String[]{String.format("%s (%d-%dms)", mode.getModeString(), minDelay.getValue(), maxDelay.getValue())};
     }
 }

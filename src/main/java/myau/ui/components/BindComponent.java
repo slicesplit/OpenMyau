@@ -66,11 +66,14 @@ public class BindComponent implements Component {
     @Override
     public void keyTyped(char chatTyped, int keyCode) {
         if (this.isBinding) {
-            if (keyCode == 1) {
+            // ESCAPE pressed while binding = UNBIND (set to NONE)
+            if (keyCode == Keyboard.KEY_ESCAPE) {
+                this.parentModule.mod.setKey(0); // Set to NONE
                 this.isBinding = false;
                 return;
             }
             
+            // 0 key (keyCode 11) = unbind (except for GuiModule)
             if (keyCode == 11) { 
                 if (this.parentModule.mod instanceof GuiModule) {
                     this.parentModule.mod.setKey(54);

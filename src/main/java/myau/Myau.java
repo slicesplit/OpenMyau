@@ -69,7 +69,8 @@ public class Myau {
         moduleManager.modules.put(AntiObbyTrap.class, new AntiObbyTrap());
         moduleManager.modules.put(AntiObfuscate.class, new AntiObfuscate());
         moduleManager.modules.put(AntiVoid.class, new AntiVoid());
-        moduleManager.modules.put(Backtrack.class, new Backtrack());
+        moduleManager.modules.put(OldBacktrack.class, new OldBacktrack());
+        moduleManager.modules.put(NewBacktrack.class, new NewBacktrack());
         moduleManager.modules.put(InfHealthExploit.class, new InfHealthExploit());
         moduleManager.modules.put(AutoClicker.class, new AutoClicker());
         moduleManager.modules.put(AutoAnduril.class, new AutoAnduril());
@@ -124,7 +125,6 @@ public class Myau {
         moduleManager.modules.put(RemoteShop.class, new RemoteShop());
         moduleManager.modules.put(SafeWalk.class, new SafeWalk());
         moduleManager.modules.put(Scaffold.class, new Scaffold());
-        moduleManager.modules.put(AutoBlockIn.class, new AutoBlockIn());
         moduleManager.modules.put(Spammer.class, new Spammer());
         moduleManager.modules.put(Speed.class, new Speed());
         moduleManager.modules.put(SpeedMine.class, new SpeedMine());

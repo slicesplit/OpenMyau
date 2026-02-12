@@ -99,14 +99,6 @@ public abstract class MixinEntityRenderer {
             }
         }
 
-        AutoBlockIn autoBlockIn = (AutoBlockIn) Myau.moduleManager.modules.get(AutoBlockIn.class);
-        if (autoBlockIn.isEnabled() && autoBlockIn.itemSpoof.getValue()) {
-            int slot = autoBlockIn.getSlot();
-            if (slot >= 0) {
-                this.slot = new Box<>(this.mc.thePlayer.inventory.currentItem);
-                this.mc.thePlayer.inventory.currentItem = slot;
-            }
-        }
     }
 
     @Inject(

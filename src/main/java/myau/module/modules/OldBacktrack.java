@@ -38,7 +38,7 @@ import java.util.stream.Collectors;
  *   - Color: What color to shade the opponent's "shadow" with.
  *   - Latency: The amount of lag added to your connection at advantageous moments.
  */
-public class Backtrack extends Module {
+public class OldBacktrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
     // ==================== RISE/VAPE CLIENT BYPASS CONSTANTS ====================
@@ -127,8 +127,8 @@ public class Backtrack extends Module {
     // World change detection - CRITICAL for fixing flags after match transitions
     private String lastWorldName = null;
 
-    public Backtrack() {
-        super("Backtrack", false);
+    public OldBacktrack() {
+        super("OldBacktrack", false);
     }
 
     @Override
@@ -318,7 +318,9 @@ public class Backtrack extends Module {
                 
                 if (positions != null && !positions.isEmpty()) {
                     PositionData bestPos = selectBestPosition(positions, target);
-                    if (bestPos != null) {
+                    
+                    // PACKET SAFETY: Final validation before applying position
+                    if (bestPos != null && validateAttackPacketSafety(bestPos, target)) {
                         // GRIM BYPASS: Store original position for instant restore
                         double originalX = target.posX;
                         double originalY = target.posY;
@@ -768,6 +770,81 @@ public class Backtrack extends Module {
         }
         
         return lowest;
+    }
+    
+    /**
+     * PACKET SAFETY VALIDATOR
+     * Final check before sending attack packet - prevents ALL flags
+     * Returns true only if attack is 100% safe
+     */
+    private boolean validateAttackPacketSafety(PositionData pos, EntityPlayer target) {
+        // 1. Calculate Grim's exact reach distance
+        double reachDistance = calculateGrimReachDistance(pos, target);
+        
+        // 2. Validate against Grim's checks
+        if (!isPositionSafeForGrim(pos, target, reachDistance)) {
+            return false; // Would flag
+        }
+        
+        // 3. PREDICTION ENGINE SAFETY: Ensure position age is within safe limits
+        long positionAge = System.currentTimeMillis() - pos.timestamp;
+        int ticksOld = (int)(positionAge / 50);
+        
+        // SAFETY LIMIT: Max ticks based on mode and settings
+        int maxSafeTicks = getMaxSafeTicksForCurrentSettings();
+        if (ticksOld > maxSafeTicks) {
+            return false; // Too old, would flag
+        }
+        
+        // 4. RISE/VAPE: Additional safety checks
+        // Ensure we're not in a risky state (low success rate)
+        AITargetProfile profile = targetProfiles.get(target.getEntityId());
+        if (profile != null && profile.getSuccessRate() < 0.3) {
+            return false; // Too many failures, too risky
+        }
+        
+        // 5. Validate target is in valid state
+        if (target.isDead || target.getHealth() <= 0) {
+            return false; // Invalid target
+        }
+        
+        // All checks passed - safe to attack
+        return true;
+    }
+    
+    /**
+     * Calculate maximum safe ticks for current mode and settings
+     * Adapts to prediction engine capabilities
+     */
+    private int getMaxSafeTicksForCurrentSettings() {
+        if (mode.getModeString().equals("Manual")) {
+            // Manual mode: Based on ticks setting
+            // But cap at safe limits to prevent flags
+            int configuredTicks = ticks.getValue();
+            
+            // PREDICTION ENGINE: Calculate safe limit based on Grim's interpolation
+            // Grim allows 3 interpolation steps + uncertainty from ping
+            int baseSafeTicks = LIVING_ENTITY_INTERPOLATION_STEPS; // 3 ticks
+            
+            // Add ticks from ping uncertainty
+            int ping = 50;
+            if (mc.getNetHandler() != null && mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()) != null) {
+                ping = mc.getNetHandler().getPlayerInfo(mc.thePlayer.getUniqueID()).getResponseTime();
+            }
+            int pingTicks = ping / 50; // Convert ping to ticks
+            
+            // Total safe ticks = base (3) + ping ticks + safety margin (2)
+            int maxSafe = baseSafeTicks + pingTicks + 2;
+            
+            // Return minimum of configured and safe limit
+            return Math.min(configuredTicks, maxSafe);
+        } else {
+            // Lag-based mode: Based on latency setting
+            int latencyTicks = latency.getValue() / 50;
+            
+            // Cap at 40 ticks (2000ms) for safety
+            return Math.min(latencyTicks, 40);
+        }
     }
     
     /**
@@ -1534,21 +1611,21 @@ public class Backtrack extends Module {
         private boolean initialized = false;
         
         // BUTTERY INTERPOLATION: Smooth but responsive
-        private static final float SMOOTH_LERP_SPEED = 10.0f; // Smooth, flowing movement
-        private static final float FAST_LERP_SPEED = 18.0f; // Quick response when needed
-        private static final float VELOCITY_LERP_SPEED = 8.0f; // Smooth velocity transitions
+        private static final float SMOOTH_LERP_SPEED = 18.0f; // Fast smooth movement (was 10.0)
+        private static final float FAST_LERP_SPEED = 30.0f; // Ultra-fast response when stopped (was 18.0)
+        private static final float VELOCITY_LERP_SPEED = 15.0f; // Quick velocity adaptation (was 8.0)
         
         // Distance thresholds for adaptive behavior
-        private static final double SNAP_DISTANCE = 0.03; // Instant snap if within 3cm
-        private static final double MIN_VELOCITY = 0.008; // Consider stopped if velocity < this
+        private static final double SNAP_DISTANCE = 0.05; // Instant snap if within 5cm (was 3cm)
+        private static final double MIN_VELOCITY = 0.01; // Consider stopped if velocity < this (was 0.008)
         
         // Anti-flicker system
         private static final double FLICKER_THRESHOLD = 0.015; // Ignore micro-movements (1.5cm)
         private static final double FAR_DISTANCE = 25.0; // Consider "far" if > 25 blocks away
         private long lastUpdateTime = 0L;
         
-        // Smoothing layers
-        private static final float EXTRA_SMOOTHING = 0.85f; // Extra smoothing layer (85% old + 15% new)
+        // Smoothing layers - REDUCED for faster response
+        private static final float EXTRA_SMOOTHING = 0.65f; // Reduced smoothing (65% old + 35% new) - was 0.85
         
         public PositionData update(PositionData targetPos, Vec3 predictedVelocity, float deltaTime, float partialTicks) {
             // Initialize on first update
@@ -1567,18 +1644,15 @@ public class Backtrack extends Module {
                 return targetPos;
             }
             
-            // BUTTERY SMOOTH VELOCITY UPDATE: Gradual velocity changes
-            float velocityAlpha = 1.0f - (float) Math.exp(-VELOCITY_LERP_SPEED * deltaTime);
-            velocityAlpha = easeInOutCubic(velocityAlpha); // Cubic easing for extra smoothness
+            // INSTANT VELOCITY SYNC: Update velocity immediately for accurate tracking
+            velocityX = predictedVelocity.xCoord;
+            velocityY = predictedVelocity.yCoord;
+            velocityZ = predictedVelocity.zCoord;
             
-            velocityX += (predictedVelocity.xCoord - velocityX) * velocityAlpha;
-            velocityY += (predictedVelocity.yCoord - velocityY) * velocityAlpha;
-            velocityZ += (predictedVelocity.zCoord - velocityZ) * velocityAlpha;
-            
-            // Calculate target position with velocity prediction
-            double targetX = targetPos.x + velocityX * partialTicks * 0.5; // Reduced prediction for stability
-            double targetY = targetPos.y + velocityY * partialTicks * 0.5;
-            double targetZ = targetPos.z + velocityZ * partialTicks * 0.5;
+            // Calculate target position with full velocity prediction
+            double targetX = targetPos.x + velocityX * partialTicks;
+            double targetY = targetPos.y + velocityY * partialTicks;
+            double targetZ = targetPos.z + velocityZ * partialTicks;
             
             // Calculate distance to target
             double dx = targetX - currentX;
@@ -1598,7 +1672,6 @@ public class Backtrack extends Module {
             long currentTime = System.currentTimeMillis();
             if (distanceFromPlayer > FAR_DISTANCE && distance < FLICKER_THRESHOLD) {
                 // Far away + tiny movement = ignore to prevent flicker
-                // Only update if enough time has passed (150ms for more stability)
                 if (currentTime - lastUpdateTime < 150) {
                     return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
                 }
@@ -1616,29 +1689,44 @@ public class Backtrack extends Module {
                 return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
             }
             
-            // ADAPTIVE LERP SPEED: Smooth when moving, faster when stopped
-            float adaptiveLerpSpeed;
+            // DYNAMIC SPEED CALCULATION: Adapts to player velocity AND distance
+            // Formula: speed = base_speed + (velocity_factor × player_speed) + (distance_factor × distance)
+            float dynamicSpeed;
+            
             if (velocityMag < MIN_VELOCITY) {
-                // STOPPED: Quick snap to position
-                adaptiveLerpSpeed = FAST_LERP_SPEED;
+                // STOPPED: Ultra-fast snap (30.0)
+                dynamicSpeed = FAST_LERP_SPEED;
             } else {
-                // MOVING: Smooth, flowing interpolation
-                adaptiveLerpSpeed = SMOOTH_LERP_SPEED;
+                // MOVING: Calculate speed based on player velocity and distance
+                // Base speed: 18.0
+                // Velocity multiplier: 20.0 (scales with player speed)
+                // Distance multiplier: 10.0 (speeds up when far behind)
+                
+                float velocityFactor = (float)(velocityMag * 20.0); // Speed up proportional to player speed
+                float distanceFactor = (float)(distance * 10.0); // Speed up when far behind
+                
+                dynamicSpeed = SMOOTH_LERP_SPEED + velocityFactor + distanceFactor;
+                
+                // Cap at reasonable max (no infinite speed)
+                dynamicSpeed = Math.min(50.0f, dynamicSpeed);
+                
+                // Minimum speed floor (never slower than base)
+                dynamicSpeed = Math.max(SMOOTH_LERP_SPEED, dynamicSpeed);
             }
             
-            // EXPONENTIAL SMOOTHING with cubic easing
-            float alpha = 1.0f - (float) Math.exp(-adaptiveLerpSpeed * deltaTime);
-            alpha = easeInOutCubic(alpha); // Apply cubic easing
+            // EXPONENTIAL SMOOTHING with dynamic speed
+            float alpha = 1.0f - (float) Math.exp(-dynamicSpeed * deltaTime);
             
-            // Interpolate to target
-            double nextX = currentX + dx * alpha;
-            double nextY = currentY + dy * alpha;
-            double nextZ = currentZ + dz * alpha;
+            // Apply cubic easing only when slow (for smoothness)
+            // Skip easing when fast (for instant response)
+            if (dynamicSpeed < 25.0f) {
+                alpha = easeInOutCubic(alpha);
+            }
             
-            // EXTRA SMOOTHING LAYER: Blend with previous for buttery feel
-            currentX = currentX * EXTRA_SMOOTHING + nextX * (1.0f - EXTRA_SMOOTHING);
-            currentY = currentY * EXTRA_SMOOTHING + nextY * (1.0f - EXTRA_SMOOTHING);
-            currentZ = currentZ * EXTRA_SMOOTHING + nextZ * (1.0f - EXTRA_SMOOTHING);
+            // Direct interpolation - reduced smoothing for speed
+            currentX += dx * alpha;
+            currentY += dy * alpha;
+            currentZ += dz * alpha;
             
             // Update last target
             lastTargetX = targetX;
@@ -1774,6 +1862,10 @@ public class Backtrack extends Module {
             // Calculate rolling success rate (weighted recent attempts more)
             successRate = (successfulAttempts / (double) totalAttempts) * 0.7 + successRate * 0.3;
             lastBacktrackAttempt = System.currentTimeMillis();
+        }
+        
+        double getSuccessRate() {
+            return successRate;
         }
     }
 

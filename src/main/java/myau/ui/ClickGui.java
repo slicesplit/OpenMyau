@@ -9,6 +9,7 @@ import myau.module.Module;
 import myau.module.modules.*;
 import myau.ui.components.CategoryComponent;
 import net.minecraft.client.gui.GuiScreen;
+import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
 import java.awt.*;
@@ -43,7 +44,6 @@ public class ClickGui extends GuiScreen {
         combatModules.add(Myau.moduleManager.getModule(MoreKB.class));
         combatModules.add(Myau.moduleManager.getModule(Refill.class));
         combatModules.add(Myau.moduleManager.getModule(HitSelect.class));
-        combatModules.add(Myau.moduleManager.getModule(Backtrack.class));
         combatModules.add(Myau.moduleManager.getModule(JumpReset.class));
 
         List<Module> movementModules = new ArrayList<>();
@@ -91,7 +91,6 @@ public class ClickGui extends GuiScreen {
         playerModules.add(Myau.moduleManager.getModule(InvManager.class));
         playerModules.add(Myau.moduleManager.getModule(InvWalk.class));
         playerModules.add(Myau.moduleManager.getModule(Scaffold.class));
-        playerModules.add(Myau.moduleManager.getModule(AutoBlockIn.class));
         playerModules.add(Myau.moduleManager.getModule(SpeedMine.class));
         playerModules.add(Myau.moduleManager.getModule(FastPlace.class));
         playerModules.add(Myau.moduleManager.getModule(GhostHand.class));
@@ -263,6 +262,15 @@ public class ClickGui extends GuiScreen {
     public void keyTyped(char typedChar, int key) {
         if (key == 1) {
             this.mc.displayGuiScreen(null);
+        } else if (key == Keyboard.KEY_UP || key == Keyboard.KEY_DOWN) {
+            int scrollDir = (key == Keyboard.KEY_UP) ? 1 : -1;
+            for (CategoryComponent category : categoryList) {
+                if (category.isOpened()) {
+                    category.onScroll(category.getX() + category.getWidth() / 2, 
+                                     category.getY() + 20, 
+                                     scrollDir);
+                }
+            }
         } else {
             Iterator<CategoryComponent> btnCat = categoryList.iterator();
 
