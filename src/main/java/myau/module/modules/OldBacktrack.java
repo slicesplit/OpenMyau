@@ -10,7 +10,6 @@ import myau.management.TransactionManager;
 import myau.management.GrimPredictionEngine;
 import myau.module.Module;
 import myau.property.properties.*;
-import myau.property.properties.RangeProperty;
 import myau.mixin.IAccessorRenderManager;
 import myau.util.RenderUtil;
 import myau.util.TeamUtil;
@@ -83,13 +82,13 @@ public class OldBacktrack extends Module {
     
     // Manual Mode Settings
     public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true, () -> mode.getModeString().equals("Manual"));
-    // SLEEK RANGE SLIDER: Min-Max ticks (default 10-15, range 1-20)
-    public final RangeProperty ticksRange = new RangeProperty("ticks-range", 10, 15, 1, 20);
+    // LAGRANGE: Increased max ticks to 20 (1000ms = 20 ticks of history)
+    public final IntProperty ticks = new IntProperty("ticks", 15, 1, 20, () -> mode.getModeString().equals("Manual"));
     
     // Lag Based Mode Settings
     public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true, () -> mode.getModeString().equals("Lag Based"));
-    // SLEEK RANGE SLIDER: Min-Max latency (default 150-250ms, range 50-2000ms)
-    public final RangeProperty latencyRange = new RangeProperty("latency-range", 150, 250, 50, 2000);
+    // LAGRANGE: Latency can be much higher (up to 2000ms) since we already have 1000ms base
+    public final IntProperty latency = new IntProperty("latency", 200, 50, 2000, () -> mode.getModeString().equals("Lag Based"));
     
     // Shared Settings - Vape V4 Style Light Blue
     public final ColorProperty color = new ColorProperty("color", 0x87CEEB); // Sky blue / light blue
@@ -209,9 +208,8 @@ public class OldBacktrack extends Module {
                     System.currentTimeMillis()
                 ));
 
-                // Limit to specified ticks (use random value in range for variation)
-                int targetTicks = ticksRange.getMinValue() + (int)(Math.random() * (ticksRange.getMaxValue() - ticksRange.getMinValue() + 1));
-                while (positions.size() > targetTicks) {
+                // Limit to specified ticks
+                while (positions.size() > ticks.getValue()) {
                     positions.removeLast();
                 }
             }
@@ -527,8 +525,7 @@ public class OldBacktrack extends Module {
                     ));
                     
                     // Limit to specified ticks
-                    int targetTicks = ticksRange.getMinValue() + (int)(Math.random() * (ticksRange.getMaxValue() - ticksRange.getMinValue() + 1));
-                    while (positions.size() > targetTicks) {
+                    while (positions.size() > ticks.getValue()) {
                         positions.removeLast();
                     }
                 }
@@ -686,9 +683,7 @@ public class OldBacktrack extends Module {
             if (mode.getModeString().equals("Lag Based") && isLagging) {
                 // LAG-BASED MODE: Aggressive expansion for high latency with enhanced bypass
                 // Increased multiplier from 0.03 to 0.04 for better hitbox coverage
-                // Use average of latency range for hitbox expansion
-                double avgLatency = (latencyRange.getMinValue() + latencyRange.getMaxValue()) / 2.0;
-                hitboxExpansion += (avgLatency / 100.0) * 0.04;
+                hitboxExpansion += (latency.getValue() / 100.0) * 0.04;
                 
                 // Cap expansion at 0.95 for ultra-high latency (increased from 0.8)
                 hitboxExpansion = Math.min(0.95, hitboxExpansion);
@@ -838,8 +833,7 @@ public class OldBacktrack extends Module {
         if (mode.getModeString().equals("Manual")) {
             // Manual mode: Based on ticks setting
             // But cap at safe limits to prevent flags
-            // Use max ticks from range for history buffer
-            int configuredTicks = ticksRange.getMaxValue();
+            int configuredTicks = ticks.getValue();
             
             // PREDICTION ENGINE: Calculate safe limit based on Grim's interpolation
             // Grim allows 3 interpolation steps + uncertainty from ping
@@ -859,8 +853,7 @@ public class OldBacktrack extends Module {
             return Math.min(configuredTicks, maxSafe);
         } else {
             // Lag-based mode: Based on latency setting
-            // Use max latency from range for safety calculation
-            int latencyTicks = latencyRange.getMaxValue() / 50;
+            int latencyTicks = latency.getValue() / 50;
             
             // Cap at 40 ticks (2000ms) for safety
             return Math.min(latencyTicks, 40);
@@ -888,8 +881,7 @@ public class OldBacktrack extends Module {
         // Add artificial latency/tick delay to ping calculation
         if (mode.getModeString().equals("Lag Based") && isLagging) {
             // LAG-BASED MODE: Add the artificial latency we're introducing
-            // Use average latency from range
-            ping += (latencyRange.getMinValue() + latencyRange.getMaxValue()) / 2;
+            ping += latency.getValue();
         } else if (mode.getModeString().equals("Manual")) {
             // MANUAL MODE: Calculate ACTUAL position age from timestamp
             // This is the actual time that has passed since this position was recorded
@@ -917,13 +909,11 @@ public class OldBacktrack extends Module {
             );
             
             // At 2000ms with velocity 0.2: 0.2 * 40 = 8.0 blocks compensation
-            // Use average latency for velocity compensation
-            double avgLatency = (latencyRange.getMinValue() + latencyRange.getMaxValue()) / 2.0;
-            double velocityCompensation = targetVelocity * (avgLatency / 50.0);
+            double velocityCompensation = targetVelocity * (latency.getValue() / 50.0);
             uncertainty += velocityCompensation;
             
             // ADDITIONAL: Add extra margin for lag spikes (0.1 per 500ms)
-            uncertainty += (avgLatency / 500.0) * 0.1;
+            uncertainty += (latency.getValue() / 500.0) * 0.1;
         } else if (mode.getModeString().equals("Manual")) {
             // MANUAL MODE: Velocity compensation based on ACTUAL position age
             double targetVelocity = Math.sqrt(
@@ -1279,9 +1269,7 @@ public class OldBacktrack extends Module {
      */
     private boolean isLaggedPositionSafe(EntityPlayer target) {
         // Calculate where target will be after latency period
-        // Use average latency for prediction
-        double avgLatency = (latencyRange.getMinValue() + latencyRange.getMaxValue()) / 2.0;
-        double lagSeconds = avgLatency / 1000.0;
+        double lagSeconds = latency.getValue() / 1000.0;
         
         // Predict target position (assuming constant velocity)
         double predictedX = target.posX + (target.motionX * lagSeconds * 20); // 20 ticks per second
@@ -1312,8 +1300,7 @@ public class OldBacktrack extends Module {
         long currentTime = System.currentTimeMillis();
         
         // Stop lagging after latency period
-        // Use max latency from range for lag duration
-        if (currentTime - lagStartTime >= latencyRange.getMaxValue()) {
+        if (currentTime - lagStartTime >= latency.getValue()) {
             releaseAllPackets();
             isLagging = false;
         }

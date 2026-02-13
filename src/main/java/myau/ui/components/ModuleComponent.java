@@ -10,7 +10,6 @@ import myau.ui.Component;
 import myau.ui.dataset.impl.FloatSlider;
 import myau.ui.dataset.impl.IntSlider;
 import myau.ui.dataset.impl.PercentageSlider;
-import myau.ui.dataset.impl.RangeSlider;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import org.lwjgl.opengl.GL11;
@@ -68,11 +67,6 @@ public class ModuleComponent implements Component {
                 } else if (baseProperty instanceof TextProperty) {
                     TextProperty property = (TextProperty) baseProperty;
                     TextComponent c = new TextComponent(property, this, y);
-                    this.settings.add(c);
-                    y += c.getHeight();
-                } else if (baseProperty instanceof RangeProperty) {
-                    RangeProperty property = (RangeProperty) baseProperty;
-                    RangeSliderComponent c = new RangeSliderComponent(property, this, y);
                     this.settings.add(c);
                     y += c.getHeight();
                 }

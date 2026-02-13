@@ -4,18 +4,22 @@ import myau.Myau;
 import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
+import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
 import myau.module.ModuleInfo;
 import myau.property.properties.TextProperty;
+import myau.util.ChatUtil;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.network.play.server.S02PacketChat;
+import net.minecraft.network.play.server.S45PacketTitle;
+import net.minecraft.util.IChatComponent;
 
 import static net.minecraft.client.Minecraft.getMinecraft;
 
 /**
  * AutoRegister - Automatically registers/logins on cracked servers
- * Detects "in" title or /register /login prompts and auto-sends password
+ * Detects register/login in titles, actionbar, and chat
  */
 @ModuleInfo(category = ModuleCategory.MISC)
 public class AutoRegister extends Module {
@@ -24,7 +28,7 @@ public class AutoRegister extends Module {
     
     private boolean hasRegistered = false;
     private long detectionTime = 0L;
-    private static final long DELAY = 100; // ms delay before sending command
+    private static final long DELAY = 1000; // 1 second delay before sending command
     
     public AutoRegister() {
         super("AutoRegister", false);
@@ -43,45 +47,67 @@ public class AutoRegister extends Module {
     }
     
     @EventTarget
+    public void onPacket(PacketEvent event) {
+        if (!this.isEnabled() || hasRegistered || event.getType() != EventType.RECEIVE) {
+            return;
+        }
+        
+        String text = "";
+        
+        // Check S45PacketTitle (title/subtitle/actionbar)
+        if (event.getPacket() instanceof S45PacketTitle) {
+            S45PacketTitle packet = (S45PacketTitle) event.getPacket();
+            IChatComponent message = packet.getMessage();
+            if (message != null) {
+                text = message.getUnformattedText().toLowerCase();
+            }
+        }
+        
+        // Check S02PacketChat (chat messages)
+        if (event.getPacket() instanceof S02PacketChat) {
+            S02PacketChat packet = (S02PacketChat) event.getPacket();
+            text = packet.getChatComponent().getUnformattedText().toLowerCase();
+        }
+        
+        // Detect register/login keywords
+        if (containsAuthKeywords(text)) {
+            if (detectionTime == 0L) {
+                detectionTime = System.currentTimeMillis();
+                ChatUtil.sendFormatted("§a[AutoRegister] §fDetected auth prompt, sending credentials in 1 second...");
+            }
+        }
+    }
+    
+    @EventTarget
     public void onTick(TickEvent event) {
         Minecraft mc = getMinecraft();
-        if (event.getType() != EventType.PRE || mc.thePlayer == null) {
+        if (event.getType() != EventType.PRE || mc.thePlayer == null || !this.isEnabled()) {
             return;
         }
-        
-        // Don't run if already registered this session
-        if (hasRegistered) {
-            return;
-        }
-        
-        // Check if we're on a screen with "in" text (register/login screen indicator)
-        GuiScreen currentScreen = mc.currentScreen;
-        if (currentScreen != null) {
-            String screenTitle = "";
-            
-            // Try to get screen title (works with most auth plugins)
-            try {
-                // Check if there's a title field
-                if (currentScreen.getClass().getSimpleName().toLowerCase().contains("login") ||
-                    currentScreen.getClass().getSimpleName().toLowerCase().contains("register")) {
-                    
-                    // Detected auth screen
-                    if (detectionTime == 0L) {
-                        detectionTime = System.currentTimeMillis();
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-        
-        // Also check chat for register/login prompts
-        // This is handled passively - when player sees the message, they know to enable
         
         // If we detected and delay passed, send command
-        if (detectionTime > 0L && System.currentTimeMillis() - detectionTime >= DELAY) {
+        if (detectionTime > 0L && System.currentTimeMillis() - detectionTime >= DELAY && !hasRegistered) {
             sendRegisterCommand();
             hasRegistered = true;
             detectionTime = 0L;
         }
+    }
+    
+    private boolean containsAuthKeywords(String text) {
+        String[] keywords = {
+            "register", "login", "/register", "/login",
+            "регистрация", "вход", // Russian
+            "password", "пароль",
+            "authenticate", "auth"
+        };
+        
+        for (String keyword : keywords) {
+            if (text.contains(keyword)) {
+                return true;
+            }
+        }
+        
+        return false;
     }
     
     private void sendRegisterCommand() {

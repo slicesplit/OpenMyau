@@ -40,47 +40,47 @@ public class HitSelect extends Module {
     
     // ==================== SETTINGS ====================
     
-    // Core Mode - DEFAULT: BRUTAL (maximum optimization)
-    public final ModeProperty mode = new ModeProperty("mode", 2, 
+    // Core Mode - DEFAULT: Aggressive (balanced)
+    public final ModeProperty mode = new ModeProperty("mode", 1, 
         new String[]{"Legit", "Aggressive", "Brutal"});
     
-    // Knockback Mastery - DEFAULT: ALL ENABLED for maximum KB reduction
+    // Knockback Mastery - Smart defaults
     public final BooleanProperty kbReduction = new BooleanProperty("kb-reduction", true);
     public final BooleanProperty smartWTap = new BooleanProperty("smart-w-tap", true);
-    public final BooleanProperty sprintControl = new BooleanProperty("sprint-control", true);
-    public final IntProperty sprintResetDelay = new IntProperty("sprint-reset-ms", 22, 15, 50); // BRUTAL: 22ms (fastest safe timing)
+    public final BooleanProperty sprintControl = new BooleanProperty("sprint-control", false); // OFF by default - was blocking too many hits
+    public final IntProperty sprintResetDelay = new IntProperty("sprint-reset-ms", 22, 15, 50);
     
-    // Critical Optimization - DEFAULT: Force crits for +50% damage
-    public final BooleanProperty forceCrits = new BooleanProperty("force-crits", true);
-    public final BooleanProperty onlyFallingCrits = new BooleanProperty("only-falling-crits", true);
-    public final FloatProperty minFallVelocity = new FloatProperty("min-fall-velocity", 0.08f, 0.0f, 0.5f); // BRUTAL: Lower threshold = more crits
+    // Critical Optimization - Less strict
+    public final BooleanProperty forceCrits = new BooleanProperty("force-crits", false); // OFF by default
+    public final BooleanProperty onlyFallingCrits = new BooleanProperty("only-falling-crits", false); // OFF
+    public final FloatProperty minFallVelocity = new FloatProperty("min-fall-velocity", 0.08f, 0.0f, 0.5f);
     
-    // Prediction System - DEFAULT: Max prediction for perfect hits
+    // Prediction System
     public final BooleanProperty predictMovement = new BooleanProperty("predict-movement", true);
-    public final IntProperty predictionTicks = new IntProperty("prediction-ticks", 5, 0, 10); // BRUTAL: 5 ticks = 250ms prediction
+    public final IntProperty predictionTicks = new IntProperty("prediction-ticks", 3, 0, 10); // Reduced from 5
     
-    // Hit Blocking - DEFAULT: Block bad situations aggressively
-    public final BooleanProperty blockOnEnemySprint = new BooleanProperty("block-enemy-sprint", true); // BRUTAL: Only hit sprinting enemies
-    public final BooleanProperty blockOnSelfSprint = new BooleanProperty("block-self-sprint", true);
+    // Hit Blocking - Less strict defaults
+    public final BooleanProperty blockOnEnemySprint = new BooleanProperty("block-enemy-sprint", false); // OFF - was too strict
+    public final BooleanProperty blockOnSelfSprint = new BooleanProperty("block-self-sprint", false); // OFF
     public final BooleanProperty blockOnHurt = new BooleanProperty("block-on-hurt", true);
-    public final IntProperty maxHurtTime = new IntProperty("max-hurt-time", 9, 0, 10); // BRUTAL: Block almost entire hurt animation
+    public final IntProperty maxHurtTime = new IntProperty("max-hurt-time", 7, 0, 10); // Reduced from 9
     
-    // Combo Mechanics - DEFAULT: Never break combo
+    // Combo Mechanics
     public final BooleanProperty comboMode = new BooleanProperty("combo-mode", true);
-    public final IntProperty minComboHits = new IntProperty("min-combo-hits", 2, 2, 10); // BRUTAL: Combo starts at 2 hits
+    public final IntProperty minComboHits = new IntProperty("min-combo-hits", 2, 1, 10);
     public final BooleanProperty keepCombo = new BooleanProperty("keep-combo", true);
     
-    // Legit Appearance - DEFAULT: Minimal randomization for max performance
-    public final BooleanProperty randomMiss = new BooleanProperty("random-miss", true);
-    public final IntProperty missChance = new IntProperty("miss-chance-percent", 1, 0, 10); // BRUTAL: Only 1% miss (still looks human)
+    // Legit Appearance
+    public final BooleanProperty randomMiss = new BooleanProperty("random-miss", false); // OFF by default
+    public final IntProperty missChance = new IntProperty("miss-chance-percent", 3, 0, 10);
     public final BooleanProperty humanTiming = new BooleanProperty("human-timing", true);
-    public final IntProperty timingVariation = new IntProperty("timing-variation-ms", 10, 0, 50); // BRUTAL: Minimal variation (10ms)
+    public final IntProperty timingVariation = new IntProperty("timing-variation-ms", 15, 0, 50);
     
-    // Advanced - DEFAULT: Strict checks for optimal hits only
-    public final BooleanProperty angleCheck = new BooleanProperty("angle-check", true);
-    public final IntProperty maxAngle = new IntProperty("max-angle", 75, 45, 180); // BRUTAL: Stricter angle requirement
-    public final BooleanProperty velocityCheck = new BooleanProperty("velocity-check", true);
-    public final FloatProperty maxVelocity = new FloatProperty("max-velocity", 0.65f, 0.1f, 2.0f); // BRUTAL: Lower threshold = less KB taken
+    // Advanced - Less strict
+    public final BooleanProperty angleCheck = new BooleanProperty("angle-check", false); // OFF - was blocking hits
+    public final IntProperty maxAngle = new IntProperty("max-angle", 90, 45, 180); // More lenient
+    public final BooleanProperty velocityCheck = new BooleanProperty("velocity-check", false); // OFF
+    public final FloatProperty maxVelocity = new FloatProperty("max-velocity", 1.0f, 0.1f, 2.0f); // More lenient
     
     // ==================== STATE TRACKING ====================
     
@@ -202,13 +202,17 @@ public class HitSelect extends Module {
         }
         
         // 1. KNOCKBACK CHECK: Block if WE would take too much KB
-        if (blockOnSelfSprint.getValue() && mc.thePlayer.isSprinting()) {
+        if (blockOnSelfSprint.getValue() && mc.thePlayer.isSprinting() && sprintControl.getValue()) {
             // We're sprinting = we take MORE knockback
             // Only hit if we can reset sprint first
-            if (!shouldStopSprint && sprintControl.getValue()) {
+            if (!shouldStopSprint) {
                 shouldStopSprint = true;
                 lastSprintToggle = System.currentTimeMillis();
                 return true; // Block this hit, reset sprint first
+            }
+            // If already waiting for sprint reset, allow hit after delay
+            if (System.currentTimeMillis() - lastSprintToggle < sprintResetDelay.getValue()) {
+                return true; // Still waiting
             }
         }
         
