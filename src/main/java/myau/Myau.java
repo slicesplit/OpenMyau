@@ -71,7 +71,7 @@ public class Myau {
         moduleManager.modules.put(AntiVoid.class, new AntiVoid());
         moduleManager.modules.put(OldBacktrack.class, new OldBacktrack());
         moduleManager.modules.put(NewBacktrack.class, new NewBacktrack());
-        moduleManager.modules.put(InfHealthExploit.class, new InfHealthExploit());
+        // moduleManager.modules.put(InfHealthExploit.class, new InfHealthExploit()); // TODO: Add this module
         moduleManager.modules.put(AutoClicker.class, new AutoClicker());
         moduleManager.modules.put(AutoAnduril.class, new AutoAnduril());
         moduleManager.modules.put(AutoHeal.class, new AutoHeal());
@@ -140,6 +140,8 @@ public class Myau {
         moduleManager.modules.put(ViperNode.class, new ViperNode());
         moduleManager.modules.put(SkeletonESP.class, new SkeletonESP());
         moduleManager.modules.put(TickBase.class, new TickBase());
+        moduleManager.modules.put(AutoRegister.class, new AutoRegister());
+        moduleManager.modules.put(AutoPartyAccept.class, new AutoPartyAccept());
         commandManager.commands.add(new BindCommand());
         commandManager.commands.add(new ConfigCommand());
         commandManager.commands.add(new DenickCommand());

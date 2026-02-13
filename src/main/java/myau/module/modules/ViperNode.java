@@ -66,7 +66,7 @@ public class ViperNode extends Module {
             return;
         }
         
-        Myau.blinkModuleEnabled = BlinkModules.VIPERNODE;
+        Myau.blinkManager.setBlinkState(true, BlinkModules.VIPERNODE);
         
         incomingPackets.clear();
         outgoingPackets.clear();
@@ -85,7 +85,7 @@ public class ViperNode extends Module {
         // CRITICAL: Release all packets in order to prevent teleport back
         releasePackets();
         
-        Myau.blinkModuleEnabled = BlinkModules.NONE;
+        Myau.blinkManager.setBlinkState(false, BlinkModules.VIPERNODE);
         
         breadcrumbPositions.clear();
     }
@@ -98,7 +98,8 @@ public class ViperNode extends Module {
         // Release incoming packets first (server state updates)
         for (Packet<?> packet : incomingPackets) {
             try {
-                packet.processPacket(mc.getNetHandler().getNetworkManager().getNetHandler());
+                // Just send packet back to network
+                mc.getNetHandler().addToSendQueue(packet);
             } catch (Exception e) {
                 // Ignore processing errors
             }
@@ -112,7 +113,7 @@ public class ViperNode extends Module {
         outgoingPackets.clear();
     }
 
-    @EventTarget(priority = Priority.HIGHEST)
+    @EventTarget
     public void onPacket(PacketEvent event) {
         if (!this.isEnabled() || mc.thePlayer == null) {
             return;
@@ -257,7 +258,7 @@ public class ViperNode extends Module {
                 180
             );
             
-            RenderUtil.glColor(color);
+            GL11.glColor4f(color.getRed() / 255f, color.getGreen() / 255f, color.getBlue() / 255f, 0.5f);
             GL11.glVertex3d(pos[0] - renderX, pos[1] - renderY, pos[2] - renderZ);
         }
         

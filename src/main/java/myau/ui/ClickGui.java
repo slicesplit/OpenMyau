@@ -165,15 +165,43 @@ public class ClickGui extends GuiScreen {
     }
 
     public void keyTyped(char typedChar, int key) {
-        if (key == 1) {
+        // Check if any bind component is currently binding
+        boolean isAnyBinding = false;
+        for (CategoryComponent category : categoryList) {
+            if (category.isOpened()) {
+                for (Component component : category.getModules()) {
+                    if (component instanceof myau.ui.components.ModuleComponent) {
+                        myau.ui.components.ModuleComponent moduleComp = (myau.ui.components.ModuleComponent) component;
+                        if (moduleComp.isBinding()) {
+                            isAnyBinding = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (isAnyBinding) break;
+        }
+        
+        // ESC key: Only close GUI if not binding, otherwise let bind component handle it
+        if (key == 1 && !isAnyBinding) {
             this.mc.displayGuiScreen(null);
         } else if (key == Keyboard.KEY_UP || key == Keyboard.KEY_DOWN) {
             int scrollDir = (key == Keyboard.KEY_UP) ? 1 : -1;
+            // Get mouse position
+            int mouseX = Mouse.getX() / 2;
+            int mouseY = (this.mc.displayHeight - Mouse.getY()) / 2;
+            
+            // Only scroll the category being hovered over
             for (CategoryComponent category : categoryList) {
                 if (category.isOpened()) {
-                    category.onScroll(category.getX() + category.getWidth() / 2, 
-                                     category.getY() + 20, 
-                                     scrollDir);
+                    // Check if mouse is in the category area
+                    int areaTop = category.getY() + 13; // bh = 13
+                    int areaBottom = category.getY() + 13 + 300; // MAX_HEIGHT = 300
+                    if (mouseX >= category.getX() && mouseX <= category.getX() + category.getWidth() &&
+                        mouseY >= areaTop && mouseY <= areaBottom) {
+                        category.onScroll(mouseX, mouseY, scrollDir);
+                        break; // Only scroll one category
+                    }
                 }
             }
         } else {

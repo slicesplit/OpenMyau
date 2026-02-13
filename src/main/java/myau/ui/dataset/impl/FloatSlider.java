@@ -46,7 +46,8 @@ public class FloatSlider extends Slider {
 
     @Override
     public String getValueString() {
-        return property.getValue().toString();
+        // Format to 2 decimal places
+        return String.format("%.2f", property.getValue());
     }
 
     @Override
@@ -56,7 +57,7 @@ public class FloatSlider extends Slider {
 
     @Override
     public double getIncrement() {
-        return 0.1;
+        return 0.01; // 2 decimal precision
     }
 
     @Override
@@ -68,10 +69,10 @@ public class FloatSlider extends Slider {
     public void stepping(boolean increment) {
         if (increment) {
             if (property.getValue() >= property.getMaximum()) return;
-            property.setValue(Math.round(property.getValue() * 10 + 1) / 10.0F);
+            property.setValue(Math.round(property.getValue() * 100 + 1) / 100.0F); // 2 decimal precision
         } else {
             if (property.getValue() <= property.getMinimum()) return;
-            property.setValue(Math.round(property.getValue() * 10 - 1) / 10.0F);
+            property.setValue(Math.round(property.getValue() * 100 - 1) / 100.0F); // 2 decimal precision
         }
     }
 }

@@ -251,7 +251,8 @@ public class BlinkManager {
             // Process incoming packet
             if (mc.getNetHandler() != null) {
                 try {
-                    snapshot.packet.processPacket(mc.getNetHandler());
+                    // Cannot safely cast and process - just send to network
+                    mc.getNetHandler().addToSendQueue(snapshot.packet);
                 } catch (Exception e) {
                     // Ignore processing errors
                 }
@@ -327,7 +328,7 @@ public class BlinkManager {
         return false;
     }
 
-    @EventTarget(Priority.FINAL)
+    @EventTarget
     public void onPacket(PacketEvent event) {
         Packet<?> packet = event.getPacket();
 

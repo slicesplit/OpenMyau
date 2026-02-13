@@ -12,6 +12,7 @@ import myau.module.Module;
 import myau.property.properties.*;
 import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.play.client.C02PacketUseEntity;
@@ -52,7 +53,7 @@ public class HitSelect extends Module {
     // Critical Optimization - DEFAULT: Force crits for +50% damage
     public final BooleanProperty forceCrits = new BooleanProperty("force-crits", true);
     public final BooleanProperty onlyFallingCrits = new BooleanProperty("only-falling-crits", true);
-    public final DoubleProperty minFallVelocity = new DoubleProperty("min-fall-velocity", 0.08, 0.0, 0.5); // BRUTAL: Lower threshold = more crits
+    public final FloatProperty minFallVelocity = new FloatProperty("min-fall-velocity", 0.08f, 0.0f, 0.5f); // BRUTAL: Lower threshold = more crits
     
     // Prediction System - DEFAULT: Max prediction for perfect hits
     public final BooleanProperty predictMovement = new BooleanProperty("predict-movement", true);
@@ -79,7 +80,7 @@ public class HitSelect extends Module {
     public final BooleanProperty angleCheck = new BooleanProperty("angle-check", true);
     public final IntProperty maxAngle = new IntProperty("max-angle", 75, 45, 180); // BRUTAL: Stricter angle requirement
     public final BooleanProperty velocityCheck = new BooleanProperty("velocity-check", true);
-    public final DoubleProperty maxVelocity = new DoubleProperty("max-velocity", 0.65, 0.1, 2.0); // BRUTAL: Lower threshold = less KB taken
+    public final FloatProperty maxVelocity = new FloatProperty("max-velocity", 0.65f, 0.1f, 2.0f); // BRUTAL: Lower threshold = less KB taken
     
     // ==================== STATE TRACKING ====================
     
@@ -192,7 +193,7 @@ public class HitSelect extends Module {
      */
     private boolean shouldBlockHit(EntityPlayer target) {
         // Get mode
-        int modeIndex = mode.getMode();
+        int modeIndex = mode.getValue();
         double baseThreshold = modeIndex == 0 ? 0.4 : (modeIndex == 1 ? 0.6 : 0.8);
         
         // Random miss for legit appearance
@@ -268,10 +269,10 @@ public class HitSelect extends Module {
         long now = System.currentTimeMillis();
         
         // 1. SMART W-TAP: Release W briefly for KB reduction
-        if (smartWTap.getValue() && mode.getMode() >= 1) {
+        if (smartWTap.getValue() && mode.getValue() >= 1) {
             // This is done client-side, looks legit
             // Reduces KB taken by ~30%
-            mc.gameSettings.keyBindForward.pressed = false;
+            KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
             
             // Add human timing variation
             int delay = humanTiming.getValue() ? 
@@ -280,7 +281,8 @@ public class HitSelect extends Module {
             new Thread(() -> {
                 try {
                     Thread.sleep(delay);
-                    mc.gameSettings.keyBindForward.pressed = mc.gameSettings.keyBindForward.isKeyDown();
+                    KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), 
+                        mc.gameSettings.keyBindForward.isKeyDown());
                 } catch (InterruptedException ignored) {}
             }).start();
         }

@@ -79,7 +79,7 @@ public class AntiVoid extends Module {
                         && this.lastSafePosition[1] - (double) this.distance.getValue().floatValue() > mc.thePlayer.posY) {
                     Myau.blinkManager
                             .blinkedPackets
-                            .offerFirst(
+                            .offer(
                                     new C04PacketPlayerPosition(
                                             this.lastSafePosition[0], this.lastSafePosition[1] - RandomUtil.nextDouble(10.0, 20.0), this.lastSafePosition[2], false
                                     )

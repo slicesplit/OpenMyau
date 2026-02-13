@@ -137,7 +137,7 @@ public class FakeLag extends Module {
             x + 0.3, y + 1.8, z + 0.3
         );
         
-        Color c = new Color(color.getColor());
+        Color c = new Color(color.getValue());
         
         // Render filled box
         RenderUtil.drawFilledBox(box, c.getRed(), c.getGreen(), c.getBlue());

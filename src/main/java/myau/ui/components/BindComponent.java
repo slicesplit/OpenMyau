@@ -109,4 +109,11 @@ public class BindComponent implements Component {
     private void renderText(String s, int color) {
         Minecraft.getMinecraft().fontRendererObj.drawStringWithShadow(s, (float) ((this.parentModule.category.getX() + 4) * 2), (float) ((this.parentModule.category.getY() + this.offsetY + 3) * 2), color);
     }
+    
+    /**
+     * Check if this bind component is currently binding
+     */
+    public boolean isBinding() {
+        return this.isBinding;
+    }
 }

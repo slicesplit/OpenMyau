@@ -123,7 +123,7 @@ public class NewBacktrack extends Module {
     }
 
     private void handleEntityMovement(S14PacketEntity packet) {
-        int entityId = packet.func_149001_c(); // getEntityId
+        int entityId = packet.getEntity(mc.theWorld).getEntityId();
         
         TrackedPlayer tracked = trackedPlayers.get(entityId);
         if (tracked == null) return;
@@ -240,7 +240,7 @@ public class NewBacktrack extends Module {
             x + 0.3, y + 1.8, z + 0.3
         );
         
-        Color c = new Color(color.getColor());
+        Color c = new Color(color.getValue());
         
         // Render with transparency
         RenderUtil.drawFilledBox(box, c.getRed(), c.getGreen(), c.getBlue());
