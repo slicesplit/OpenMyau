@@ -103,7 +103,7 @@ public class TickBase extends Module {
         // Handle tick skipping for PAST mode
         if (ticksToSkip > 0) {
             ticksToSkip--;
-            event.setCancelled(true);
+            // Cannot cancel tick event - just skip logic
             return;
         }
 
@@ -143,8 +143,10 @@ public class TickBase extends Module {
                 continue;
             }
 
-            double distSq = tickData.position.squareDistanceTo(
-                    nearbyEnemy.posX, nearbyEnemy.posY, nearbyEnemy.posZ);
+            double dx = tickData.position.xCoord - nearbyEnemy.posX;
+            double dy = tickData.position.yCoord - nearbyEnemy.posY;
+            double dz = tickData.position.zCoord - nearbyEnemy.posZ;
+            double distSq = dx * dx + dy * dy + dz * dz;
 
             // Must be closer than current distance and in range
             if (distSq < currentDistanceSq && distSq >= minRangeSq && distSq <= maxRangeSq) {

@@ -111,7 +111,7 @@ public class SkeletonESP extends Module {
 
         // Legs
         float legSwing = player.prevLimbSwingAmount + (player.limbSwingAmount - player.prevLimbSwingAmount) * partialTicks;
-        float legAngle = player.prevLimbSwing + (player.limbSwing - player.prevLimbSwing) * partialTicks;
+        float legAngle = player.limbSwing;
         
         // Right leg
         double rightLegX = -0.125;
@@ -126,7 +126,7 @@ public class SkeletonESP extends Module {
         GL11.glVertex3d(leftLegX, player.isSneaking() ? 0.01 : 0.0, leftLegZ);
 
         // Arms
-        float armSwing = player.prevSwingProgress + (player.swingProgress - player.prevSwingProgress) * partialTicks;
+        float armSwing = player.swingProgress;
         
         // Right arm
         double rightArmAngle = Math.sin(legAngle * 0.6662F) * legSwing * 0.8;
