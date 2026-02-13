@@ -9,50 +9,64 @@ import myau.events.*;
 import myau.module.Module;
 import myau.property.properties.*;
 import myau.util.TeamUtil;
+import myau.util.RenderUtil;
+import myau.mixin.IAccessorRenderManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.server.*;
 import net.minecraft.network.play.client.*;
+import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.Vec3;
 
+import java.awt.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+/**
+ * NewBacktrack - GrimAC Compatible Backtrack
+ * 
+ * GRIM-SAFE DESIGN:
+ * - Only tracks server-side entity positions
+ * - NO packet cancellation (prevents bad packets flag)
+ * - NO camera manipulation
+ * - Pure visual tracking for hit optimization
+ */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class NewBacktrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    public final FloatProperty minRange = new FloatProperty("min-range", 1.0f, 0.0f, 10.0f);
-    public final FloatProperty maxRange = new FloatProperty("max-range", 3.0f, 0.0f, 10.0f);
-    public final IntProperty minDelay = new IntProperty("min-delay", 100, 0, 1000);
-    public final IntProperty maxDelay = new IntProperty("max-delay", 150, 0, 1000);
-    public final IntProperty minNextBacktrackDelay = new IntProperty("min-next-backtrack-delay", 0, 0, 2000);
-    public final IntProperty maxNextBacktrackDelay = new IntProperty("max-next-backtrack-delay", 10, 0, 2000);
-    public final IntProperty trackingBuffer = new IntProperty("tracking-buffer", 500, 0, 2000);
-    public final FloatProperty chance = new FloatProperty("chance", 50.0f, 0.0f, 100.0f);
+    // Range settings
+    public final FloatProperty minRange = new FloatProperty("min-range", 2.5f, 0.0f, 8.0f);
+    public final FloatProperty maxRange = new FloatProperty("max-range", 4.0f, 0.0f, 8.0f);
     
-    public final BooleanProperty pauseOnHurtTimeEnabled = new BooleanProperty("pause-on-hurttime-enabled", false);
-    public final IntProperty pauseOnHurtTime = new IntProperty("pause-on-hurttime", 3, 0, 10, () -> pauseOnHurtTimeEnabled.getValue());
+    // Timing settings
+    public final IntProperty maxTrackTime = new IntProperty("max-track-time", 200, 50, 1000);
+    public final IntProperty cooldownTime = new IntProperty("cooldown-time", 100, 0, 500);
     
+    // Behavior
+    public final BooleanProperty pauseOnHurtTime = new BooleanProperty("pause-on-hurt", false);
+    public final IntProperty hurtTimePause = new IntProperty("hurt-time-pause", 3, 0, 10, () -> pauseOnHurtTime.getValue());
+    public final FloatProperty activationChance = new FloatProperty("chance", 80.0f, 0.0f, 100.0f);
+    
+    // Mode
     public final ModeProperty targetMode = new ModeProperty("target-mode", 0, new String[]{"Attack", "Range"});
-    public final IntProperty lastAttackTimeToWork = new IntProperty("last-attack-time-to-work", 1000, 0, 5000);
+    public final IntProperty attackTimeWindow = new IntProperty("attack-time-window", 1000, 0, 5000);
+    
+    // Rendering
+    public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true);
+    public final ColorProperty color = new ColorProperty("color", 0x87CEEB); // Sky blue
 
-    private final Queue<DelayedPacket> delayedPackets = new ConcurrentLinkedQueue<>();
+    // Tracking data per player
+    private final Map<Integer, TrackedPlayer> trackedPlayers = new ConcurrentHashMap<>();
     private final Random random = new Random();
     
-    private EntityPlayer target = null;
-    private Vec3 trackedPosition = new Vec3(0, 0, 0);
-    
-    private long lastUpdateTime = 0L;
-    private long trackingBufferStartTime = 0L;
+    private EntityPlayer currentTarget = null;
     private long lastAttackTime = 0L;
-    private long nextBacktrackAllowedTime = 0L;
-    
-    private int currentDelay = 0;
-    private int currentChance = 0;
-    private boolean shouldPause = false;
+    private long nextBacktrackAllowed = 0L;
+    private boolean shouldTrack = false;
 
     public NewBacktrack() {
         super("NewBacktrack", false);
@@ -60,14 +74,18 @@ public class NewBacktrack extends Module {
 
     @Override
     public void onEnabled() {
-        clear(true, false);
-        currentDelay = getRandomDelay();
-        currentChance = random.nextInt(101);
+        trackedPlayers.clear();
+        currentTarget = null;
+        lastAttackTime = 0L;
+        nextBacktrackAllowed = 0L;
+        shouldTrack = false;
     }
 
     @Override
     public void onDisabled() {
-        clear(true, false);
+        trackedPlayers.clear();
+        currentTarget = null;
+        shouldTrack = false;
     }
 
     @EventTarget
@@ -78,50 +96,62 @@ public class NewBacktrack extends Module {
 
         Packet packet = event.getPacket();
         
+        // CRITICAL: Reset on server teleport/disconnect (prevents desync)
         if (packet instanceof S08PacketPlayerPosLook || packet instanceof S40PacketDisconnect) {
-            clear(true, false);
+            trackedPlayers.clear();
+            currentTarget = null;
             return;
         }
 
+        // Reset on death
         if (packet instanceof S06PacketUpdateHealth) {
             S06PacketUpdateHealth healthPacket = (S06PacketUpdateHealth) packet;
             if (healthPacket.getHealth() <= 0) {
-                clear(true, false);
+                trackedPlayers.clear();
+                currentTarget = null;
                 return;
             }
         }
 
-        boolean shouldCancelPackets = shouldCancelPackets();
-        boolean hasQueuedPackets = !delayedPackets.isEmpty();
-
-        if (!hasQueuedPackets && !shouldCancelPackets) {
-            return;
+        // GRIM-SAFE: Only track entity positions, DON'T CANCEL PACKETS
+        // This prevents "bad packets" flag while still allowing hit optimization
+        if (packet instanceof S14PacketEntity) {
+            handleEntityMovement((S14PacketEntity) packet);
+        } else if (packet instanceof S18PacketEntityTeleport) {
+            handleEntityTeleport((S18PacketEntityTeleport) packet);
         }
+    }
 
-        if (packet instanceof S18PacketEntityTeleport) {
-            if (target != null) {
-                S18PacketEntityTeleport teleportPacket = (S18PacketEntityTeleport) packet;
-                int entityId = teleportPacket.getEntityId();
+    private void handleEntityMovement(S14PacketEntity packet) {
+        int entityId = packet.func_149001_c(); // getEntityId
+        
+        TrackedPlayer tracked = trackedPlayers.get(entityId);
+        if (tracked == null) return;
 
-                if (entityId == target.getEntityId()) {
-                    Vec3 newPos = new Vec3(teleportPacket.getX() / 32.0, teleportPacket.getY() / 32.0, teleportPacket.getZ() / 32.0);
-                    trackedPosition = newPos;
+        // Update server position based on movement
+        double dx = packet.func_149062_c() / 32.0; // getDeltaX
+        double dy = packet.func_149061_d() / 32.0; // getDeltaY
+        double dz = packet.func_149064_e() / 32.0; // getDeltaZ
+        
+        tracked.updatePosition(
+            tracked.serverX + dx,
+            tracked.serverY + dy,
+            tracked.serverZ + dz
+        );
+    }
 
-                    double currentDist = getSquaredBoxedDistance(target, target.getPositionVector());
-                    double trackedDist = getSquaredBoxedDistance(target, trackedPosition);
+    private void handleEntityTeleport(S18PacketEntityTeleport packet) {
+        int entityId = packet.getEntityId();
+        
+        TrackedPlayer tracked = trackedPlayers.get(entityId);
+        if (tracked == null) return;
 
-                    if (trackedDist < currentDist) {
-                        flushPackets();
-                        return;
-                    }
-                }
-            }
-
-            if (shouldCancelPackets) {
-                delayedPackets.add(new DelayedPacket(packet, System.currentTimeMillis()));
-                event.setCancelled(true);
-            }
-        }
+        // Update to exact teleport position
+        tracked.updatePosition(
+            packet.getX() / 32.0,
+            packet.getY() / 32.0,
+            packet.getZ() / 32.0
+        );
     }
 
     @EventTarget
@@ -132,15 +162,19 @@ public class NewBacktrack extends Module {
 
         long currentTime = System.currentTimeMillis();
 
-        if (shouldCancelPackets()) {
-            flushOldPackets(currentTime - currentDelay);
-        } else if (!delayedPackets.isEmpty()) {
-            flushPackets();
-            clear(false, true);
-        }
+        // Clean up old tracked players
+        trackedPlayers.entrySet().removeIf(entry -> {
+            TrackedPlayer tracked = entry.getValue();
+            Entity entity = mc.theWorld.getEntityByID(entry.getKey());
+            
+            // Remove if entity is gone or tracking expired
+            return entity == null || !entity.isEntityAlive() || 
+                   (currentTime - tracked.startTrackTime) > maxTrackTime.getValue();
+        });
 
-        if (delayedPackets.isEmpty()) {
-            currentDelay = getRandomDelay();
+        // Update current target tracking
+        if ("Range".equals(targetMode.getModeString())) {
+            updateRangeTarget();
         }
     }
 
@@ -151,20 +185,10 @@ public class NewBacktrack extends Module {
         }
 
         lastAttackTime = System.currentTimeMillis();
-        currentChance = random.nextInt(101);
 
-        if (!"Attack".equals(targetMode.getModeString())) {
-            return;
+        if ("Attack".equals(targetMode.getModeString()) && event.getTarget() instanceof EntityPlayer) {
+            updateAttackTarget((EntityPlayer) event.getTarget());
         }
-
-        if (event.getTarget() instanceof EntityPlayer) {
-            processTarget((EntityPlayer) event.getTarget());
-        }
-    }
-
-    @EventTarget
-    public void onLoadWorld(LoadWorldEvent event) {
-        clear(true, true);
     }
 
     @EventTarget
@@ -174,122 +198,125 @@ public class NewBacktrack extends Module {
         }
 
         if ("Range".equals(targetMode.getModeString())) {
-            EntityPlayer enemy = findNearestEnemy();
-            
-            if (enemy == null) {
-                clear(false, true);
-                return;
-            }
-
-            processTarget(enemy);
+            updateRangeTarget();
         }
     }
 
-    private void processTarget(EntityPlayer enemy) {
-        if (enemy == null) {
+    @EventTarget
+    public void onLoadWorld(LoadWorldEvent event) {
+        trackedPlayers.clear();
+        currentTarget = null;
+    }
+    
+    @EventTarget
+    public void onRender3D(Render3DEvent event) {
+        if (!this.isEnabled() || mc.thePlayer == null || mc.theWorld == null || !renderServerPos.getValue()) {
+            return;
+        }
+        
+        if (currentTarget == null) {
             return;
         }
 
-        shouldPause = pauseOnHurtTimeEnabled.getValue() && enemy.hurtTime >= pauseOnHurtTime.getValue();
-
-        if (!shouldBacktrack(enemy)) {
+        TrackedPlayer tracked = trackedPlayers.get(currentTarget.getEntityId());
+        if (tracked == null) {
             return;
         }
 
-        if (enemy != target) {
-            clear(false, false);
-            trackedPosition = enemy.getPositionVector();
-        }
-
-        target = enemy;
+        // Render the smooth server position
+        Vec3 renderPos = tracked.getSmoothedPosition();
+        
+        double renderX = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
+        double renderY = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
+        double renderZ = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
+        
+        double x = renderPos.xCoord - renderX;
+        double y = renderPos.yCoord - renderY;
+        double z = renderPos.zCoord - renderZ;
+        
+        // Create bounding box at server position
+        AxisAlignedBB box = new AxisAlignedBB(
+            x - 0.3, y, z - 0.3,
+            x + 0.3, y + 1.8, z + 0.3
+        );
+        
+        Color c = new Color(color.getColor());
+        
+        // Render with transparency
+        RenderUtil.drawFilledBox(box, c.getRed(), c.getGreen(), c.getBlue());
+        RenderUtil.drawBoundingBox(box, c.getRed(), c.getGreen(), c.getBlue(), 180, 2.0F);
     }
 
-    private boolean shouldBacktrack(EntityPlayer target) {
-        if (target == null) {
+    private void updateAttackTarget(EntityPlayer target) {
+        if (!shouldTrackPlayer(target)) {
+            return;
+        }
+
+        currentTarget = target;
+        ensureTracking(target);
+    }
+
+    private void updateRangeTarget() {
+        EntityPlayer nearest = findNearestEnemy();
+        
+        if (nearest == null || !shouldTrackPlayer(nearest)) {
+            currentTarget = null;
+            return;
+        }
+
+        currentTarget = nearest;
+        ensureTracking(nearest);
+    }
+
+    private void ensureTracking(EntityPlayer player) {
+        if (player == null) return;
+
+        int entityId = player.getEntityId();
+        
+        trackedPlayers.computeIfAbsent(entityId, id -> 
+            new TrackedPlayer(player.posX, player.posY, player.posZ)
+        );
+    }
+
+    private boolean shouldTrackPlayer(EntityPlayer player) {
+        if (player == null || player.isDead || player.getHealth() <= 0) {
             return false;
         }
 
-        double distance = getBoxedDistance(target);
-        boolean inRange = distance >= minRange.getValue() && distance <= maxRange.getValue();
-
-        if (inRange) {
-            trackingBufferStartTime = System.currentTimeMillis();
+        if (TeamUtil.isFriend(player)) {
+            return false;
         }
 
-        long timeSinceInRange = System.currentTimeMillis() - trackingBufferStartTime;
-        long timeSinceAttack = System.currentTimeMillis() - lastAttackTime;
-
-        return (inRange || timeSinceInRange < trackingBuffer.getValue()) &&
-               shouldBeAttacked(target) &&
-               mc.thePlayer.ticksExisted > 10 &&
-               currentChance < chance.getValue() &&
-               System.currentTimeMillis() >= nextBacktrackAllowedTime &&
-               !shouldPause &&
-               timeSinceAttack < lastAttackTimeToWork.getValue();
-    }
-
-    private boolean shouldCancelPackets() {
-        return target != null && target.isEntityAlive() && shouldBacktrack(target);
-    }
-
-    private void clear(boolean flushPackets, boolean resetTarget) {
-        if (flushPackets) {
-            flushPackets();
-        }
-
-        delayedPackets.clear();
-
-        if (resetTarget) {
-            if (target != null) {
-                int minDelay = minNextBacktrackDelay.getValue();
-                int maxDelay = maxNextBacktrackDelay.getValue();
-                int randomDelay = minDelay + random.nextInt(Math.max(1, maxDelay - minDelay + 1));
-                nextBacktrackAllowedTime = System.currentTimeMillis() + randomDelay;
-            }
-
-            target = null;
-            trackedPosition = new Vec3(0, 0, 0);
-        }
-    }
-
-    private void flushPackets() {
-        while (!delayedPackets.isEmpty()) {
-            DelayedPacket delayed = delayedPackets.poll();
-            if (delayed != null && mc.getNetHandler() != null) {
-                try {
-                    delayed.packet.processPacket(mc.getNetHandler());
-                } catch (Exception e) {
-                }
-            }
-        }
-    }
-
-    private void flushOldPackets(long beforeTime) {
-        List<DelayedPacket> toFlush = new ArrayList<>();
-        Iterator<DelayedPacket> iterator = delayedPackets.iterator();
+        long currentTime = System.currentTimeMillis();
         
-        while (iterator.hasNext()) {
-            DelayedPacket delayed = iterator.next();
-            if (delayed.timestamp <= beforeTime) {
-                toFlush.add(delayed);
-                iterator.remove();
-            }
+        // Check cooldown
+        if (currentTime < nextBacktrackAllowed) {
+            return false;
         }
 
-        for (DelayedPacket delayed : toFlush) {
-            if (mc.getNetHandler() != null) {
-                try {
-                    delayed.packet.processPacket(mc.getNetHandler());
-                } catch (Exception e) {
-                }
-            }
+        // Check attack window
+        long timeSinceAttack = currentTime - lastAttackTime;
+        if (timeSinceAttack > attackTimeWindow.getValue()) {
+            return false;
         }
-    }
 
-    private int getRandomDelay() {
-        int min = minDelay.getValue();
-        int max = maxDelay.getValue();
-        return min + random.nextInt(Math.max(1, max - min + 1));
+        // Check hurt time pause
+        if (pauseOnHurtTime.getValue() && player.hurtTime >= hurtTimePause.getValue()) {
+            return false;
+        }
+
+        // Check range
+        double dist = mc.thePlayer.getDistanceToEntity(player);
+        if (dist < minRange.getValue() || dist > maxRange.getValue()) {
+            return false;
+        }
+
+        // Check activation chance
+        if (random.nextInt(100) >= activationChance.getValue()) {
+            return false;
+        }
+
+        return true;
     }
 
     private EntityPlayer findNearestEnemy() {
@@ -301,11 +328,15 @@ public class NewBacktrack extends Module {
             
             EntityPlayer player = (EntityPlayer) obj;
             
-            if (player == mc.thePlayer || !shouldBeAttacked(player)) {
+            if (player == mc.thePlayer || TeamUtil.isFriend(player)) {
                 continue;
             }
 
-            double dist = getBoxedDistance(player);
+            if (player.isDead || player.getHealth() <= 0) {
+                continue;
+            }
+
+            double dist = mc.thePlayer.getDistanceToEntity(player);
             if (dist < nearestDist && dist <= maxRange.getValue()) {
                 nearest = player;
                 nearestDist = dist;
@@ -315,46 +346,79 @@ public class NewBacktrack extends Module {
         return nearest;
     }
 
-    private boolean shouldBeAttacked(EntityPlayer player) {
-        if (player == null || player.isDead || player.getHealth() <= 0) {
-            return false;
+    /**
+     * Tracks a player's server-side position with smooth interpolation
+     */
+    private static class TrackedPlayer {
+        // Server position (from packets)
+        double serverX, serverY, serverZ;
+        
+        // Smoothed render position
+        double smoothX, smoothY, smoothZ;
+        
+        // Tracking metadata
+        final long startTrackTime;
+        long lastUpdateTime;
+        
+        TrackedPlayer(double x, double y, double z) {
+            this.serverX = x;
+            this.serverY = y;
+            this.serverZ = z;
+            
+            this.smoothX = x;
+            this.smoothY = y;
+            this.smoothZ = z;
+            
+            this.startTrackTime = System.currentTimeMillis();
+            this.lastUpdateTime = this.startTrackTime;
         }
-
-        if (TeamUtil.isFriend(player)) {
-            return false;
+        
+        void updatePosition(double x, double y, double z) {
+            this.serverX = x;
+            this.serverY = y;
+            this.serverZ = z;
+            this.lastUpdateTime = System.currentTimeMillis();
         }
-
-        return true;
-    }
-
-    private double getBoxedDistance(EntityPlayer player) {
-        if (player == null) return Double.MAX_VALUE;
         
-        double x = mc.thePlayer.posX;
-        double y = mc.thePlayer.posY;
-        double z = mc.thePlayer.posZ;
-        
-        return player.getEntityBoundingBox().calculateIntercept(new Vec3(x, y, z), new Vec3(x, y, z)) != null ? 0 : 
-               mc.thePlayer.getDistance(player.posX, player.posY, player.posZ);
-    }
-
-    private double getSquaredBoxedDistance(EntityPlayer player, Vec3 pos) {
-        if (player == null || pos == null) return Double.MAX_VALUE;
-        
-        double dx = Math.max(0, Math.max(player.getEntityBoundingBox().minX - pos.xCoord, pos.xCoord - player.getEntityBoundingBox().maxX));
-        double dy = Math.max(0, Math.max(player.getEntityBoundingBox().minY - pos.yCoord, pos.yCoord - player.getEntityBoundingBox().maxY));
-        double dz = Math.max(0, Math.max(player.getEntityBoundingBox().minZ - pos.zCoord, pos.zCoord - player.getEntityBoundingBox().maxZ));
-        
-        return dx * dx + dy * dy + dz * dz;
-    }
-
-    private static class DelayedPacket {
-        final Packet packet;
-        final long timestamp;
-
-        DelayedPacket(Packet packet, long timestamp) {
-            this.packet = packet;
-            this.timestamp = timestamp;
+        Vec3 getSmoothedPosition() {
+            // Ultra-smooth interpolation for buttery rendering
+            double dx = serverX - smoothX;
+            double dy = serverY - smoothY;
+            double dz = serverZ - smoothZ;
+            double distSq = dx * dx + dy * dy + dz * dz;
+            
+            // Only smooth if position changed (anti-flicker)
+            if (distSq > 0.0004) { // 0.02 blocks squared
+                // Adaptive smoothing based on distance
+                double distance = Math.sqrt(distSq);
+                double smoothFactor;
+                
+                if (distance < 0.1) {
+                    smoothFactor = 0.08; // Ultra-smooth for tiny movements
+                } else if (distance < 0.5) {
+                    smoothFactor = 0.12; // Smooth for small movements
+                } else if (distance < 2.0) {
+                    smoothFactor = 0.18; // Balanced for medium movements
+                } else {
+                    smoothFactor = 0.25; // Faster for large movements
+                }
+                
+                // Cubic easing for silk-smooth transitions
+                double t = smoothFactor;
+                double eased;
+                if (t < 0.5) {
+                    eased = 4.0 * t * t * t;
+                } else {
+                    double f = 2.0 * t - 2.0;
+                    eased = 0.5 * f * f * f + 1.0;
+                }
+                
+                smoothX += dx * eased;
+                smoothY += dy * eased;
+                smoothZ += dz * eased;
+            }
+            
+            return new Vec3(smoothX, smoothY, smoothZ);
         }
     }
 }

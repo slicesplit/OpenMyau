@@ -135,7 +135,6 @@ public class Myau {
         moduleManager.modules.put(Trajectories.class, new Trajectories());
         moduleManager.modules.put(Velocity.class, new Velocity());
         moduleManager.modules.put(ViewClip.class, new ViewClip());
-        moduleManager.modules.put(Wtap.class, new Wtap());
         moduleManager.modules.put(Xray.class, new Xray());
         moduleManager.modules.put(RearView.class, new RearView());
         moduleManager.modules.put(ViperNode.class, new ViperNode());

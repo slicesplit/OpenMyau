@@ -543,12 +543,21 @@ public class OldBacktrack extends Module {
                     ));
                     // Initialize interpolation tracker for smooth entry
                     interpolationTrackers.put(entityId, new InterpolatedPositionTracker());
-                } else if ((currentTime - currentServerPos.timestamp) > 100) {
-                    // Update existing position
-                    serverPositions.put(entityId, new PositionData(
-                        player.posX, player.posY, player.posZ,
-                        currentTime
-                    ));
+                } else {
+                    // ANTI-SHAKE FIX: Only update if position changed significantly (> 0.01 blocks)
+                    // This prevents jittering for stationary players
+                    double dx = player.posX - currentServerPos.x;
+                    double dy = player.posY - currentServerPos.y;
+                    double dz = player.posZ - currentServerPos.z;
+                    double distSq = dx * dx + dy * dy + dz * dz;
+                    
+                    // Update if moved more than 0.01 blocks OR it's been more than 500ms
+                    if (distSq > 0.0001 || (currentTime - currentServerPos.timestamp) > 500) {
+                        serverPositions.put(entityId, new PositionData(
+                            player.posX, player.posY, player.posZ,
+                            currentTime
+                        ));
+                    }
                 }
             }
         }
@@ -1324,11 +1333,9 @@ public class OldBacktrack extends Module {
         }
         
         try {
-            // Light blue color (0x87CEEB = RGB 135, 206, 235)
-            Color lightBlueColor = new Color(135, 206, 235, 165);
+            // Use configured color
+            Color renderColor = new Color(color.getColor());
             long currentTime = System.currentTimeMillis();
-            float deltaTime = (currentTime - lastRenderTime) / 1000.0f; // Delta in seconds
-            lastRenderTime = currentTime;
             
             for (Map.Entry<Integer, PositionData> entry : serverPositions.entrySet()) {
                 int entityId = entry.getKey();
@@ -1344,16 +1351,34 @@ public class OldBacktrack extends Module {
 
                 PositionData serverPos = entry.getValue();
                 
-                // ALWAYS RENDER: Even if position is old, use current player position as fallback
-                if (currentTime - serverPos.timestamp > 1000) {
-                    serverPos = new PositionData(player.posX, player.posY, player.posZ, currentTime);
+                // ANTI-BLINK FIX: Get or create interpolation tracker
+                InterpolatedPositionTracker tracker = interpolationTrackers.get(entityId);
+                if (tracker == null) {
+                    tracker = new InterpolatedPositionTracker();
+                    interpolationTrackers.put(entityId, tracker);
                 }
                 
-                // GRIM PREDICTION ENGINE: Predict smooth position based on velocity and knockback
-                PositionData smoothPos = getSmoothInterpolatedPosition(entityId, serverPos, player, partialTicks, deltaTime);
+                // Update tracker with current server position
+                tracker.updateTarget(serverPos.x, serverPos.y, serverPos.z);
                 
-                // Render smooth box - never teleports!
-                renderVapeV4Box(smoothPos, lightBlueColor);
+                // Get smoothed position from tracker
+                double renderX = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
+                double renderY = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
+                double renderZ = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
+                
+                double x = tracker.getCurrentX() - renderX;
+                double y = tracker.getCurrentY() - renderY;
+                double z = tracker.getCurrentZ() - renderZ;
+                
+                // Create bounding box at smoothed position
+                AxisAlignedBB box = new AxisAlignedBB(
+                    x - 0.3, y, z - 0.3,
+                    x + 0.3, y + 1.8, z + 0.3
+                );
+                
+                // Render the box
+                RenderUtil.drawFilledBox(box, renderColor.getRed(), renderColor.getGreen(), renderColor.getBlue());
+                RenderUtil.drawBoundingBox(box, renderColor.getRed(), renderColor.getGreen(), renderColor.getBlue(), 180, 2.0F);
             }
         } catch (Exception e) {
             // Prevent any render errors from causing freezes
@@ -1614,22 +1639,22 @@ public class OldBacktrack extends Module {
         private double lastTargetX, lastTargetY, lastTargetZ;
         private boolean initialized = false;
         
-        // BUTTERY INTERPOLATION: Smooth but responsive
-        private static final float SMOOTH_LERP_SPEED = 18.0f; // Fast smooth movement (was 10.0)
-        private static final float FAST_LERP_SPEED = 30.0f; // Ultra-fast response when stopped (was 18.0)
-        private static final float VELOCITY_LERP_SPEED = 15.0f; // Quick velocity adaptation (was 8.0)
+        // BUTTERY SMOOTH INTERPOLATION - Optimized for silk-like rendering
+        private static final float SMOOTH_LERP_SPEED = 12.0f; // Smoother movement (reduced from 18)
+        private static final float FAST_LERP_SPEED = 20.0f; // Balanced snap speed (reduced from 30)
+        private static final float VELOCITY_LERP_SPEED = 10.0f; // Gentler velocity (reduced from 15)
         
         // Distance thresholds for adaptive behavior
-        private static final double SNAP_DISTANCE = 0.05; // Instant snap if within 5cm (was 3cm)
-        private static final double MIN_VELOCITY = 0.01; // Consider stopped if velocity < this (was 0.008)
+        private static final double SNAP_DISTANCE = 0.03; // Tighter snap zone (reduced from 0.05)
+        private static final double MIN_VELOCITY = 0.008; // More sensitive stop detection (reduced from 0.01)
         
-        // Anti-flicker system
-        private static final double FLICKER_THRESHOLD = 0.015; // Ignore micro-movements (1.5cm)
-        private static final double FAR_DISTANCE = 25.0; // Consider "far" if > 25 blocks away
+        // Anti-flicker system - MORE aggressive filtering
+        private static final double FLICKER_THRESHOLD = 0.02; // Ignore larger micro-movements (increased from 0.015)
+        private static final double FAR_DISTANCE = 20.0; // Earlier stabilization (reduced from 25)
         private long lastUpdateTime = 0L;
         
-        // Smoothing layers - REDUCED for faster response
-        private static final float EXTRA_SMOOTHING = 0.65f; // Reduced smoothing (65% old + 35% new) - was 0.85
+        // Smoothing layers - INCREASED for buttery smoothness
+        private static final float EXTRA_SMOOTHING = 0.75f; // More smoothing (75% old + 25% new) - was 0.65
         
         public PositionData update(PositionData targetPos, Vec3 predictedVelocity, float deltaTime, float partialTicks) {
             // Initialize on first update
@@ -1698,21 +1723,21 @@ public class OldBacktrack extends Module {
             float dynamicSpeed;
             
             if (velocityMag < MIN_VELOCITY) {
-                // STOPPED: Ultra-fast snap (30.0)
+                // STOPPED: Smooth snap (20.0) - reduced for smoothness
                 dynamicSpeed = FAST_LERP_SPEED;
             } else {
                 // MOVING: Calculate speed based on player velocity and distance
-                // Base speed: 18.0
-                // Velocity multiplier: 20.0 (scales with player speed)
-                // Distance multiplier: 10.0 (speeds up when far behind)
+                // Base speed: 12.0 (smoother)
+                // Velocity multiplier: 15.0 (gentler scaling)
+                // Distance multiplier: 8.0 (smoother catch-up)
                 
-                float velocityFactor = (float)(velocityMag * 20.0); // Speed up proportional to player speed
-                float distanceFactor = (float)(distance * 10.0); // Speed up when far behind
+                float velocityFactor = (float)(velocityMag * 15.0); // Gentler speed scaling
+                float distanceFactor = (float)(distance * 8.0); // Smoother distance catch-up
                 
                 dynamicSpeed = SMOOTH_LERP_SPEED + velocityFactor + distanceFactor;
                 
-                // Cap at reasonable max (no infinite speed)
-                dynamicSpeed = Math.min(50.0f, dynamicSpeed);
+                // Cap at lower max for smoothness (reduced from 50)
+                dynamicSpeed = Math.min(35.0f, dynamicSpeed);
                 
                 // Minimum speed floor (never slower than base)
                 dynamicSpeed = Math.max(SMOOTH_LERP_SPEED, dynamicSpeed);
@@ -1721,13 +1746,13 @@ public class OldBacktrack extends Module {
             // EXPONENTIAL SMOOTHING with dynamic speed
             float alpha = 1.0f - (float) Math.exp(-dynamicSpeed * deltaTime);
             
-            // Apply cubic easing only when slow (for smoothness)
-            // Skip easing when fast (for instant response)
-            if (dynamicSpeed < 25.0f) {
-                alpha = easeInOutCubic(alpha);
-            }
+            // ALWAYS apply cubic easing for maximum smoothness
+            alpha = easeInOutCubic(alpha);
             
-            // Direct interpolation - reduced smoothing for speed
+            // Additional smoothing layer for buttery smoothness
+            alpha = alpha * (1.0f - EXTRA_SMOOTHING) + EXTRA_SMOOTHING * 0.5f;
+            
+            // Smooth interpolation
             currentX += dx * alpha;
             currentY += dy * alpha;
             currentZ += dz * alpha;

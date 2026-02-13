@@ -7,5 +7,6 @@ public enum BlinkModules {
     BLINK,
     FAKELAG,
     NO_FALL,
-    NO_SLOW
+    NO_SLOW,
+    VIPERNODE
 }

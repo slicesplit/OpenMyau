@@ -8,13 +8,17 @@ import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
 import myau.events.PacketEvent;
+import myau.events.Render3DEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
+import myau.property.properties.ColorProperty;
 import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
 import myau.util.PacketUtil;
 import myau.util.TimerUtil;
+import myau.util.RenderUtil;
+import myau.mixin.IAccessorRenderManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
@@ -23,6 +27,7 @@ import net.minecraft.network.play.client.*;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.Vec3;
 
+import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -53,10 +58,17 @@ public class FakeLag extends Module {
     public final BooleanProperty flushOnEntityInteract = new BooleanProperty("flush-entity-interact", true);
     public final BooleanProperty flushOnBlockInteract = new BooleanProperty("flush-block-interact", true);
     public final BooleanProperty flushOnAction = new BooleanProperty("flush-action", false);
+    
+    // Rendering (self only)
+    public final BooleanProperty renderSelf = new BooleanProperty("render-self", true);
+    public final ColorProperty color = new ColorProperty("color", 0x87CEEB); // Sky blue
 
     private final TimerUtil chronometer = new TimerUtil();
     private int nextDelay;
     private boolean isEnemyNearby = false;
+    
+    // Self position tracking for rendering
+    private Vec3 startPosition = null;
     
     // Store server position tracking
     private final List<Vec3> positions = new ArrayList<>();
@@ -73,6 +85,11 @@ public class FakeLag extends Module {
         chronometer.reset();
         nextDelay = randomDelay();
         isEnemyNearby = false;
+        
+        // Store starting position for rendering
+        if (mc.thePlayer != null) {
+            startPosition = new Vec3(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
+        }
     }
 
     @Override
@@ -81,6 +98,7 @@ public class FakeLag extends Module {
         Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
         positions.clear();
         isEnemyNearby = false;
+        startPosition = null;
     }
 
     @EventTarget
@@ -91,6 +109,41 @@ public class FakeLag extends Module {
 
         // Check for enemies in range
         isEnemyNearby = findEnemy() != null;
+    }
+    
+    @EventTarget
+    public void onRender3D(Render3DEvent event) {
+        if (!this.isEnabled() || mc.thePlayer == null || !renderSelf.getValue()) {
+            return;
+        }
+        
+        // Only render if we're actively lagging (blinking)
+        if (!Myau.blinkManager.isBlinking() || startPosition == null) {
+            return;
+        }
+        
+        double renderX = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
+        double renderY = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
+        double renderZ = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
+        
+        // Render self at server position (start position)
+        double x = startPosition.xCoord - renderX;
+        double y = startPosition.yCoord - renderY;
+        double z = startPosition.zCoord - renderZ;
+        
+        // Create bounding box at server position (where server thinks we are)
+        AxisAlignedBB box = new AxisAlignedBB(
+            x - 0.3, y, z - 0.3,
+            x + 0.3, y + 1.8, z + 0.3
+        );
+        
+        Color c = new Color(color.getColor());
+        
+        // Render filled box
+        RenderUtil.drawFilledBox(box, c.getRed(), c.getGreen(), c.getBlue());
+        
+        // Render outline
+        RenderUtil.drawBoundingBox(box, c.getRed(), c.getGreen(), c.getBlue(), 180, 2.0F);
     }
 
     @EventTarget(Priority.HIGHEST)
@@ -103,6 +156,8 @@ public class FakeLag extends Module {
             // Flush on death, water, or GUI open
             Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
             positions.clear();
+            startPosition = null; // Clear server position
+            chronometer.reset(); // Reset timer
             return;
         }
 
@@ -118,6 +173,8 @@ public class FakeLag extends Module {
             nextDelay = randomDelay();
             Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
             positions.clear();
+            startPosition = null; // Clear server position when flushing
+            chronometer.reset(); // Reset timer after flush
             return;
         }
 
@@ -126,6 +183,7 @@ public class FakeLag extends Module {
             chronometer.reset();
             Myau.blinkManager.setBlinkState(false, myau.enums.BlinkModules.FAKELAG);
             positions.clear();
+            startPosition = null; // Clear server position when flushing
             return;
         }
 
@@ -207,6 +265,10 @@ public class FakeLag extends Module {
     private void queuePacket(PacketEvent event) {
         // Start blinking if not already
         if (!Myau.blinkManager.isBlinking()) {
+            // Store server position when starting to blink
+            if (mc.thePlayer != null) {
+                startPosition = new Vec3(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
+            }
             Myau.blinkManager.setBlinkState(true, myau.enums.BlinkModules.FAKELAG);
         }
 
@@ -299,12 +361,8 @@ public class FakeLag extends Module {
     }
 
     private boolean isAboveTime(long delay) {
-        if (Myau.blinkManager.blinkedPackets.isEmpty()) {
-            return false;
-        }
-        
-        long queueTime = System.currentTimeMillis() - chronometer.getElapsedTime();
-        return chronometer.getElapsedTime() >= delay;
+        // Use the new BlinkManager's isAboveTime method
+        return Myau.blinkManager.isAboveTime(delay);
     }
 
     private int randomDelay() {

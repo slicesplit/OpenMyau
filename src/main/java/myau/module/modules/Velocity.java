@@ -47,15 +47,33 @@ public class Velocity extends Module {
     private Vec3 grimPendingVelocity = null;
     private int grimApplyTick = 0;
 
-    public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"VANILLA", "JUMP", "DELAY", "REVERSE", "LEGIT_TEST", "GRIM"});
-    public final IntProperty delayTicks = new IntProperty("delay-ticks", 3, 1, 20, () -> this.mode.getValue() == 2);
+    // ==================== BRUTAL LEGIT DEFAULT SETTINGS ====================
+    
+    // Mode - DEFAULT: LEGIT_TEST (most legit-looking)
+    public final ModeProperty mode = new ModeProperty("mode", 4, new String[]{"VANILLA", "JUMP", "DELAY", "REVERSE", "LEGIT_TEST", "GRIM"});
+    
+    // Delay Mode Settings
+    public final IntProperty delayTicks = new IntProperty("delay-ticks", 2, 1, 20, () -> this.mode.getValue() == 2);
     public final PercentProperty delayChance = new PercentProperty("delay-chance", 100, () -> this.mode.getValue() == 2);
+    
+    // Activation Chance - DEFAULT: 100% (always active)
     public final PercentProperty chance = new PercentProperty("chance", 100);
-    public final PercentProperty horizontal = new PercentProperty("horizontal", 0);
-    public final PercentProperty vertical = new PercentProperty("vertical", 100);
-    public final PercentProperty explosionHorizontal = new PercentProperty("explosions-horizontal", 100);
-    public final PercentProperty explosionVertical = new PercentProperty("explosions-vertical", 100);
+    
+    // BRUTAL DEFAULTS: Reduce velocity significantly
+    // Horizontal - DEFAULT: 25% (take only 25% horizontal KB)
+    public final PercentProperty horizontal = new PercentProperty("horizontal", 25);
+    
+    // Vertical - DEFAULT: 85% (take 85% vertical KB - looks legit)
+    public final PercentProperty vertical = new PercentProperty("vertical", 85);
+    
+    // Explosion Reduction - DEFAULT: High reduction
+    public final PercentProperty explosionHorizontal = new PercentProperty("explosions-horizontal", 40);
+    public final PercentProperty explosionVertical = new PercentProperty("explosions-vertical", 70);
+    
+    // Fake Check - DEFAULT: ON (safety)
     public final BooleanProperty fakeCheck = new BooleanProperty("fake-check", true);
+    
+    // Debug Log - DEFAULT: OFF
     public final BooleanProperty debugLog = new BooleanProperty("debug-log", false);
 
     private boolean isInLiquidOrWeb() {
