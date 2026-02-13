@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -27,6 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class Freeze extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     

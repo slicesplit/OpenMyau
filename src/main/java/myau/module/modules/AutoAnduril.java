@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -17,6 +20,7 @@ import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
 import net.minecraft.util.MovingObjectPosition;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class AutoAnduril extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private int previousSlot = -1;

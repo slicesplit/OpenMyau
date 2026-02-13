@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.UpdateEvent;
@@ -20,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class InvManager extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private int actionDelay = 0;

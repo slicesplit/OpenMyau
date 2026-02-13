@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
@@ -38,6 +41,7 @@ import java.util.stream.Collectors;
  *   - Color: What color to shade the opponent's "shadow" with.
  *   - Latency: The amount of lag added to your connection at advantageous moments.
  */
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class OldBacktrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     

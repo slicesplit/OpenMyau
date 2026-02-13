@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.module.Module;
 import myau.util.ItemUtil;
 import myau.util.TeamUtil;
@@ -7,6 +10,7 @@ import myau.property.properties.BooleanProperty;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class GhostHand extends Module {
     public final BooleanProperty teamsOnly = new BooleanProperty("team-only", true);
     public final BooleanProperty ignoreWeapons = new BooleanProperty("ignore-weapons", false);

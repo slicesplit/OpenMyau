@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.PacketEvent;
@@ -8,6 +11,7 @@ import myau.util.ChatUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.play.server.S2CPacketSpawnGlobalEntity;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class LightningTracker extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 

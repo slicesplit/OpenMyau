@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.Myau;
 import myau.enums.BlinkModules;
@@ -18,6 +21,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.network.play.client.C03PacketPlayer.C04PacketPlayerPosition;
 import net.minecraft.util.AxisAlignedBB;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class AntiVoid extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private boolean isInVoid = false;

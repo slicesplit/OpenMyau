@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.enums.ChatColors;
 import myau.event.EventTarget;
@@ -32,6 +35,7 @@ import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.Locale;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class TargetHUD extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private static final DecimalFormat healthFormat = new DecimalFormat("0.0", new DecimalFormatSymbols(Locale.US));

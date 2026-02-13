@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.Myau;
 import myau.event.EventTarget;
@@ -19,6 +22,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class LongJump extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final TimerUtil fireballTimer = new TimerUtil();

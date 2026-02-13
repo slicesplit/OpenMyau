@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -15,6 +18,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemPotion;
 import net.minecraft.item.ItemStack;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class Refill extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final IntProperty delay = new IntProperty("delay", 1, 0, 20);

@@ -1,10 +1,14 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
 import myau.property.properties.PercentProperty;
 import net.minecraft.client.Minecraft;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class KeepSprint extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final PercentProperty slowdown = new PercentProperty("slowdown", 0);

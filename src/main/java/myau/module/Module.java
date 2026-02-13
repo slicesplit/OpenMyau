@@ -1,6 +1,7 @@
 package myau.module;
 
 import myau.Myau;
+import myau.enums.ModuleCategory;
 import myau.module.modules.HUD;
 import myau.util.KeyBindUtil;
 
@@ -92,5 +93,23 @@ public abstract class Module {
     }
 
     public void verifyValue(String string) {
+    }
+
+    /**
+     * Gets the category of this module from its @ModuleInfo annotation
+     * Defaults to MISC if no annotation is present
+     */
+    public ModuleCategory getCategory() {
+        ModuleInfo info = this.getClass().getAnnotation(ModuleInfo.class);
+        return info != null ? info.category() : ModuleCategory.MISC;
+    }
+
+    /**
+     * Gets the priority of this module from its @ModuleInfo annotation
+     * Lower priority = higher in the list
+     */
+    public int getPriority() {
+        ModuleInfo info = this.getClass().getAnnotation(ModuleInfo.class);
+        return info != null ? info.priority() : 1000;
     }
 }

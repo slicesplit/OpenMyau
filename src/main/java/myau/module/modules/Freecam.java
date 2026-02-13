@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.PacketEvent;
@@ -11,6 +14,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityOtherPlayerMP;
 import net.minecraft.network.play.client.C03PacketPlayer;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class Freecam extends Module {
 
     private final Minecraft mc = Minecraft.getMinecraft();

@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.PlayerUpdateEvent;
@@ -22,6 +25,7 @@ import net.minecraft.client.Minecraft;
  * 
  * Works by forcing the fovModifierHand value each tick
  */
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class FovFix extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     

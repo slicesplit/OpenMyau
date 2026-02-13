@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.enums.BlinkModules;
 import myau.event.EventTarget;
@@ -40,6 +43,7 @@ import java.util.List;
  * Spawn Fake: Spawns a fake entity of yourself at your starting location.
  * Auto Send: Automatically unchoke packets once threshold is reached.
  */
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class Blink extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     

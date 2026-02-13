@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -23,6 +26,7 @@ import net.minecraft.item.*;
 import net.minecraft.world.WorldSettings.GameType;
 import org.apache.commons.lang3.RandomUtils;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class ChestStealer extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private int clickDelay = 0;

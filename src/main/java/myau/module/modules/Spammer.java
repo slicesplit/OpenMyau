@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.events.Render2DEvent;
 import myau.module.Module;
@@ -9,6 +12,7 @@ import myau.property.properties.IntProperty;
 import myau.property.properties.TextProperty;
 import net.minecraft.client.Minecraft;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class Spammer extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final TimerUtil timer = new TimerUtil();

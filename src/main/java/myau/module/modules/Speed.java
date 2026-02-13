@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.Priority;
@@ -12,6 +15,7 @@ import myau.property.properties.FloatProperty;
 import myau.property.properties.PercentProperty;
 import net.minecraft.client.Minecraft;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class Speed extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final FloatProperty multiplier = new FloatProperty("multiplier", 1.0F, 0.0F, 10.0F);

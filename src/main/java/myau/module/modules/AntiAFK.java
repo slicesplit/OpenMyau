@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.UpdateEvent;
@@ -8,6 +11,7 @@ import myau.module.Module;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.GameSettings;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class AntiAFK extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private int lastInput;

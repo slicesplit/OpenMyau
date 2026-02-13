@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.LoadWorldEvent;
@@ -30,6 +33,7 @@ import org.lwjgl.input.Keyboard;
  * 
  * Based on KeystrokesMod's architecture
  */
+@ModuleInfo(category = ModuleCategory.MISC)
 public class RemoteShop extends Module {
     public static final int KEYCODE = Keyboard.KEY_HOME;
     private static final Minecraft mc = Minecraft.getMinecraft();

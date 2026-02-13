@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.events.TickEvent;
 import myau.mixin.IAccessorEntityLivingBase;
@@ -10,6 +13,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.entity.ai.attributes.AttributeModifier;
 import net.minecraft.entity.ai.attributes.IAttributeInstance;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class Sprint extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private boolean wasSprinting = false;

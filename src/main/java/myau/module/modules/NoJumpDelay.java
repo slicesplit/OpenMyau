@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
@@ -9,6 +12,7 @@ import myau.module.Module;
 import myau.property.properties.IntProperty;
 import net.minecraft.client.Minecraft;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class NoJumpDelay extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final IntProperty delay = new IntProperty("delay", 3, 0, 8);

@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -20,6 +23,7 @@ import net.minecraft.util.AxisAlignedBB;
 import java.awt.*;
 import java.util.ArrayList;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class TargetStrafe extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private EntityLivingBase target = null;

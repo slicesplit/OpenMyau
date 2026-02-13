@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.enums.ChatColors;
 import myau.event.EventTarget;
@@ -40,6 +43,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class BedTracker extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final ScheduledExecutorService executor;

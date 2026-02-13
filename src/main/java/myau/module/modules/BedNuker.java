@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.Myau;
 import myau.enums.ChatColors;
@@ -52,6 +55,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class BedNuker extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);

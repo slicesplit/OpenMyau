@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.enums.ChatColors;
 import myau.event.EventTarget;
 import myau.events.Render2DEvent;
@@ -25,6 +28,7 @@ import net.minecraft.item.ItemStack;
 import java.awt.*;
 import java.util.stream.Collectors;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class Indicators extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final FloatProperty scale = new FloatProperty("scale", 1.0f, 0.5f, 1.5f);

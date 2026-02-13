@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.PickEvent;
@@ -14,6 +17,7 @@ import java.text.DecimalFormatSymbols;
 import java.util.Locale;
 import java.util.Random;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class Reach extends Module {
     private static final DecimalFormat df = new DecimalFormat("0.0#", new DecimalFormatSymbols(Locale.US));
     private final Random theRandom = new Random();

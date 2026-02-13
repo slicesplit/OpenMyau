@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.TickEvent;
@@ -9,6 +12,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.potion.Potion;
 import net.minecraft.potion.PotionEffect;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class FullBright extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private float prevGamma = Float.NaN;

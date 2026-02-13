@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
 import net.minecraft.block.Block;
@@ -9,6 +12,7 @@ import net.minecraft.util.BlockPos;
 import net.minecraft.util.Vec3;
 import net.minecraft.world.World;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class AntiObbyTrap extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final BooleanProperty setAir = new BooleanProperty("set-air", true);

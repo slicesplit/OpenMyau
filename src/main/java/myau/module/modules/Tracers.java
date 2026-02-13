@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.enums.ChatColors;
 import myau.event.EventTarget;
@@ -23,6 +26,7 @@ import net.minecraft.util.Vec3;
 import java.awt.*;
 import java.util.stream.Collectors;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class Tracers extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final ModeProperty colorMode = new ModeProperty("color", 0, new String[]{"DEFAULT", "TEAMS", "HUD"});

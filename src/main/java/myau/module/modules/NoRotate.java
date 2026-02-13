@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.LoadWorldEvent;
@@ -14,6 +17,7 @@ import net.minecraft.network.play.server.S02PacketChat;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook.EnumFlags;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class NoRotate extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private boolean reset = false;

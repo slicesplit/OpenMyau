@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -20,6 +23,7 @@ import net.minecraft.util.Vec3;
 
 import java.util.Random;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class HitSelect extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final Random random = new Random();

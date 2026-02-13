@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -39,6 +42,7 @@ import java.awt.*;
 import java.util.List;
 import java.util.stream.Collectors;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class HitBox extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private MovingObjectPosition targetEntity = null;

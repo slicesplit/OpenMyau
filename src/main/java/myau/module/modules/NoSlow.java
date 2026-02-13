@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.enums.FloatModules;
 import myau.event.EventTarget;
@@ -37,6 +40,7 @@ import net.minecraft.util.BlockPos;
  * 
  * By switching slots every tick, didSlotChangeLastTick is ALWAYS true = complete disabler!
  */
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class NoSlow extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private int lastSlot = -1;

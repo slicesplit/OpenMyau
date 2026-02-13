@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.events.KeyEvent;
@@ -9,6 +12,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.util.MovingObjectPosition.MovingObjectType;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class MCF extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 

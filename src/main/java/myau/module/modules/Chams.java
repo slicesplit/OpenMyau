@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.events.RenderLivingEvent;
 import myau.module.Module;
@@ -17,6 +20,7 @@ import net.minecraft.entity.passive.EntityVillager;
 import net.minecraft.entity.player.EntityPlayer;
 import org.lwjgl.opengl.GL11;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class Chams extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final BooleanProperty players = new BooleanProperty("players", true);

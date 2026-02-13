@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.LoadWorldEvent;
@@ -27,6 +30,7 @@ import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.concurrent.CopyOnWriteArraySet;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class Xray extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private static final LinkedHashSet<Integer> xrayBlocks;

@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
@@ -18,6 +21,7 @@ import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.BlockPos;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class Fly extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private double verticalMotion = 0.0;

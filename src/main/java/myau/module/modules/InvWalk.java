@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.Myau;
 import myau.event.EventTarget;
@@ -32,6 +35,7 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class InvWalk extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final Queue<C0EPacketClickWindow> clickQueue = new ConcurrentLinkedQueue<>();

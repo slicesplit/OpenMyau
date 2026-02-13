@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.enums.ChatColors;
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
@@ -8,6 +11,7 @@ import net.minecraft.client.Minecraft;
 
 import java.util.regex.Matcher;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class NickHider extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final TextProperty protectName = new TextProperty("name", "You");

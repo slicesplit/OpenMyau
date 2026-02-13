@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.enums.ChatColors;
 import myau.event.EventTarget;
@@ -28,6 +31,7 @@ import java.awt.*;
 import java.util.List;
 import java.util.stream.Collectors;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class ESP extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final OutlineShader outlineRenderer = new OutlineShader();

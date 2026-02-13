@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.enums.ChatColors;
 import myau.event.EventTarget;
 import myau.events.Render3DEvent;
@@ -26,6 +29,7 @@ import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class ItemESP extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final PercentProperty opacity = new PercentProperty("opacity", 25);

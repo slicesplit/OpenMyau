@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -13,6 +16,7 @@ import myau.property.properties.BooleanProperty;
 import myau.property.properties.FloatProperty;
 import net.minecraft.client.Minecraft;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class SafeWalk extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final FloatProperty motion = new FloatProperty("motion", 1.0F, 0.5F, 1.0F);

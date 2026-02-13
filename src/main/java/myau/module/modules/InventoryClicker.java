@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.TickEvent;
@@ -10,6 +13,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.inventory.GuiContainer;
 import org.lwjgl.input.Mouse;
 
+@ModuleInfo(category = ModuleCategory.MISC)
 public class InventoryClicker extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final IntProperty triggerTicks = new IntProperty("ticks", 2, 0, 20);

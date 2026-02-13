@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
 import myau.property.properties.FloatProperty;
@@ -8,6 +11,7 @@ import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.Locale;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class Jesus extends Module {
     private static final DecimalFormat df = new DecimalFormat("#.##", new DecimalFormatSymbols(Locale.US));
     public final FloatProperty speed = new FloatProperty("speed", 2.5F, 0.0F, 3.0F);

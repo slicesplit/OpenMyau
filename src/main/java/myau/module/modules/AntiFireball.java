@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -24,6 +27,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class AntiFireball extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final ArrayList<EntityFireball> farList = new ArrayList<>();

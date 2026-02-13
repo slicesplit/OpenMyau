@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.TickEvent;
@@ -10,6 +13,7 @@ import myau.property.properties.PercentProperty;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.MovingObjectPosition.MovingObjectType;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class SpeedMine extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final PercentProperty speed = new PercentProperty("speed", 15);

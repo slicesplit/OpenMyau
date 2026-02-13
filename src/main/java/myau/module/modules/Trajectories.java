@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.events.Render3DEvent;
 import myau.mixin.IAccessorRenderManager;
@@ -22,6 +25,7 @@ import org.lwjgl.opengl.GL11;
 import java.awt.*;
 import java.util.ArrayList;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class Trajectories extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final PercentProperty opacity = new PercentProperty("opacity", 100);

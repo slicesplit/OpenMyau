@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.events.Render3DEvent;
@@ -22,6 +25,7 @@ import java.awt.*;
 import java.util.Arrays;
 import java.util.concurrent.CopyOnWriteArraySet;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class BedESP extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final CopyOnWriteArraySet<BlockPos> beds = new CopyOnWriteArraySet<>();

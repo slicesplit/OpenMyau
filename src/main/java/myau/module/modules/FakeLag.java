@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -34,6 +37,7 @@ import java.util.List;
  * 
  * Holds back packets to prevent you from being hit by an enemy.
  */
+@ModuleInfo(category = ModuleCategory.MISC)
 public class FakeLag extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     

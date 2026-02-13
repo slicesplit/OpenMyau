@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.Myau;
 import myau.enums.BlinkModules;
@@ -21,6 +24,7 @@ import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook;
 import net.minecraft.util.AxisAlignedBB;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class NoFall extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final TimerUtil packetDelayTimer = new TimerUtil();

@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -13,6 +16,7 @@ import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.MovingObjectPosition.MovingObjectType;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class AutoTool extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private int currentToolSlot = -1;

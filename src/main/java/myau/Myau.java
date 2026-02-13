@@ -138,6 +138,9 @@ public class Myau {
         moduleManager.modules.put(Wtap.class, new Wtap());
         moduleManager.modules.put(Xray.class, new Xray());
         moduleManager.modules.put(RearView.class, new RearView());
+        moduleManager.modules.put(ViperNode.class, new ViperNode());
+        moduleManager.modules.put(SkeletonESP.class, new SkeletonESP());
+        moduleManager.modules.put(TickBase.class, new TickBase());
         commandManager.commands.add(new BindCommand());
         commandManager.commands.add(new ConfigCommand());
         commandManager.commands.add(new DenickCommand());

@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
@@ -17,6 +20,7 @@ import net.minecraft.world.WorldSettings.GameType;
 
 import java.util.Objects;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class AutoClicker extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private boolean clickPending = false;

@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.Myau;
 import myau.enums.DelayModules;
@@ -24,6 +27,7 @@ import net.minecraft.network.play.server.S19PacketEntityStatus;
 import net.minecraft.network.play.server.S27PacketExplosion;
 import net.minecraft.potion.Potion;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class Velocity extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 

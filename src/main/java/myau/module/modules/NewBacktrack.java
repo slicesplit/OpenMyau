@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
@@ -17,6 +20,7 @@ import net.minecraft.util.Vec3;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class NewBacktrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 

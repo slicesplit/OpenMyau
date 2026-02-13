@@ -1,8 +1,12 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.module.Module;
 import net.minecraft.client.Minecraft;
 
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class ViewClip extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
 

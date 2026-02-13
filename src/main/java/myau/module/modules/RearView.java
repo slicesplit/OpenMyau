@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.Priority;
 import myau.events.Render2DEvent;
@@ -29,6 +32,7 @@ import org.lwjgl.opengl.GL14;
  * Full world rendering with reversed camera (yaw + 180°) in a HUD window
  * Military-grade quality with proper depth, lighting, and state management
  */
+@ModuleInfo(category = ModuleCategory.RENDER)
 public class RearView extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     

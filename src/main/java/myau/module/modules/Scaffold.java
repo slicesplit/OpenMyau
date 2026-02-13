@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.Myau;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
@@ -29,6 +32,7 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.Comparator;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class Scaffold extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private static final double[] placeOffsets = new double[]{

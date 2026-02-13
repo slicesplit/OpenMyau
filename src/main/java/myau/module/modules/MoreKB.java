@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.events.AttackEvent;
 import myau.events.TickEvent;
@@ -13,6 +16,7 @@ import net.minecraft.network.play.client.C0BPacketEntityAction;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.MovingObjectPosition;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class MoreKB extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"LEGIT", "LEGIT_FAST", "LESS_PACKET", "PACKET", "DOUBLE_PACKET"});

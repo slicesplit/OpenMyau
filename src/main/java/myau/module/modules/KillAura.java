@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import com.google.common.base.CaseFormat;
 import myau.Myau;
 import myau.enums.BlinkModules;
@@ -50,6 +53,7 @@ import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Random;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class KillAura extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private static final DecimalFormat df = new DecimalFormat("+0.0;-0.0", new DecimalFormatSymbols(Locale.US));

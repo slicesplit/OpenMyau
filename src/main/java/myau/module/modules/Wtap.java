@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
@@ -13,6 +16,7 @@ import net.minecraft.network.play.client.C02PacketUseEntity;
 import net.minecraft.network.play.client.C02PacketUseEntity.Action;
 import net.minecraft.potion.Potion;
 
+@ModuleInfo(category = ModuleCategory.COMBAT)
 public class Wtap extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final TimerUtil timer = new TimerUtil();

@@ -1,5 +1,8 @@
 package myau.module.modules;
 
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
+
 import myau.event.EventTarget;
 import myau.event.types.Priority;
 import myau.events.*;
@@ -18,6 +21,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.network.play.client.C08PacketPlayerBlockPlacement;
 import net.minecraft.potion.Potion;
 
+@ModuleInfo(category = ModuleCategory.PLAYER)
 public class AutoHeal extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private final TimerUtil timer = new TimerUtil();
