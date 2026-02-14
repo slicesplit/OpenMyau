@@ -159,6 +159,22 @@ public class KillAura extends Module {
 
     private boolean performAttack(float yaw, float pitch) {
         if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
+            // ANTI-FLAG: Check reach before attacking when backtrack is active
+            if (this.target != null) {
+                Module oldBacktrack = Myau.moduleManager.modules.get(OldBacktrack.class);
+                Module newBacktrack = Myau.moduleManager.modules.get(NewBacktrack.class);
+                boolean backtrackActive = (oldBacktrack != null && oldBacktrack.isEnabled()) || 
+                                         (newBacktrack != null && newBacktrack.isEnabled());
+                
+                if (backtrackActive) {
+                    double distance = mc.thePlayer.getDistanceToEntity(this.target.getEntity());
+                    // GRIM enforces 3.0 blocks max reach (with tiny tolerance)
+                    if (distance > 3.0) {
+                        return false; // Don't attack if too far - prevents reach flags
+                    }
+                }
+            }
+            
             if (this.isPlayerBlocking() && this.autoBlock.getValue() != 1) {
                 return false;
             } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2 && this.autoBlock.getValue() != 9) {

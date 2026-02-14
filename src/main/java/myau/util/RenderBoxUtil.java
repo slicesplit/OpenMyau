@@ -16,9 +16,9 @@ import java.awt.Color;
 public class RenderBoxUtil {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Vape V4 style light blue (sky blue)
-    public static final Color VAPE_LIGHT_BLUE = new Color(135, 206, 235, 165); // 65% opacity
-    public static final Color VAPE_LIGHT_BLUE_OUTLINE = new Color(135, 206, 235, 255); // Full opacity outline
+    // Darker blue with more translucency (user requested)
+    public static final Color VAPE_LIGHT_BLUE = new Color(70, 130, 180, 90); // Steel blue, 35% opacity (more translucent)
+    public static final Color VAPE_LIGHT_BLUE_OUTLINE = new Color(70, 130, 180, 0); // No border (fully transparent)
     
     // Player hitbox dimensions
     public static final double PLAYER_WIDTH = 0.6;
@@ -83,11 +83,12 @@ public class RenderBoxUtil {
             renderFilledBox(box, fillColor);
         }
         
-        // Render outline
+        // Render outline (skip if alpha is 0 - no borders)
         if (outlineColor != null && outlineColor.getAlpha() > 0) {
             GL11.glLineWidth(lineWidth);
             renderBoxOutline(box, outlineColor);
         }
+        // Note: Default outline color has alpha=0, so borders are disabled by default
         
         // Restore GL state
         GlStateManager.enableCull();
