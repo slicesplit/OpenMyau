@@ -28,7 +28,6 @@ import net.minecraft.util.AxisAlignedBB;
 import java.util.Deque;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
-@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class AntiVoid extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private boolean isInVoid = false;
