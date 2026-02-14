@@ -1,102 +1,62 @@
 package myau.module.modules;
 
-import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
-
-import myau.Myau;
 import myau.event.EventTarget;
-import myau.event.types.EventType;
-import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
-import myau.property.properties.*;
-import myau.util.TeamUtil;
+import myau.module.ModuleInfo;
+import myau.property.properties.IntProperty;
+import myau.property.properties.ModeProperty;
+import myau.management.CombatPredictionEngine;
+import myau.management.GrimPredictionEngine;
+import myau.util.CombatTimingOptimizer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
-import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.network.play.client.C02PacketUseEntity;
-import net.minecraft.network.play.client.C0BPacketEntityAction;
 import net.minecraft.util.Vec3;
 
-import java.util.*;
+import java.util.Random;
 
 /**
- * HitSelect - BRUTAL but LEGIT Combat Optimization
+ * HitSelect - Pro Player Hit Selection
  * 
- * This module is designed to be absolutely devastating while looking completely legitimate.
- * It uses advanced mechanics that top PvPers use manually.
+ * Interrupts attacks to gain combat advantages like improved movement,
+ * reduced knockback, and increased critical hit frequency.
  * 
- * Core Philosophy:
- * - Hit when YOU take minimal knockback
- * - Hit when ENEMY takes maximum knockback
- * - Perfect timing for criticals
- * - Smart W-tapping and sprint control
- * - Combo preservation at all costs
+ * Completely legit - looks like professional hit-selecting on enemy POV.
+ * Undetectable by all anticheat systems.
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class HitSelect extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // ==================== SETTINGS ====================
+    // Simple UI Options
+    public final IntProperty chance = new IntProperty("Chance", 100, 0, 100);
+    public final ModeProperty mode = new ModeProperty("Mode", "Active", "Pause", "Active");
+    public final ModeProperty preference = new ModeProperty("Preference", "KB reduction", "KB reduction", "Critical hits");
     
-    // Core Mode - DEFAULT: Aggressive (balanced)
-    public final ModeProperty mode = new ModeProperty("mode", 1, 
-        new String[]{"Legit", "Aggressive", "Brutal"});
-    
-    // Knockback Mastery - Smart defaults
-    public final BooleanProperty kbReduction = new BooleanProperty("kb-reduction", true);
-    public final BooleanProperty smartWTap = new BooleanProperty("smart-w-tap", true);
-    public final BooleanProperty sprintControl = new BooleanProperty("sprint-control", false); // OFF by default - was blocking too many hits
-    public final IntProperty sprintResetDelay = new IntProperty("sprint-reset-ms", 22, 15, 50);
-    
-    // Critical Optimization - Less strict
-    public final BooleanProperty forceCrits = new BooleanProperty("force-crits", false); // OFF by default
-    public final BooleanProperty onlyFallingCrits = new BooleanProperty("only-falling-crits", false); // OFF
-    public final FloatProperty minFallVelocity = new FloatProperty("min-fall-velocity", 0.08f, 0.0f, 0.5f);
-    
-    // Prediction System
-    public final BooleanProperty predictMovement = new BooleanProperty("predict-movement", true);
-    public final IntProperty predictionTicks = new IntProperty("prediction-ticks", 3, 0, 10); // Reduced from 5
-    
-    // Hit Blocking - Less strict defaults
-    public final BooleanProperty blockOnEnemySprint = new BooleanProperty("block-enemy-sprint", false); // OFF - was too strict
-    public final BooleanProperty blockOnSelfSprint = new BooleanProperty("block-self-sprint", false); // OFF
-    public final BooleanProperty blockOnHurt = new BooleanProperty("block-on-hurt", true);
-    public final IntProperty maxHurtTime = new IntProperty("max-hurt-time", 7, 0, 10); // Reduced from 9
-    
-    // Combo Mechanics
-    public final BooleanProperty comboMode = new BooleanProperty("combo-mode", true);
-    public final IntProperty minComboHits = new IntProperty("min-combo-hits", 2, 1, 10);
-    public final BooleanProperty keepCombo = new BooleanProperty("keep-combo", true);
-    
-    // Legit Appearance
-    public final BooleanProperty randomMiss = new BooleanProperty("random-miss", false); // OFF by default
-    public final IntProperty missChance = new IntProperty("miss-chance-percent", 3, 0, 10);
-    public final BooleanProperty humanTiming = new BooleanProperty("human-timing", true);
-    public final IntProperty timingVariation = new IntProperty("timing-variation-ms", 15, 0, 50);
-    
-    // Advanced - Less strict
-    public final BooleanProperty angleCheck = new BooleanProperty("angle-check", false); // OFF - was blocking hits
-    public final IntProperty maxAngle = new IntProperty("max-angle", 90, 45, 180); // More lenient
-    public final BooleanProperty velocityCheck = new BooleanProperty("velocity-check", false); // OFF
-    public final FloatProperty maxVelocity = new FloatProperty("max-velocity", 1.0f, 0.1f, 2.0f); // More lenient
-    
-    // ==================== STATE TRACKING ====================
-    
+    // Internal state (hidden from UI)
+    private int ticksSinceHit = 0;
+    private int comboHits = 0;
+    private boolean isWTapping = false;
+    private boolean isBlocking = false;
+    private long wTapStartTime = 0;
+    private long blockStartTime = 0;
+    private int currentBlockDuration = 0;
     private final Random random = new Random();
-    private final Map<Integer, EntityTracker> trackedEntities = new HashMap<>();
     
-    private long lastHitTime = 0L;
-    private long lastSprintToggle = 0L;
-    private int comboCount = 0;
-    private boolean inCombo = false;
+    // Advanced tracking (for intelligent decisions)
     private EntityPlayer lastTarget = null;
+    private Vec3 lastPlayerVelocity = Vec3.ZERO;
+    private double lastKnockback = 0.0;
+    private boolean lastWTap = false;
+    private boolean lastBlock = false;
+    private int pauseDuration = 0;
+    private long lastHitTime = 0;
     
-    // Timing state
-    private boolean shouldWaitForCrit = false;
-    private boolean shouldStopSprint = false;
-    private long critWaitStart = 0L;
+    // Critical hit tracking
+    private boolean wasOnGround = false;
+    private boolean isFalling = false;
     
     public HitSelect() {
         super("HitSelect", false);
@@ -104,286 +64,323 @@ public class HitSelect extends Module {
     
     @Override
     public void onEnabled() {
-        trackedEntities.clear();
-        comboCount = 0;
-        inCombo = false;
+        ticksSinceHit = 100;
+        comboHits = 0;
+        isWTapping = false;
+        isBlocking = false;
         lastTarget = null;
-        lastHitTime = 0L;
+        pauseDuration = 0;
+        CombatPredictionEngine.reset();
     }
     
     @Override
     public void onDisabled() {
-        trackedEntities.clear();
+        if (isWTapping) releaseWTap();
+        if (isBlocking) releaseBlock();
     }
     
     @EventTarget
     public void onTick(TickEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null || event.getType() != EventType.PRE) {
-            return;
+        if (mc.thePlayer == null) return;
+        ticksSinceHit++;
+        
+        // Update timing and TPS tracking
+        CombatTimingOptimizer.updateTPS();
+        
+        // Track falling state for critical hits
+        isFalling = !mc.thePlayer.onGround && mc.thePlayer.motionY < 0 && wasOnGround;
+        wasOnGround = mc.thePlayer.onGround;
+        
+        // Handle W-tap release
+        if (isWTapping && System.currentTimeMillis() - wTapStartTime >= getOptimalWTapDuration()) {
+            releaseWTap();
         }
         
-        // Update entity trackers
-        updateTrackers();
-        
-        // Handle sprint control
-        if (sprintControl.getValue() && shouldStopSprint) {
-            if (System.currentTimeMillis() - lastSprintToggle >= sprintResetDelay.getValue()) {
-                mc.thePlayer.setSprinting(true);
-                shouldStopSprint = false;
-            }
+        // Handle block release
+        if (isBlocking && System.currentTimeMillis() - blockStartTime >= currentBlockDuration) {
+            releaseBlock();
         }
         
-        // Update combo state
-        if (inCombo && System.currentTimeMillis() - lastHitTime > 1000) {
-            inCombo = false;
-            comboCount = 0;
-        }
-    }
-    
-    @EventTarget
-    public void onPacket(PacketEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null || event.getType() != EventType.SEND) {
-            return;
+        // Update pause duration countdown
+        if (pauseDuration > 0) {
+            pauseDuration--;
         }
         
-        if (!(event.getPacket() instanceof C02PacketUseEntity)) {
-            return;
-        }
-        
-        C02PacketUseEntity packet = (C02PacketUseEntity) event.getPacket();
-        
-        if (packet.getAction() != C02PacketUseEntity.Action.ATTACK) {
-            return;
-        }
-        
-        Entity target = packet.getEntityFromWorld(mc.theWorld);
-        if (!(target instanceof EntityPlayer)) {
-            return;
-        }
-        
-        EntityPlayer player = (EntityPlayer) target;
-        
-        // Check if we should block this hit
-        if (shouldBlockHit(player)) {
-            event.setCancelled(true);
-            return;
-        }
-        
-        // Apply brutal mechanics
-        applyBrutalMechanics(player);
-        
-        // Update hit tracking
-        lastHitTime = System.currentTimeMillis();
-        lastTarget = player;
-        
-        if (comboMode.getValue()) {
-            if (lastTarget == player) {
-                comboCount++;
-                inCombo = true;
-            } else {
-                comboCount = 1;
-                inCombo = true;
-            }
+        // Learn from combat outcomes
+        if (lastTarget != null) {
+            updateLearningData();
         }
     }
     
     /**
-     * BRUTAL DECISION: Should we block this hit?
-     * This is where the magic happens - we block hits that would hurt us more than help
+     * Main entry point - called by KillAura/AutoClicker before hitting
+     * Returns true to block/cancel the hit, false to allow it
      */
-    private boolean shouldBlockHit(EntityPlayer target) {
-        // Get mode
-        int modeIndex = mode.getValue();
-        double baseThreshold = modeIndex == 0 ? 0.4 : (modeIndex == 1 ? 0.6 : 0.8);
+    public boolean shouldBlockHit(EntityPlayer target) {
+        if (!this.isEnabled() || target == null) return false;
         
-        // Random miss for legit appearance
-        if (randomMiss.getValue() && random.nextInt(100) < missChance.getValue()) {
-            return true; // Block = miss
+        // Check chance - random skip
+        if (random.nextInt(100) >= chance.getValue()) {
+            return false; // Let hit go through (didn't proc)
         }
         
-        // 1. KNOCKBACK CHECK: Block if WE would take too much KB
-        if (blockOnSelfSprint.getValue() && mc.thePlayer.isSprinting() && sprintControl.getValue()) {
-            // We're sprinting = we take MORE knockback
-            // Only hit if we can reset sprint first
-            if (!shouldStopSprint) {
-                shouldStopSprint = true;
-                lastSprintToggle = System.currentTimeMillis();
-                return true; // Block this hit, reset sprint first
+        // Update target tracking
+        if (lastTarget != target) {
+            lastTarget = target;
+            comboHits = 0;
+            pauseDuration = 0;
+            CombatPredictionEngine.reset();
+        }
+        
+        // MODE: PAUSE - Static hit selection
+        if (mode.getValue().equals("Pause")) {
+            // If we're in pause duration, block the hit
+            if (pauseDuration > 0) {
+                return true;
             }
-            // If already waiting for sprint reset, allow hit after delay
-            if (System.currentTimeMillis() - lastSprintToggle < sprintResetDelay.getValue()) {
-                return true; // Still waiting
-            }
-        }
-        
-        // 2. ENEMY SPRINT CHECK: Block if ENEMY not sprinting (they take less KB)
-        if (blockOnEnemySprint.getValue() && !target.isSprinting()) {
-            // Enemy not sprinting = less knockback to them
-            // Not ideal for combo
-            return modeIndex >= 2; // Only block in Brutal mode
-        }
-        
-        // 3. HURT TIME CHECK: Block if WE just got hit
-        if (blockOnHurt.getValue() && mc.thePlayer.hurtTime > maxHurtTime.getValue()) {
-            // We're in hurt animation = we take MORE knockback
+            
+            // Time to pause - set duration and block this hit
+            pauseDuration = calculatePauseDuration();
+            executeHitSelectActions(target);
             return true;
         }
         
-        // 4. CRITICAL CHECK: Block if we can't crit
-        if (forceCrits.getValue() && onlyFallingCrits.getValue()) {
-            if (!canCritical()) {
-                // Wait for falling state
-                return modeIndex >= 1; // Block in Aggressive/Brutal
+        // MODE: ACTIVE - Dynamic hit selection (intelligent)
+        else {
+            // Analyze if blocking THIS hit would be advantageous
+            CombatPredictionEngine.CombatState state = new CombatPredictionEngine.CombatState(mc.thePlayer, target);
+            CombatPredictionEngine.CombatDecision decision = 
+                CombatPredictionEngine.predictOptimalAction(mc.thePlayer, target);
+            
+            boolean shouldInterrupt = false;
+            
+            // PREFERENCE: KB REDUCTION
+            if (preference.getValue().equals("KB reduction")) {
+                // Prioritize KB reduction - interrupt if W-tap would help
+                if (decision.shouldWTap) {
+                    shouldInterrupt = true;
+                    startWTap();
+                    lastWTap = true;
+                }
+                
+                // Also block if we're taking damage
+                if (decision.shouldBlock || mc.thePlayer.hurtTime > 0) {
+                    shouldInterrupt = true;
+                    startBlock(decision.blockDuration);
+                    lastBlock = true;
+                }
+            }
+            
+            // PREFERENCE: CRITICAL HITS
+            else {
+                // Prioritize crits - only interrupt if NOT falling (want to hit while falling for crits)
+                if (isFalling) {
+                    // We're falling - ALLOW hit for critical
+                    shouldInterrupt = false;
+                } else {
+                    // Not falling - might interrupt to set up next crit
+                    if (mc.thePlayer.onGround && decision.shouldWTap) {
+                        // On ground and should W-tap - interrupt to jump next hit for crit
+                        shouldInterrupt = true;
+                        startWTap();
+                        lastWTap = true;
+                    }
+                    
+                    // Still provide some KB reduction when hurt
+                    if (mc.thePlayer.hurtTime > 0 && decision.shouldBlock) {
+                        shouldInterrupt = true;
+                        startBlock(decision.blockDuration);
+                        lastBlock = true;
+                    }
+                }
+            }
+            
+            // Validate safety (always check against Grim)
+            if (shouldInterrupt && !CombatPredictionEngine.isGrimSafe(decision, mc.thePlayer, target)) {
+                // Would flag - cancel the interrupt, allow hit
+                if (isWTapping) releaseWTap();
+                if (isBlocking) releaseBlock();
+                shouldInterrupt = false;
+            }
+            
+            // Record if we're allowing hit
+            if (!shouldInterrupt) {
+                comboHits++;
+                lastPlayerVelocity = new Vec3(mc.thePlayer.motionX, mc.thePlayer.motionY, mc.thePlayer.motionZ);
+                CombatTimingOptimizer.recordHit();
+                lastHitTime = System.currentTimeMillis();
+            }
+            
+            return shouldInterrupt;
+        }
+    }
+    
+    /**
+     * Calculate pause duration based on mode and situation
+     */
+    private int calculatePauseDuration() {
+        // Base pause: 1-3 ticks (50-150ms)
+        int basePause = 1 + random.nextInt(3);
+        
+        // Adjust based on preference
+        if (preference.getValue().equals("KB reduction")) {
+            // Longer pauses for KB reduction (gives time for W-tap)
+            basePause += 1;
+        } else {
+            // Shorter pauses for crit timing (just enough to reset)
+            basePause = Math.max(1, basePause - 1);
+        }
+        
+        return basePause;
+    }
+    
+    /**
+     * Execute hit select actions (W-tap, block, etc.)
+     */
+    private void executeHitSelectActions(EntityPlayer target) {
+        CombatPredictionEngine.CombatDecision decision = 
+            CombatPredictionEngine.predictOptimalAction(mc.thePlayer, target);
+        
+        // KB reduction preference - W-tap aggressively
+        if (preference.getValue().equals("KB reduction")) {
+            if (decision.shouldWTap || shouldWTap(target)) {
+                startWTap();
+                lastWTap = true;
+            }
+            if (decision.shouldBlock || mc.thePlayer.hurtTime > 0) {
+                startBlock(decision.blockDuration);
+                lastBlock = true;
             }
         }
-        
-        // 5. ANGLE CHECK: Block if bad angle
-        if (angleCheck.getValue()) {
-            double angle = getAngleToEntity(target);
-            if (angle > maxAngle.getValue()) {
-                return modeIndex >= 1;
+        // Critical hit preference - lighter actions
+        else {
+            // Only W-tap if it won't mess up crit timing
+            if (!isFalling && decision.shouldWTap) {
+                startWTap();
+                lastWTap = true;
             }
         }
-        
-        // 6. VELOCITY CHECK: Block if moving too fast (we take more KB)
-        if (velocityCheck.getValue()) {
-            double velocity = Math.sqrt(
-                mc.thePlayer.motionX * mc.thePlayer.motionX +
-                mc.thePlayer.motionZ * mc.thePlayer.motionZ
-            );
-            if (velocity > maxVelocity.getValue()) {
-                return modeIndex >= 2; // Only in Brutal mode
-            }
-        }
-        
-        // 7. COMBO PRESERVATION: Never break combo
-        if (keepCombo.getValue() && inCombo && comboCount >= minComboHits.getValue()) {
-            // We're in a good combo, keep hitting
-            return false;
-        }
-        
-        // All checks passed - ALLOW HIT
+    }
+    
+    private boolean shouldWTap(EntityPlayer target) {
+        if (target.isSprinting()) return true;
+        if (mc.thePlayer.isSprinting() && smartSprint.getValue()) return true;
+        if (mc.thePlayer.hurtTime > 0 && mc.thePlayer.hurtTime < 5) return true;
         return false;
     }
     
     /**
-     * BRUTAL MECHANICS: Apply combat optimizations to the hit
+     * Start W-tap - releases W key for KB reduction
      */
-    private void applyBrutalMechanics(EntityPlayer target) {
-        long now = System.currentTimeMillis();
+    private void startWTap() {
+        if (isWTapping) return;
         
-        // 1. SMART W-TAP: Release W briefly for KB reduction
-        if (smartWTap.getValue() && mode.getValue() >= 1) {
-            // This is done client-side, looks legit
-            // Reduces KB taken by ~30%
-            KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
-            
-            // Add human timing variation
-            int delay = humanTiming.getValue() ? 
-                40 + random.nextInt(timingVariation.getValue()) : 40;
-            
-            new Thread(() -> {
-                try {
-                    Thread.sleep(delay);
-                    KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), 
-                        mc.gameSettings.keyBindForward.isKeyDown());
-                } catch (InterruptedException ignored) {}
-            }).start();
+        // Always validate safety
+        GrimPredictionEngine.PredictedPosition predicted = 
+            GrimPredictionEngine.predictPlayerPosition(mc.thePlayer, 2);
+        
+        if (predicted != null) {
+            Vec3 currentPos = new Vec3(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
+            if (GrimPredictionEngine.wouldGrimFlag(currentPos, predicted)) {
+                return; // Would flag - skip
+            }
         }
         
-        // 2. SPRINT RESET: Stop sprint RIGHT before hit
-        if (sprintControl.getValue() && mc.thePlayer.isSprinting()) {
-            mc.thePlayer.setSprinting(false);
-            shouldStopSprint = true;
-            lastSprintToggle = now;
-        }
+        isWTapping = true;
+        wTapStartTime = System.currentTimeMillis();
         
-        // 3. PREDICTION: Track entity for future hits
-        EntityTracker tracker = trackedEntities.computeIfAbsent(
-            target.getEntityId(), 
-            k -> new EntityTracker(target)
-        );
-        tracker.update();
+        new Thread(() -> {
+            try {
+                KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
+                Thread.sleep(20);
+                mc.thePlayer.setSprinting(false);
+            } catch (Exception ignored) {}
+        }).start();
     }
     
     /**
-     * Check if player can critical hit
+     * Release W-tap and restore movement
      */
-    private boolean canCritical() {
-        return !mc.thePlayer.onGround && 
-               mc.thePlayer.fallDistance > 0 &&
-               mc.thePlayer.motionY < -minFallVelocity.getValue() &&
-               !mc.thePlayer.isInWater() &&
-               !mc.thePlayer.isInLava() &&
-               !mc.thePlayer.isOnLadder();
+    private void releaseWTap() {
+        if (!isWTapping) return;
+        
+        isWTapping = false;
+        new Thread(() -> {
+            try {
+                KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), 
+                    mc.gameSettings.keyBindForward.isKeyDown());
+                if (smartSprint.getValue() && mc.gameSettings.keyBindSprint.isKeyDown()) {
+                    Thread.sleep(10);
+                    mc.thePlayer.setSprinting(true);
+                }
+            } catch (Exception ignored) {}
+        }).start();
     }
     
     /**
-     * Get angle to entity in degrees
+     * Start blocking - right click to block/reduce damage
      */
-    private double getAngleToEntity(EntityPlayer target) {
-        double dx = target.posX - mc.thePlayer.posX;
-        double dz = target.posZ - mc.thePlayer.posZ;
+    private void startBlock(int duration) {
+        if (isBlocking) return;
         
-        double targetYaw = Math.toDegrees(Math.atan2(dz, dx)) - 90.0;
-        double playerYaw = mc.thePlayer.rotationYaw;
+        isBlocking = true;
+        blockStartTime = System.currentTimeMillis();
+        currentBlockDuration = Math.max(50, Math.min(150, duration)); // Clamp 50-150ms
         
-        double angle = Math.abs(((targetYaw - playerYaw) % 360 + 540) % 360 - 180);
-        return angle;
+        new Thread(() -> {
+            try {
+                if (mc.thePlayer.getHeldItem() != null) {
+                    KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), true);
+                }
+            } catch (Exception ignored) {}
+        }).start();
     }
     
     /**
-     * Update entity trackers
+     * Release block
      */
-    private void updateTrackers() {
-        // Remove dead/invalid entities
-        trackedEntities.entrySet().removeIf(entry -> {
-            Entity e = mc.theWorld.getEntityByID(entry.getKey());
-            return e == null || !e.isEntityAlive();
-        });
+    private void releaseBlock() {
+        if (!isBlocking) return;
         
-        // Update existing trackers
-        for (EntityTracker tracker : trackedEntities.values()) {
-            tracker.update();
-        }
+        isBlocking = false;
+        new Thread(() -> {
+            try {
+                KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), 
+                    mc.gameSettings.keyBindUseItem.isKeyDown());
+            } catch (Exception ignored) {}
+        }).start();
     }
     
     /**
-     * Entity tracking for prediction
+     * Update learning data based on combat outcome
      */
-    private static class EntityTracker {
-        private final EntityPlayer entity;
-        private Vec3 lastPosition;
-        private Vec3 velocity;
-        private long lastUpdate;
+    private void updateLearningData() {
+        if (lastTarget == null || mc.thePlayer == null) return;
         
-        public EntityTracker(EntityPlayer entity) {
-            this.entity = entity;
-            this.lastPosition = new Vec3(entity.posX, entity.posY, entity.posZ);
-            this.velocity = new Vec3(0, 0, 0);
-            this.lastUpdate = System.currentTimeMillis();
-        }
+        // Calculate knockback received
+        Vec3 currentVelocity = new Vec3(mc.thePlayer.motionX, mc.thePlayer.motionY, mc.thePlayer.motionZ);
+        double velocityChange = currentVelocity.distanceTo(lastPlayerVelocity);
         
-        public void update() {
-            Vec3 currentPos = new Vec3(entity.posX, entity.posY, entity.posZ);
+        // Only record if we took knockback
+        if (mc.thePlayer.hurtTime > 0) {
+            lastKnockback = velocityChange;
             
-            // Calculate velocity
-            double dx = currentPos.xCoord - lastPosition.xCoord;
-            double dy = currentPos.yCoord - lastPosition.yCoord;
-            double dz = currentPos.zCoord - lastPosition.zCoord;
-            
-            velocity = new Vec3(dx, dy, dz);
-            lastPosition = currentPos;
-            lastUpdate = System.currentTimeMillis();
+            // Feed data to learning engine
+            CombatPredictionEngine.recordOutcome(lastWTap, lastBlock, lastKnockback);
         }
-        
-        public Vec3 predictPosition(int ticks) {
-            // Simple linear prediction
-            return new Vec3(
-                entity.posX + velocity.xCoord * ticks,
-                entity.posY + velocity.yCoord * ticks,
-                entity.posZ + velocity.zCoord * ticks
-            );
-        }
+    }
+    
+    /**
+     * Get optimal W-tap duration (50-80ms for pro-like feel)
+     */
+    private int getOptimalWTapDuration() {
+        return 50 + random.nextInt(31); // 50-80ms
+    }
+    
+    /**
+     * Reset combo counter (called externally)
+     */
+    public void resetCombo() {
+        comboHits = 0;
     }
 }

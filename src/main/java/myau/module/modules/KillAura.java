@@ -874,7 +874,13 @@ public class KillAura extends Module {
                         multiTargetIndex = 0;
                     }
                 } else if (this.isBoxInSwingRange(this.target.getBox())) {
-                    if (this.rotations.getValue() == 2 || this.rotations.getValue() == 3) {
+                    // Check HitSelect integration BEFORE rotation calculation
+                HitSelect hitSelect = (HitSelect) Myau.moduleManager.modules.get(HitSelect.class);
+                if (hitSelect != null && hitSelect.isEnabled() && hitSelect.shouldBlockHit((EntityPlayer) this.target.getEntity())) {
+                    attack = false; // HitSelect wants to interrupt this hit
+                }
+                
+                if (attack && (this.rotations.getValue() == 2 || this.rotations.getValue() == 3)) {
                         // GRIM MODE: Enhanced rotation precision
                         float angleStepValue = (float) this.angleStep.getValue();
                         float smoothingValue = (float) this.smoothing.getValue() / 100.0F;
