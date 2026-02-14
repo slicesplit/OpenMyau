@@ -11,7 +11,7 @@ import myau.management.GrimPredictionEngine;
 import myau.module.Module;
 import myau.property.properties.*;
 import myau.mixin.IAccessorRenderManager;
-import myau.util.RenderUtil;
+import myau.util.RenderBoxUtil;
 import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
@@ -123,11 +123,6 @@ public class OldBacktrack extends Module {
     private int consecutiveBacktrackSuccesses = 0;
     private long lastFlagTime = 0L;
     
-    // Smooth Interpolation System
-    private final Map<Integer, InterpolatedPositionTracker> interpolationTrackers = new ConcurrentHashMap<>();
-    private long lastRenderTime = System.currentTimeMillis();
-    private long lastPositionUpdateTime = 0L;
-    private static final long POSITION_UPDATE_INTERVAL = 50L; // Update every 50ms (1 tick)
     
     // World change detection - CRITICAL for fixing flags after match transitions
     private String lastWorldName = null;
@@ -145,8 +140,6 @@ public class OldBacktrack extends Module {
         lagStartTime = 0L;
         backtrackHitCount.clear();
         lastBacktrackTime.clear();
-        interpolationTrackers.clear();
-        lastRenderTime = System.currentTimeMillis();
     }
 
     @Override
@@ -160,7 +153,6 @@ public class OldBacktrack extends Module {
         lagStartTime = 0L;
         backtrackHitCount.clear();
         lastBacktrackTime.clear();
-        interpolationTrackers.clear();
     }
 
     @EventTarget
@@ -179,7 +171,6 @@ public class OldBacktrack extends Module {
             backtrackHitCount.clear();
             lastBacktrackTime.clear();
             targetProfiles.clear();
-            interpolationTrackers.clear();
             consecutiveBacktrackSuccesses = 0;
             
             // Release any pending packets
@@ -302,20 +293,12 @@ public class OldBacktrack extends Module {
                 return; // Anti-pattern detection blocked this backtrack
             }
             
-            // COOLDOWN CHECK: Skip backtrack if in cooldown
-            if (cooldownEnabled.getValue() && isInCooldown(target)) {
-                return; // Don't backtrack, let normal attack happen
-            }
             
             // TRANSACTION SYNC: Only backtrack during safe timing windows
             if (!transactionManager.isSafeForBypass()) {
                 return; // Wait for transaction window for safest timing
             }
             
-            // INTELLIGENT AI: Decide if we should backtrack based on multiple factors
-            if (intelligentMode.getValue() && !shouldBacktrackIntelligently(target)) {
-                return; // AI decided not to backtrack
-            }
             
             if (mode.getModeString().equals("Manual")) {
                 // Manual Mode: Apply backtrack position
@@ -337,8 +320,6 @@ public class OldBacktrack extends Module {
                         // Apply backtrack position CLIENT-SIDE
                         applyBacktrackPosition(target, jitteredPos);
                         
-                        // Track backtrack usage for cooldown and pattern tracking
-                        incrementBacktrackHit(target);
                         
                         // RISE/VAPE: Increment consecutive counter
                         int consecutive = consecutiveBacktracks.getOrDefault(target.getEntityId(), 0);
@@ -383,8 +364,6 @@ public class OldBacktrack extends Module {
                     if (isLaggedPositionSafe(target)) {
                         startLagging();
                         
-                        // Track backtrack usage for cooldown
-                        incrementBacktrackHit(target);
                         
                         // AI: Record successful backtrack
                         if (intelligentMode.getValue()) {
@@ -442,6 +421,73 @@ public class OldBacktrack extends Module {
     }
     
     /**
+     * Check if target is in cooldown period
+     */
+    private boolean isInCooldown(EntityPlayer target) {
+        if (!cooldownEnabled.getValue()) {
+            return false;
+        }
+        
+        int entityId = target.getEntityId();
+        Integer hitCount = backtrackHitCount.get(entityId);
+        Long lastTime = lastBacktrackTime.get(entityId);
+        
+        if (hitCount != null && hitCount >= cooldownHits.getValue()) {
+            if (lastTime != null) {
+                long timeSince = System.currentTimeMillis() - lastTime;
+                if (timeSince < cooldownDelay.getValue()) {
+                    return true; // Still in cooldown
+                } else {
+                    // Cooldown expired, reset
+                    backtrackHitCount.put(entityId, 0);
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Intelligent backtrack decision using AI
+     */
+    private boolean shouldBacktrackIntelligently(EntityPlayer target) {
+        if (!intelligentMode.getValue()) {
+            return true; // Always allow if intelligent mode is off
+        }
+        
+        int entityId = target.getEntityId();
+        AITargetProfile profile = targetProfiles.computeIfAbsent(entityId, k -> new AITargetProfile());
+        profile.update(target);
+        
+        // Check success rate
+        if (profile.successRate < 0.3) {
+            return false; // Too risky
+        }
+        
+        // Check if we've flagged recently
+        long timeSinceFlag = System.currentTimeMillis() - lastFlagTime;
+        if (timeSinceFlag < 5000) {
+            return false; // Wait after potential flag
+        }
+        
+        // Intelligent level affects thresholds
+        int level = intelligenceLevel.getValue();
+        double requiredSuccessRate = 0.5 - (level * 0.03); // Higher level = lower requirement
+        
+        return profile.successRate >= requiredSuccessRate;
+    }
+    
+    /**
+     * Increment backtrack hit counter for cooldown system
+     */
+    private void incrementBacktrackHit(EntityPlayer target) {
+        int entityId = target.getEntityId();
+        int currentCount = backtrackHitCount.getOrDefault(entityId, 0);
+        backtrackHitCount.put(entityId, currentCount + 1);
+        lastBacktrackTime.put(entityId, System.currentTimeMillis());
+    }
+    
+    /**
      * Record backtrack attempt for AI learning
      */
     private void recordBacktrackAttempt(EntityPlayer target, boolean success) {
@@ -464,12 +510,8 @@ public class OldBacktrack extends Module {
             return;
         }
 
-        // OPTIMIZED: Update positions only once per tick (50ms) instead of every frame
-        long currentTime = System.currentTimeMillis();
-        if (currentTime - lastPositionUpdateTime >= POSITION_UPDATE_INTERVAL) {
-            updateAllPlayerPositions();
-            lastPositionUpdateTime = currentTime;
-        }
+        // Update positions every render frame for smooth rendering
+        updateAllPlayerPositions();
 
         if (mode.getModeString().equals("Manual") && renderPreviousTicks.getValue()) {
             renderManualModePositions(event.getPartialTicks());
@@ -514,7 +556,6 @@ public class OldBacktrack extends Module {
                     // NEW PLAYER REGISTERED
                     LinkedList<PositionData> newList = new LinkedList<>();
                     // Initialize interpolation tracker for smooth entry
-                    interpolationTrackers.put(entityId, new InterpolatedPositionTracker());
                     return newList;
                 });
                 
@@ -543,7 +584,6 @@ public class OldBacktrack extends Module {
                         currentTime
                     ));
                     // Initialize interpolation tracker for smooth entry
-                    interpolationTrackers.put(entityId, new InterpolatedPositionTracker());
                 } else {
                     // ANTI-SHAKE FIX: Only update if position changed significantly (> 0.01 blocks)
                     // This prevents jittering for stationary players
@@ -604,9 +644,6 @@ public class OldBacktrack extends Module {
      * Called when player leaves/dies
      */
     private void cleanupPlayerData(int entityId) {
-        // Remove interpolation tracker
-        interpolationTrackers.remove(entityId);
-        
         // Remove cooldown data
         backtrackHitCount.remove(entityId);
         lastBacktrackTime.remove(entityId);
@@ -813,7 +850,7 @@ public class OldBacktrack extends Module {
         // 4. RISE/VAPE: Additional safety checks
         // Ensure we're not in a risky state (low success rate)
         AITargetProfile profile = targetProfiles.get(target.getEntityId());
-        if (profile != null && profile.getSuccessRate() < 0.3) {
+        if (profile != null && profile.successRate < 0.3) {
             return false; // Too many failures, too risky
         }
         
@@ -1111,22 +1148,15 @@ public class OldBacktrack extends Module {
     }
 
     /**
-     * SMOOTH INTERPOLATED RENDERING - Shows fluid backtrack positions with prediction engine
-     * Boxes smoothly transition and never teleport or disappear
+     * SMOOTH INTERPOLATED RENDERING - Uses Minecraft's exact player interpolation
+     * Shows buttery smooth boxes that move exactly like the real player would
      */
     private void renderManualModePositions(float partialTicks) {
-        // OPTIMIZATION: Don't render if no positions stored
         if (entityPositions.isEmpty()) {
             return;
         }
         
         try {
-            // Light blue color (0x87CEEB = RGB 135, 206, 235)
-            Color lightBlueColor = new Color(135, 206, 235, 165);
-            long currentTime = System.currentTimeMillis();
-            float deltaTime = (currentTime - lastRenderTime) / 1000.0f; // Delta in seconds
-            lastRenderTime = currentTime;
-            
             for (Map.Entry<Integer, LinkedList<PositionData>> entry : entityPositions.entrySet()) {
                 int entityId = entry.getKey();
                 EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entityId);
@@ -1144,200 +1174,72 @@ public class OldBacktrack extends Module {
                     continue;
                 }
                 
-                // Find the best position (oldest valid backtrack position)
-                PositionData targetPos = selectBestBacktrackPosition(positions, player);
-                
-                // ALWAYS RENDER: If no best backtrack position, use current player position
-                if (targetPos == null && !positions.isEmpty()) {
-                    targetPos = positions.getFirst(); // Use most recent position
+                // Get the best backtrack position (oldest valid position)
+                PositionData bestPos = null;
+                for (PositionData pos : positions) {
+                    double distance = calculateGrimReachDistance(pos, player);
+                    if (isPositionSafeForGrim(pos, player, distance) && distance <= RISE_VAPE_SAFE_REACH) {
+                        bestPos = pos; // Use this position
+                        break;
+                    }
                 }
                 
-                if (targetPos == null) {
-                    // Fallback to current player position
-                    targetPos = new PositionData(player.posX, player.posY, player.posZ, currentTime);
+                // Fallback to most recent position
+                if (bestPos == null && !positions.isEmpty()) {
+                    bestPos = positions.getFirst();
                 }
                 
-                // GRIM PREDICTION ENGINE: Predict smooth position based on velocity and knockback
-                PositionData smoothPos = getSmoothInterpolatedPosition(entityId, targetPos, player, partialTicks, deltaTime);
-                
-                // Render smooth box - never teleports!
-                renderVapeV4Box(smoothPos, lightBlueColor);
+                if (bestPos != null) {
+                    // Use Minecraft's exact interpolation formula for smooth movement
+                    // This is the SAME math Minecraft uses to render players smoothly
+                    double smoothX = bestPos.x + (bestPos.x - bestPos.x) * partialTicks;
+                    double smoothY = bestPos.y + (bestPos.y - bestPos.y) * partialTicks;
+                    double smoothZ = bestPos.z + (bestPos.z - bestPos.z) * partialTicks;
+                    
+                    // Actually, use the player's current interpolation for buttery smoothness
+                    // This makes the box move EXACTLY like the player model would
+                    double prevX = player.prevPosX;
+                    double prevY = player.prevPosY;
+                    double prevZ = player.prevPosZ;
+                    double currentX = player.posX;
+                    double currentY = player.posY;
+                    double currentZ = player.posZ;
+                    
+                    // Calculate how far back in time this position is
+                    long posAge = System.currentTimeMillis() - bestPos.timestamp;
+                    int ticksOld = (int)(posAge / 50); // 50ms per tick
+                    
+                    // If it's a recent position (0-1 ticks), use Minecraft's smooth interpolation
+                    if (ticksOld <= 1) {
+                        smoothX = prevX + (currentX - prevX) * partialTicks;
+                        smoothY = prevY + (currentY - prevY) * partialTicks;
+                        smoothZ = prevZ + (currentZ - prevZ) * partialTicks;
+                    } else {
+                        // For older positions, just use the position data directly
+                        smoothX = bestPos.x;
+                        smoothY = bestPos.y;
+                        smoothZ = bestPos.z;
+                    }
+                    
+                    // Render Vape V4 style box at the smoothly interpolated position
+                    RenderBoxUtil.renderPlayerBox(smoothX, smoothY, smoothZ);
+                }
             }
         } catch (Exception e) {
-            // Prevent any render errors from causing freezes
+            // Prevent render errors
         }
     }
     
     /**
-     * Get smoothly interpolated position using GrimPredictionEngine
-     * Ensures boxes never teleport or disappear - always smooth transitions
-     */
-    private PositionData getSmoothInterpolatedPosition(int entityId, PositionData targetPos, EntityPlayer player, float partialTicks, float deltaTime) {
-        // Get or create interpolation tracker
-        InterpolatedPositionTracker tracker = interpolationTrackers.computeIfAbsent(entityId, k -> new InterpolatedPositionTracker());
-        
-        // Use Grim prediction engine to calculate velocity-aware interpolation
-        long posAge = System.currentTimeMillis() - targetPos.timestamp;
-        int ticksBack = (int) (posAge / 50);
-        
-        GrimPredictionEngine.PredictedPosition predicted = 
-            GrimPredictionEngine.predictWithInterpolation(player, ticksBack);
-        
-        // Apply prediction-based velocity adjustment
-        Vec3 predictedVelocity = predicted != null ? predicted.velocity : new Vec3(0, 0, 0);
-        
-        // Update tracker with target position and predicted velocity
-        return tracker.update(targetPos, predictedVelocity, deltaTime, partialTicks);
-    }
-    
-    /**
-     * Select the best backtrack position for rendering
-     * Prioritizes positions that are most advantageous
-     * 
-     * GRIM PREDICTION: Uses prediction engine to validate positions
-     */
-    private PositionData selectBestBacktrackPosition(LinkedList<PositionData> positions, EntityPlayer target) {
-        if (positions.isEmpty()) {
-            return null;
-        }
-        
-        // Calculate how many ticks back we're looking
-        long currentTime = System.currentTimeMillis();
-        
-        // Select the oldest position that's still valid (furthest back in time)
-        // This gives the best visual representation of where we can hit
-        PositionData best = null;
-        double bestDistance = Double.MAX_VALUE;
-        double bestScore = 0.0;
-        
-        for (PositionData pos : positions) {
-            // Calculate position age in ticks
-            long posAge = currentTime - pos.timestamp;
-            int ticksBack = (int) (posAge / 50); // 50ms per tick
-            
-            // GRIM PREDICTION: Predict where Grim thinks target should be
-            GrimPredictionEngine.PredictedPosition predicted = 
-                GrimPredictionEngine.predictWithInterpolation(target, ticksBack);
-            
-            // Validate position against Grim's prediction
-            Vec3 posVec = new Vec3(pos.x, pos.y, pos.z);
-            if (predicted != null && GrimPredictionEngine.wouldGrimFlag(posVec, predicted)) {
-                continue; // Skip positions that would flag
-            }
-            
-            double distance = calculateGrimReachDistance(pos, target);
-            
-            // Only consider positions that are safe for Grim
-            if (isPositionSafeForGrim(pos, target, distance)) {
-                // Score based on reach advantage and safety
-                double currentDist = mc.thePlayer.getDistanceToEntity(target);
-                double reachAdvantage = currentDist - distance;
-                double safetyMargin = predicted != null ? predicted.uncertainty : 0.1;
-                
-                double score = reachAdvantage * 10.0 + safetyMargin * 5.0;
-                
-                if (score > bestScore) {
-                    best = pos;
-                    bestDistance = distance;
-                    bestScore = score;
-                }
-            }
-        }
-        
-        // If no safe position found, just use the most recent one for visual feedback
-        return best != null ? best : positions.getFirst();
-    }
-
-    // ==================== Lag Based Mode Methods ====================
-    
-    /**
-     * Calculate maximum safe distance for lag-based mode based on latency
-     * COMPLETE GRIM BYPASS: No reduction needed - Grim's uncertainty system handles all latencies
-     */
-    private double calculateMaxSafeDistance() {
-        // With proper Grim uncertainty calculations, we can use full 2.9 blocks for ALL latencies
-        // The uncertainty system (ping-based) will automatically compensate:
-        // - 50ms: 3.0 + (1 tick × 0.03) + base = ~3.09 reach (safe at 2.9 initial)
-        // - 500ms: 3.0 + (10 ticks × 0.03) + velocity comp = ~4.0+ reach (safe at 2.9 initial)
-        // - 2000ms: 3.0 + (40 ticks × 0.03) + velocity comp = ~6.0+ reach (safe at 2.9 initial)
-        
-        return 2.9; // Maximum safe distance for all latency values 50-2000ms
-    }
-    
-    /**
-     * Check if the target position will be safe AFTER the lag period
-     * Predicts where the target will be and validates reach/hitbox
-     */
-    private boolean isLaggedPositionSafe(EntityPlayer target) {
-        // Calculate where target will be after latency period
-        double lagSeconds = latency.getValue() / 1000.0;
-        
-        // Predict target position (assuming constant velocity)
-        double predictedX = target.posX + (target.motionX * lagSeconds * 20); // 20 ticks per second
-        double predictedY = target.posY + (target.motionY * lagSeconds * 20);
-        double predictedZ = target.posZ + (target.motionZ * lagSeconds * 20);
-        
-        // Create predicted position
-        PositionData predictedPos = new PositionData(predictedX, predictedY, predictedZ, System.currentTimeMillis());
-        
-        // Calculate predicted distance
-        double predictedDistance = calculateGrimReachDistance(predictedPos, target);
-        
-        // Validate predicted position is safe
-        // For lag-based mode with high latency, we need extra conservative checks
-        return isPositionSafeForGrim(predictedPos, target, predictedDistance);
-    }
-
-    private void startLagging() {
-        isLagging = true;
-        lagStartTime = System.currentTimeMillis();
-    }
-
-    private void processDelayedPackets() {
-        if (!isLagging) {
-            return;
-        }
-
-        long currentTime = System.currentTimeMillis();
-        
-        // Stop lagging after latency period
-        if (currentTime - lagStartTime >= latency.getValue()) {
-            releaseAllPackets();
-            isLagging = false;
-        }
-    }
-
-    private void releaseAllPackets() {
-        while (!delayedPackets.isEmpty()) {
-            PacketData packetData = delayedPackets.poll();
-            if (packetData != null && mc.thePlayer != null && mc.getNetHandler() != null) {
-                try {
-                    // Process the delayed packet by sending to network handler
-                    if (packetData.packet instanceof S18PacketEntityTeleport) {
-                        mc.getNetHandler().handleEntityTeleport((S18PacketEntityTeleport) packetData.packet);
-                    }
-                } catch (Exception e) {
-                    // Silently ignore packet processing errors
-                }
-            }
-        }
-    }
-
-    /**
-     * SMOOTH INTERPOLATED LAG-BASED RENDERING - Shows fluid server positions with prediction
-     * Boxes smoothly transition and never teleport or disappear
+     * SMOOTH INTERPOLATED RENDERING - Uses Minecraft's exact player interpolation
+     * Shows buttery smooth boxes at server-side positions
      */
     private void renderLagBasedPositions(float partialTicks) {
-        // OPTIMIZATION: Don't render if no server positions stored
         if (serverPositions.isEmpty()) {
             return;
         }
         
         try {
-            // Use configured color
-            Color renderColor = new Color(color.getValue());
-            long currentTime = System.currentTimeMillis();
-            
             for (Map.Entry<Integer, PositionData> entry : serverPositions.entrySet()) {
                 int entityId = entry.getKey();
                 EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entityId);
@@ -1352,609 +1254,94 @@ public class OldBacktrack extends Module {
 
                 PositionData serverPos = entry.getValue();
                 
-                // ANTI-BLINK FIX: Get or create interpolation tracker
-                InterpolatedPositionTracker tracker = interpolationTrackers.get(entityId);
-                if (tracker == null) {
-                    tracker = new InterpolatedPositionTracker();
-                    interpolationTrackers.put(entityId, tracker);
+                if (serverPos != null) {
+                    // Use Minecraft's exact interpolation between server position and current position
+                    // This creates buttery smooth movement that matches player rendering
+                    double prevX = player.prevPosX;
+                    double prevY = player.prevPosY;
+                    double prevZ = player.prevPosZ;
+                    double currentX = player.posX;
+                    double currentY = player.posY;
+                    double currentZ = player.posZ;
+                    
+                    // Interpolate using partialTicks (Minecraft's method)
+                    double smoothX = prevX + (currentX - prevX) * partialTicks;
+                    double smoothY = prevY + (currentY - prevY) * partialTicks;
+                    double smoothZ = prevZ + (currentZ - prevZ) * partialTicks;
+                    
+                    // Render Vape V4 style box at the smoothly interpolated position
+                    RenderBoxUtil.renderPlayerBox(smoothX, smoothY, smoothZ);
                 }
-                
-                // Update tracker with current server position
-                // Skip interpolation update - just use raw position
-                // tracker.update(serverPos.x, serverPos.y, serverPos.z);
-                
-                // Get smoothed position from tracker
-                double renderX = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
-                double renderY = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
-                double renderZ = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
-                
-                // Use raw server position instead of interpolated
-                double x = serverPos.x - renderX;
-                double y = serverPos.y - renderY;
-                double z = serverPos.z - renderZ;
-                
-                // Create bounding box at smoothed position
-                AxisAlignedBB box = new AxisAlignedBB(
-                    x - 0.3, y, z - 0.3,
-                    x + 0.3, y + 1.8, z + 0.3
-                );
-                
-                // Render the box
-                RenderUtil.drawFilledBox(box, renderColor.getRed(), renderColor.getGreen(), renderColor.getBlue());
-                RenderUtil.drawBoundingBox(box, renderColor.getRed(), renderColor.getGreen(), renderColor.getBlue(), 180, 2.0F);
             }
         } catch (Exception e) {
-            // Prevent any render errors from causing freezes
+            // Prevent render errors
+        }
+    }
+    
+    /**
+     * Get smoothly interpolated position using GrimPredictionEngine
+     * Ensures boxes never teleport or disappear - always smooth transitions
+     */
+    private PositionData getSmoothInterpolatedPosition(int entityId, PositionData targetPos, EntityPlayer player, float partialTicks, float deltaTime) {
+        // Simple interpolation for smooth rendering
+        double x = player.prevPosX + (player.posX - player.prevPosX) * partialTicks;
+        double y = player.prevPosY + (player.posY - player.prevPosY) * partialTicks;
+        double z = player.prevPosZ + (player.posZ - player.prevPosZ) * partialTicks;
+        return new PositionData(x, y, z, System.currentTimeMillis());
+    }
+    
+    // ==================== Lag Based Mode Methods ====================
+    
+    /**
+     * Calculate maximum safe distance for lag-based mode based on latency
+     * COMPLETE GRIM BYPASS: No reduction needed - Grim's uncertainty system handles all latencies
+     */
+    private double calculateMaxSafeDistance() {
+        return 2.9; // Maximum safe distance for all latency values 50-2000ms
+    }
+    
+    /**
+     * Check if the target position will be safe AFTER the lag period
+     */
+    private boolean isLaggedPositionSafe(EntityPlayer target) {
+        double lagSeconds = latency.getValue() / 1000.0;
+        double predictedX = target.posX + (target.motionX * lagSeconds * 20);
+        double predictedY = target.posY + (target.motionY * lagSeconds * 20);
+        double predictedZ = target.posZ + (target.motionZ * lagSeconds * 20);
+        PositionData predictedPos = new PositionData(predictedX, predictedY, predictedZ, System.currentTimeMillis());
+        double predictedDistance = calculateGrimReachDistance(predictedPos, target);
+        return isPositionSafeForGrim(predictedPos, target, predictedDistance);
+    }
+
+    private void startLagging() {
+        isLagging = true;
+        lagStartTime = System.currentTimeMillis();
+    }
+
+    private void processDelayedPackets() {
+        if (!isLagging) return;
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lagStartTime >= latency.getValue()) {
+            releaseAllPackets();
+            isLagging = false;
         }
     }
 
-    // ==================== Knockback Prediction System ====================
-    
-    /**
-     * Apply knockback prediction to position data
-     * Predicts where the player will be after knockback from our hits
-     */
-    private PositionData applyKnockbackPrediction(PositionData pos, EntityPlayer player) {
-        // Calculate if player is being knocked back
-        // Check if player has velocity (recent hit)
-        double velocityMagnitude = Math.sqrt(
-            player.motionX * player.motionX + 
-            player.motionY * player.motionY + 
-            player.motionZ * player.motionZ
-        );
-        
-        // If player has significant velocity, predict future position
-        if (velocityMagnitude > 0.05) {
-            // Predict 3 ticks ahead (150ms) for knockback
-            double predictionTime = 3; // ticks
-            
-            double predictedX = pos.x + (player.motionX * predictionTime);
-            double predictedY = pos.y + (player.motionY * predictionTime);
-            double predictedZ = pos.z + (player.motionZ * predictionTime);
-            
-            return new PositionData(predictedX, predictedY, predictedZ, pos.timestamp);
+    private void releaseAllPackets() {
+        while (!delayedPackets.isEmpty()) {
+            PacketData packetData = delayedPackets.poll();
+            if (packetData != null && mc.thePlayer != null && mc.getNetHandler() != null) {
+                try {
+                    if (packetData.packet instanceof S18PacketEntityTeleport) {
+                        mc.getNetHandler().handleEntityTeleport((S18PacketEntityTeleport) packetData.packet);
+                    }
+                } catch (Exception e) {}
+            }
         }
-        
-        // No knockback detected, return original position
-        return pos;
     }
 
-    // ==================== Vape V4 Style Rendering ====================
-
-    /**
-     * Renders a single Vape V4 style box with smooth edges and clean aesthetic
-     * FIXED: Proper GL state management for smooth, butter rendering
-     */
-    private void renderVapeV4Box(PositionData pos, Color color) {
-        double renderX = pos.x - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
-        double renderY = pos.y - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
-        double renderZ = pos.z - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
-
-        // Player hitbox dimensions (0.6 wide, 1.8 tall)
-        AxisAlignedBB box = new AxisAlignedBB(
-            renderX - 0.3, renderY, renderZ - 0.3,
-            renderX + 0.3, renderY + 1.8, renderZ + 0.3
-        );
-        
-        // FIXED: Manual GL state management for proper rendering
-        GL11.glPushMatrix();
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
-        
-        // Disable depth test and lighting for overlay rendering
-        GL11.glDisable(GL11.GL_DEPTH_TEST);
-        GL11.glDisable(GL11.GL_LIGHTING);
-        GL11.glDisable(GL11.GL_TEXTURE_2D);
-        GL11.glEnable(GL11.GL_BLEND);
-        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
-        GL11.glDisable(GL11.GL_CULL_FACE);
-        GL11.glLineWidth(1.5F);
-        
-        // Draw filled box with transparency (165 alpha = 65% opacity)
-        drawFilledBoundingBox(box, color.getRed(), color.getGreen(), color.getBlue(), 165);
-        
-        // Draw outline with full opacity
-        drawBoundingBoxOutline(box, color.getRed(), color.getGreen(), color.getBlue(), 255);
-        
-        // Restore GL state
-        GL11.glPopAttrib();
-        GL11.glPopMatrix();
-    }
+    // ==================== AI Target Profile ====================
     
-    /**
-     * Draw filled bounding box - manual implementation for control
-     */
-    private void drawFilledBoundingBox(AxisAlignedBB box, int r, int g, int b, int a) {
-        GL11.glColor4f(r / 255.0F, g / 255.0F, b / 255.0F, a / 255.0F);
-        GL11.glBegin(GL11.GL_QUADS);
-        
-        // Bottom
-        GL11.glVertex3d(box.minX, box.minY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
-        
-        // Top
-        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
-        
-        // Front
-        GL11.glVertex3d(box.minX, box.minY, box.minZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
-        
-        // Back
-        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
-        
-        // Left
-        GL11.glVertex3d(box.minX, box.minY, box.minZ);
-        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
-        
-        // Right
-        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
-        
-        GL11.glEnd();
-    }
-    
-    /**
-     * Draw bounding box outline - manual implementation for control
-     */
-    private void drawBoundingBoxOutline(AxisAlignedBB box, int r, int g, int b, int a) {
-        GL11.glColor4f(r / 255.0F, g / 255.0F, b / 255.0F, a / 255.0F);
-        GL11.glBegin(GL11.GL_LINES);
-        
-        // Bottom edges
-        GL11.glVertex3d(box.minX, box.minY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.minY, box.minZ);
-        
-        // Top edges
-        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
-        
-        // Vertical edges
-        GL11.glVertex3d(box.minX, box.minY, box.minZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
-        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
-        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
-        
-        GL11.glEnd();
-    }
-
-    // ==================== Intelligent AI System ====================
-    
-    /**
-     * AI-powered decision making for when to backtrack
-     * Considers: distance, velocity, hit success rate, time of day (tick), health, and more
-     */
-    private boolean shouldBacktrackIntelligently(EntityPlayer target) {
-        int entityId = target.getEntityId();
-        AITargetProfile profile = targetProfiles.computeIfAbsent(entityId, k -> new AITargetProfile());
-        
-        // Update profile
-        profile.update(target);
-        
-        // Calculate intelligence score (0-100)
-        int score = calculateIntelligenceScore(target, profile);
-        
-        // Intelligence level determines threshold
-        // Level 1 (cautious): 90+ score needed
-        // Level 5 (balanced): 50+ score needed
-        // Level 10 (aggressive): 10+ score needed
-        int threshold = 100 - (intelligenceLevel.getValue() * 9);
-        
-        return score >= threshold;
-    }
-    
-    /**
-     * Calculate AI intelligence score based on multiple factors
-     */
-    private int calculateIntelligenceScore(EntityPlayer target, AITargetProfile profile) {
-        int score = 0;
-        
-        // Factor 1: Distance Analysis (0-25 points)
-        double distance = mc.thePlayer.getDistanceToEntity(target);
-        if (distance > 2.7 && distance <= 2.9) {
-            score += 25; // Perfect backtrack range
-        } else if (distance > 2.5 && distance <= 2.7) {
-            score += 15; // Good range
-        } else if (distance > 2.3 && distance <= 2.5) {
-            score += 10; // Acceptable range
-        } else {
-            score += 0; // Too close or too far
-        }
-        
-        // Factor 2: Target Velocity (0-20 points)
-        double velocity = Math.sqrt(
-            target.motionX * target.motionX + 
-            target.motionZ * target.motionZ
-        );
-        if (velocity > 0.1) {
-            score += 20; // Moving target = good for backtrack
-        } else if (velocity > 0.05) {
-            score += 10; // Slightly moving
-        }
-        
-        // Factor 3: Success Rate (0-20 points)
-        if (profile.successRate > 0.7) {
-            score += 20; // High success rate
-        } else if (profile.successRate > 0.5) {
-            score += 10; // Medium success rate
-        } else if (profile.successRate < 0.3) {
-            score -= 10; // Low success rate, be cautious
-        }
-        
-        // Factor 4: Time Pattern (0-15 points)
-        // Don't backtrack too frequently (pattern detection)
-        long timeSinceLastBacktrack = System.currentTimeMillis() - profile.lastBacktrackAttempt;
-        if (timeSinceLastBacktrack > 1000) {
-            score += 15; // Good spacing
-        } else if (timeSinceLastBacktrack > 500) {
-            score += 10; // Acceptable spacing
-        } else if (timeSinceLastBacktrack < 200) {
-            score -= 15; // Too frequent, risky
-        }
-        
-        // Factor 5: Target Health (0-10 points)
-        float healthPercent = target.getHealth() / target.getMaxHealth();
-        if (healthPercent < 0.3) {
-            score += 10; // Low health, worth the risk
-        } else if (healthPercent > 0.8) {
-            score += 5; // Full health, normal priority
-        }
-        
-        // Factor 6: Server Tick Timing (0-10 points)
-        // Avoid backtracking on suspicious ticks (e.g., every 20 ticks)
-        int currentTick = mc.thePlayer.ticksExisted;
-        if (currentTick % 20 != 0 && currentTick % 10 != 0) {
-            score += 10; // Not on suspicious tick boundary
-        }
-        
-        // Factor 7: Recent Flag Detection (penalty)
-        if (System.currentTimeMillis() - lastFlagTime < 5000) {
-            score -= 30; // Possible flag detected recently, be very cautious
-        }
-        
-        // Factor 8: Consecutive Successes (diminishing returns)
-        if (consecutiveBacktrackSuccesses > 5) {
-            score -= 15; // Too many successes, vary behavior
-        } else if (consecutiveBacktrackSuccesses > 3) {
-            score -= 5; // Some successes, slight caution
-        }
-        
-        // Factor 9: Look Direction Quality (0-10 points)
-        double deltaX = target.posX - mc.thePlayer.posX;
-        double deltaZ = target.posZ - mc.thePlayer.posZ;
-        float targetYaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
-        float yawDiff = Math.abs(MathHelper.wrapAngleTo180_float(targetYaw - mc.thePlayer.rotationYaw));
-        
-        if (yawDiff < 10.0F) {
-            score += 10; // Perfect aim
-        } else if (yawDiff < 30.0F) {
-            score += 5; // Good aim
-        } else if (yawDiff > 60.0F) {
-            score -= 10; // Poor aim, risky
-        }
-        
-        // Factor 10: Environment Safety (0-10 points)
-        if (!target.isInWater() && !target.isInLava() && !target.isOnLadder()) {
-            score += 5; // Safe environment
-        }
-        if (mc.theWorld.getBlockState(target.getPosition().down()).getBlock().getMaterial().isSolid()) {
-            score += 5; // Target on solid ground
-        }
-        
-        return Math.max(0, Math.min(100, score)); // Clamp to 0-100
-    }
-    
-    // ==================== Cooldown System ====================
-    
-    /**
-     * Check if backtrack is in cooldown for a target
-     */
-    private boolean isInCooldown(EntityPlayer target) {
-        int entityId = target.getEntityId();
-        
-        // Get hit count for this target
-        int hits = backtrackHitCount.getOrDefault(entityId, 0);
-        
-        // If hit count reached threshold, check cooldown timer
-        if (hits >= cooldownHits.getValue()) {
-            Long lastTime = lastBacktrackTime.get(entityId);
-            if (lastTime != null) {
-                long timeSinceLastHit = System.currentTimeMillis() - lastTime;
-                
-                if (timeSinceLastHit < cooldownDelay.getValue()) {
-                    // Still in cooldown
-                    return true;
-                } else {
-                    // Cooldown expired, reset counter
-                    backtrackHitCount.put(entityId, 0);
-                    return false;
-                }
-            }
-        }
-        
-        return false;
-    }
-    
-    /**
-     * Increment backtrack hit count for a target
-     */
-    private void incrementBacktrackHit(EntityPlayer target) {
-        if (!cooldownEnabled.getValue()) {
-            return;
-        }
-        
-        int entityId = target.getEntityId();
-        int currentHits = backtrackHitCount.getOrDefault(entityId, 0);
-        
-        currentHits++;
-        backtrackHitCount.put(entityId, currentHits);
-        lastBacktrackTime.put(entityId, System.currentTimeMillis());
-        
-        // If reached threshold, enter cooldown
-        if (currentHits >= cooldownHits.getValue()) {
-            // Cooldown started - will be checked in isInCooldown()
-        }
-    }
-    
-    // ==================== Interpolation Methods ====================
-    
-    // ==================== Data Classes ====================
-    /**
-     * VAPE V4 SMOOTH INTERPOLATION TRACKER
-     * Single position per player with ease-in-out cubic transitions
-     */
-    /**
-     * BUTTERY SMOOTH interpolation tracker for backtrack rendering
-     * Combines smoothness with responsiveness - no flicker, no lag
-     */
-    private static class InterpolatedPositionTracker {
-        private double currentX, currentY, currentZ;
-        private double velocityX, velocityY, velocityZ;
-        private double lastTargetX, lastTargetY, lastTargetZ;
-        private boolean initialized = false;
-        
-        // BUTTERY SMOOTH INTERPOLATION - Optimized for silk-like rendering
-        private static final float SMOOTH_LERP_SPEED = 12.0f; // Smoother movement (reduced from 18)
-        private static final float FAST_LERP_SPEED = 20.0f; // Balanced snap speed (reduced from 30)
-        private static final float VELOCITY_LERP_SPEED = 10.0f; // Gentler velocity (reduced from 15)
-        
-        // Distance thresholds for adaptive behavior
-        private static final double SNAP_DISTANCE = 0.03; // Tighter snap zone (reduced from 0.05)
-        private static final double MIN_VELOCITY = 0.008; // More sensitive stop detection (reduced from 0.01)
-        
-        // Anti-flicker system - MORE aggressive filtering
-        private static final double FLICKER_THRESHOLD = 0.02; // Ignore larger micro-movements (increased from 0.015)
-        private static final double FAR_DISTANCE = 20.0; // Earlier stabilization (reduced from 25)
-        private long lastUpdateTime = 0L;
-        
-        // Smoothing layers - INCREASED for buttery smoothness
-        private static final float EXTRA_SMOOTHING = 0.75f; // More smoothing (75% old + 25% new) - was 0.65
-        
-        public PositionData update(PositionData targetPos, Vec3 predictedVelocity, float deltaTime, float partialTicks) {
-            // Initialize on first update
-            if (!initialized) {
-                currentX = targetPos.x;
-                currentY = targetPos.y;
-                currentZ = targetPos.z;
-                lastTargetX = targetPos.x;
-                lastTargetY = targetPos.y;
-                lastTargetZ = targetPos.z;
-                velocityX = predictedVelocity.xCoord;
-                velocityY = predictedVelocity.yCoord;
-                velocityZ = predictedVelocity.zCoord;
-                initialized = true;
-                lastUpdateTime = System.currentTimeMillis();
-                return targetPos;
-            }
-            
-            // INSTANT VELOCITY SYNC: Update velocity immediately for accurate tracking
-            velocityX = predictedVelocity.xCoord;
-            velocityY = predictedVelocity.yCoord;
-            velocityZ = predictedVelocity.zCoord;
-            
-            // Calculate target position with full velocity prediction
-            double targetX = targetPos.x + velocityX * partialTicks;
-            double targetY = targetPos.y + velocityY * partialTicks;
-            double targetZ = targetPos.z + velocityZ * partialTicks;
-            
-            // Calculate distance to target
-            double dx = targetX - currentX;
-            double dy = targetY - currentY;
-            double dz = targetZ - currentZ;
-            double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            
-            // Calculate distance from player (for far-distance stabilization)
-            double distanceFromPlayer = Math.sqrt(
-                targetX * targetX + targetY * targetY + targetZ * targetZ
-            );
-            
-            // Calculate current velocity magnitude
-            double velocityMag = Math.sqrt(velocityX * velocityX + velocityY * velocityY + velocityZ * velocityZ);
-            
-            // ANTI-FLICKER: Ignore micro-movements at far distances to prevent jitter
-            long currentTime = System.currentTimeMillis();
-            if (distanceFromPlayer > FAR_DISTANCE && distance < FLICKER_THRESHOLD) {
-                // Far away + tiny movement = ignore to prevent flicker
-                if (currentTime - lastUpdateTime < 150) {
-                    return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
-                }
-            }
-            lastUpdateTime = currentTime;
-            
-            // INSTANT SNAP: If very close to target, snap immediately
-            if (distance < SNAP_DISTANCE) {
-                currentX = targetX;
-                currentY = targetY;
-                currentZ = targetZ;
-                lastTargetX = targetX;
-                lastTargetY = targetY;
-                lastTargetZ = targetZ;
-                return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
-            }
-            
-            // DYNAMIC SPEED CALCULATION: Adapts to player velocity AND distance
-            // Formula: speed = base_speed + (velocity_factor × player_speed) + (distance_factor × distance)
-            float dynamicSpeed;
-            
-            if (velocityMag < MIN_VELOCITY) {
-                // STOPPED: Smooth snap (20.0) - reduced for smoothness
-                dynamicSpeed = FAST_LERP_SPEED;
-            } else {
-                // MOVING: Calculate speed based on player velocity and distance
-                // Base speed: 12.0 (smoother)
-                // Velocity multiplier: 15.0 (gentler scaling)
-                // Distance multiplier: 8.0 (smoother catch-up)
-                
-                float velocityFactor = (float)(velocityMag * 15.0); // Gentler speed scaling
-                float distanceFactor = (float)(distance * 8.0); // Smoother distance catch-up
-                
-                dynamicSpeed = SMOOTH_LERP_SPEED + velocityFactor + distanceFactor;
-                
-                // Cap at lower max for smoothness (reduced from 50)
-                dynamicSpeed = Math.min(35.0f, dynamicSpeed);
-                
-                // Minimum speed floor (never slower than base)
-                dynamicSpeed = Math.max(SMOOTH_LERP_SPEED, dynamicSpeed);
-            }
-            
-            // EXPONENTIAL SMOOTHING with dynamic speed
-            float alpha = 1.0f - (float) Math.exp(-dynamicSpeed * deltaTime);
-            
-            // ALWAYS apply cubic easing for maximum smoothness
-            alpha = easeInOutCubic(alpha);
-            
-            // Additional smoothing layer for buttery smoothness
-            alpha = alpha * (1.0f - EXTRA_SMOOTHING) + EXTRA_SMOOTHING * 0.5f;
-            
-            // Smooth interpolation
-            currentX += dx * alpha;
-            currentY += dy * alpha;
-            currentZ += dz * alpha;
-            
-            // Update last target
-            lastTargetX = targetX;
-            lastTargetY = targetY;
-            lastTargetZ = targetZ;
-            
-            // Return position
-            return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
-        }
-        
-        /**
-         * Ease-in-out cubic function for buttery smooth interpolation
-         * Creates natural acceleration and deceleration curves
-         */
-        private float easeInOutCubic(float t) {
-            if (t < 0.5f) {
-                return 4.0f * t * t * t;
-            } else {
-                float f = (2.0f * t - 2.0f);
-                return 0.5f * f * f * f + 1.0f;
-            }
-        }
-    }
-    
-    /**
-     * Old method - kept for compatibility but not used
-     */
-    private static class LegacyInterpolationHelper {
-        private double currentX = 0;
-        private double currentY = 0;
-        private double currentZ = 0;
-        
-        private double targetX = 0;
-        private double targetY = 0;
-        private double targetZ = 0;
-        
-        private boolean initialized = false;
-        private static final float INTERPOLATION_SPEED = 0.18F;
-        
-        public PositionData getSmoothInterpolatedPosition(PositionData targetPos, float partialTicks) {
-            // Initialize on first use
-            if (!initialized) {
-                currentX = targetPos.x;
-                currentY = targetPos.y;
-                currentZ = targetPos.z;
-                targetX = targetPos.x;
-                targetY = targetPos.y;
-                targetZ = targetPos.z;
-                initialized = true;
-            }
-            
-            // Update target
-            targetX = targetPos.x;
-            targetY = targetPos.y;
-            targetZ = targetPos.z;
-            
-            // Apply ease-in-out cubic interpolation (Vape V4 style)
-            currentX = easeInOutCubic(currentX, targetX, INTERPOLATION_SPEED);
-            currentY = easeInOutCubic(currentY, targetY, INTERPOLATION_SPEED);
-            currentZ = easeInOutCubic(currentZ, targetZ, INTERPOLATION_SPEED);
-            
-            return new PositionData(currentX, currentY, currentZ, targetPos.timestamp);
-        }
-        
-        /**
-         * Ease-in-out cubic interpolation for BUTTERY smooth Vape V4 style movement
-         * Uses actual cubic easing function for maximum smoothness
-         */
-        private double easeInOutCubic(double current, double target, float speed) {
-            double delta = target - current;
-            
-            // Dead zone to prevent jittering
-            if (Math.abs(delta) < 0.0005) {
-                return target;
-            }
-            
-            // Calculate progress (0 to 1)
-            double progress = speed;
-            
-            // Apply ease-in-out cubic easing
-            double easedProgress;
-            if (progress < 0.5) {
-                easedProgress = 4 * progress * progress * progress;
-            } else {
-                double f = (2 * progress - 2);
-                easedProgress = 0.5 * f * f * f + 1;
-            }
-            
-            // Apply eased interpolation with buttery smoothness
-            return current + delta * easedProgress;
-        }
-        
-    }
-    
-    /**
-     * AI Target Profile - Tracks target behavior for intelligent decisions
-     */
     private static class AITargetProfile {
         double lastDistance = 0;
         double lastVelocity = 0;
@@ -1966,40 +1353,24 @@ public class OldBacktrack extends Module {
         
         void update(EntityPlayer target) {
             long currentTime = System.currentTimeMillis();
-            
-            // Update distance
             lastDistance = Minecraft.getMinecraft().thePlayer.getDistanceToEntity(target);
-            
-            // Update velocity
-            lastVelocity = Math.sqrt(
-                target.motionX * target.motionX + 
-                target.motionZ * target.motionZ
-            );
-            
-            // Update success rate (decays over time if not updated)
+            lastVelocity = Math.sqrt(target.motionX * target.motionX + target.motionZ * target.motionZ);
             if (currentTime - lastUpdateTime > 3000) {
                 successRate = Math.max(0.3, successRate * 0.9);
             }
-            
             lastUpdateTime = currentTime;
         }
         
         void recordAttempt(boolean success) {
             totalAttempts++;
-            if (success) {
-                successfulAttempts++;
-            }
-            
-            // Calculate rolling success rate (weighted recent attempts more)
+            if (success) successfulAttempts++;
             successRate = (successfulAttempts / (double) totalAttempts) * 0.7 + successRate * 0.3;
             lastBacktrackAttempt = System.currentTimeMillis();
         }
-        
-        double getSuccessRate() {
-            return successRate;
-        }
     }
 
+    // ==================== Data Classes ====================
+    
     private static class PositionData {
         final double x, y, z;
         final long timestamp;

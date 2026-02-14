@@ -29,37 +29,37 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Blink - Chokes the packets you send to the server while enabled.
+ * Blink - Advanced packet manipulation module
  * 
- * Direction:
- * - Outgoing Only: Only choke outgoing packets. You will see opponent movements, but opponents won't see yours.
- * - Bi-directional: Chokes incoming packets as well. You won't see server updates while module is enabled.
+ * Based on LiquidBounce's implementation (https://github.com/CCBlueX/LiquidBounce)
+ * Copyright (c) 2015 - 2026 CCBlueX
+ * Licensed under GNU General Public License v3.0
  * 
- * Type:
- * - All: Chokes all packets (movement, chat, etc).
- * - Movement Only: Exclusively chokes movement packets.
+ * Adapted for Myau client with permission from CCBlueX
  * 
- * Breadcrumbs: Shows a trail of your previous positions.
- * Spawn Fake: Spawns a fake entity of yourself at your starting location.
- * Auto Send: Automatically unchoke packets once threshold is reached.
+ * Features:
+ * - Dummy: Spawns a fake player at your position
+ * - Ambush: Auto-disable when attacking
+ * - Auto Reset: Reset or flush packets after threshold
+ * - Breadcrumbs: Visual trail of positions
  */
 @ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class Blink extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Direction
-    public final ModeProperty direction = new ModeProperty("direction", 0, new String[]{"Outgoing Only", "Bi-directional"});
+    // LiquidBounce Features
+    public final BooleanProperty dummy = new BooleanProperty("dummy", false);
+    public final BooleanProperty ambush = new BooleanProperty("ambush", false);
+    public final BooleanProperty autoDisable = new BooleanProperty("auto-disable", true);
     
-    // Type
-    public final ModeProperty type = new ModeProperty("type", 1, new String[]{"All", "Movement Only"});
+    // Auto Reset (LiquidBounce feature)
+    public final BooleanProperty autoReset = new BooleanProperty("auto-reset", false);
+    public final IntProperty resetAfter = new IntProperty("reset-after", 100, 1, 1000, () -> this.autoReset.getValue());
+    public final ModeProperty resetAction = new ModeProperty("reset-action", 0, new String[]{"Reset", "Blink"}, () -> this.autoReset.getValue());
     
     // Visual Options
     public final BooleanProperty breadcrumbs = new BooleanProperty("breadcrumbs", true);
-    public final BooleanProperty spawnFake = new BooleanProperty("spawn-fake", true);
-    
-    // Auto Send
-    public final BooleanProperty autoSend = new BooleanProperty("auto-send", false);
-    public final IntProperty sendThreshold = new IntProperty("send-threshold", 20, 5, 100, () -> this.autoSend.getValue());
+    public final BooleanProperty pulseEffect = new BooleanProperty("pulse-effect", true);
     
     // State
     private EntityOtherPlayerMP fakePlayer = null;
@@ -87,11 +87,30 @@ public class Blink extends Module {
                 ));
             }
             
-            // Auto send when threshold reached
-            if (autoSend.getValue()) {
-                int queuedPackets = Myau.blinkManager.blinkedPackets.size();
-                if (queuedPackets >= sendThreshold.getValue()) {
-                    this.setEnabled(false);
+            // LiquidBounce Auto Reset Feature
+            if (autoReset.getValue()) {
+                // Count movement packets in queue
+                int movePackets = countMovementPackets();
+                
+                if (movePackets > resetAfter.getValue()) {
+                    if (resetAction.getModeString().equals("Reset")) {
+                        // Reset: Teleport back to first position and clear movement packets
+                        resetToStart();
+                    } else {
+                        // Blink: Flush packets and update dummy position
+                        Myau.blinkManager.setBlinkState(false, BlinkModules.BLINK);
+                        Myau.blinkManager.setBlinkState(true, BlinkModules.BLINK);
+                        
+                        // Update dummy position if spawned
+                        if (dummy.getValue() && fakePlayer != null) {
+                            fakePlayer.setPosition(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
+                        }
+                    }
+                    
+                    // Auto disable after reset if enabled
+                    if (autoDisable.getValue()) {
+                        this.setEnabled(false);
+                    }
                 }
             }
         }
@@ -99,15 +118,19 @@ public class Blink extends Module {
     
     @EventTarget(Priority.HIGH)
     public void onPacket(PacketEvent event) {
-        if (!this.isEnabled()) {
+        if (!this.isEnabled() || event.getType() != EventType.SEND) {
             return;
         }
         
-        // Bi-directional mode: Block incoming packets too
-        if (direction.getModeString().equals("Bi-directional") && event.getType() == EventType.RECEIVE) {
-            // Allow certain critical packets (keep-alive, etc) to prevent disconnect
-            if (!isCriticalPacket(event.getPacket())) {
-                event.setCancelled(true);
+        // LiquidBounce Ambush Feature: Auto-disable on attack
+        if (ambush.getValue()) {
+            Object packet = event.getPacket();
+            String packetName = packet.getClass().getSimpleName();
+            
+            // Detect attack packets
+            if (packetName.contains("C02PacketUseEntity") || packetName.contains("UseEntity")) {
+                this.setEnabled(false);
+                return;
             }
         }
     }
@@ -143,13 +166,14 @@ public class Blink extends Module {
         // Clear breadcrumb trail
         breadcrumbTrail.clear();
         
-        // Spawn fake player
-        if (spawnFake.getValue()) {
+        // LiquidBounce Dummy Feature: Spawn fake player clone
+        if (dummy.getValue()) {
             fakePlayer = new EntityOtherPlayerMP(mc.theWorld, mc.thePlayer.getGameProfile());
             fakePlayer.copyLocationAndAnglesFrom(mc.thePlayer);
             fakePlayer.rotationYawHead = mc.thePlayer.rotationYawHead;
             fakePlayer.inventory = mc.thePlayer.inventory;
-            mc.theWorld.addEntityToWorld(-69420, fakePlayer);
+            // Use random negative ID to avoid conflicts
+            mc.theWorld.addEntityToWorld(-100000 - (int)(Math.random() * 10000), fakePlayer);
         }
         
         // Start blinking
@@ -159,16 +183,16 @@ public class Blink extends Module {
 
     @Override
     public void onDisabled() {
-        // Remove fake player
+        // Remove dummy player clone
         if (fakePlayer != null && mc.theWorld != null) {
-            mc.theWorld.removeEntityFromWorld(-69420);
+            mc.theWorld.removeEntity(fakePlayer);
             fakePlayer = null;
         }
         
         // Clear breadcrumbs
         breadcrumbTrail.clear();
         
-        // Stop blinking and release packets
+        // Stop blinking and release all queued packets
         Myau.blinkManager.setBlinkState(false, BlinkModules.BLINK);
     }
     
@@ -178,6 +202,14 @@ public class Blink extends Module {
         RenderUtil.enableRenderState();
         
         int trailSize = breadcrumbTrail.size();
+        
+        // LiquidBounce-style pulse effect
+        float pulse = 1.0F;
+        if (pulseEffect.getValue()) {
+            long time = System.currentTimeMillis();
+            pulse = (float) (0.8F + Math.sin(time / 200.0) * 0.2F); // Pulse between 0.6 and 1.0
+        }
+        
         for (int i = 0; i < trailSize; i++) {
             BreadcrumbPosition pos = breadcrumbTrail.get(i);
             
@@ -185,19 +217,28 @@ public class Blink extends Module {
             double renderY = pos.y - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
             double renderZ = pos.z - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
             
+            // Size based on pulse effect
+            double size = 0.1 * pulse;
+            
             // Create small box at breadcrumb position
             AxisAlignedBB box = new AxisAlignedBB(
-                renderX - 0.1, renderY, renderZ - 0.1,
-                renderX + 0.1, renderY + 0.2, renderZ + 0.1
+                renderX - size, renderY, renderZ - size,
+                renderX + size, renderY + size * 2, renderZ + size
             );
             
             // Fade alpha based on position in trail
-            float alpha = 1.0F - ((float) i / trailSize) * 0.8F;
+            float alpha = 1.0F - ((float) i / trailSize) * 0.7F;
+            alpha *= pulse; // Apply pulse to alpha
             int alphaValue = (int) (alpha * 255);
             
-            // Render breadcrumb
-            RenderUtil.drawFilledBox(box, 255, 255, 255);
-            RenderUtil.drawBoundingBox(box, 255, 255, 255, alphaValue, 2.0F);
+            // LiquidBounce-style color (light blue)
+            int red = 135;
+            int green = 206;
+            int blue = 235;
+            
+            // Render breadcrumb with semi-transparent fill
+            RenderUtil.drawFilledBox(box, red, green, blue);
+            RenderUtil.drawBoundingBox(box, red, green, blue, alphaValue, 2.0F);
             
             // Draw line to next breadcrumb
             if (i < trailSize - 1) {
@@ -206,10 +247,10 @@ public class Blink extends Module {
                 double nextRenderY = next.y - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
                 double nextRenderZ = next.z - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
                 
-                GL11.glColor4f(1.0F, 1.0F, 1.0F, alpha);
+                GL11.glColor4f(red / 255.0F, green / 255.0F, blue / 255.0F, alpha);
                 GL11.glBegin(GL11.GL_LINES);
-                GL11.glVertex3d(renderX, renderY + 0.1, renderZ);
-                GL11.glVertex3d(nextRenderX, nextRenderY + 0.1, nextRenderZ);
+                GL11.glVertex3d(renderX, renderY + size, renderZ);
+                GL11.glVertex3d(nextRenderX, nextRenderY + size, nextRenderZ);
                 GL11.glEnd();
             }
         }
@@ -217,14 +258,46 @@ public class Blink extends Module {
         RenderUtil.disableRenderState();
     }
     
-    // ==================== Utility ====================
+    // ==================== Utility Methods ====================
     
-    private boolean isCriticalPacket(Object packet) {
-        // Allow keep-alive and other critical packets to prevent disconnect
-        String packetName = packet.getClass().getSimpleName();
-        return packetName.contains("KeepAlive") || 
-               packetName.contains("Transaction") ||
-               packetName.contains("Disconnect");
+    /**
+     * Count movement packets in the blink queue
+     * LiquidBounce feature for auto-reset threshold
+     */
+    private int countMovementPackets() {
+        int count = 0;
+        for (Object packet : Myau.blinkManager.blinkedPackets) {
+            if (packet instanceof C03PacketPlayer) {
+                C03PacketPlayer movePacket = (C03PacketPlayer) packet;
+                // Only count packets with position data
+                if (movePacket.isMoving()) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+    
+    /**
+     * Reset player to starting position
+     * LiquidBounce's "Reset" action for auto-reset
+     */
+    private void resetToStart() {
+        if (mc.thePlayer == null) return;
+        
+        // Teleport player back to start position
+        mc.thePlayer.setPosition(startX, startY, startZ);
+        
+        // Clear only movement packets, keep other packets
+        Myau.blinkManager.blinkedPackets.removeIf(packet -> {
+            if (packet instanceof C03PacketPlayer) {
+                return true; // Remove movement packets
+            }
+            return false; // Keep other packets
+        });
+        
+        // Clear breadcrumbs after reset
+        breadcrumbTrail.clear();
     }
     
     // ==================== Data Classes ====================
@@ -241,7 +314,9 @@ public class Blink extends Module {
     
     @Override
     public String[] getSuffix() {
-        int queuedPackets = Myau.blinkManager.blinkedPackets.size();
-        return new String[]{String.format("§e%d §7packets", queuedPackets)};
+        // Show number of movement packets (LiquidBounce style)
+        int movePackets = countMovementPackets();
+        int totalPackets = Myau.blinkManager.blinkedPackets.size();
+        return new String[]{String.format("§b%d §7/ §e%d", movePackets, totalPackets)};
     }
 }

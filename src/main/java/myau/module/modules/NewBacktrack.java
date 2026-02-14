@@ -223,7 +223,7 @@ public class NewBacktrack extends Module {
             return;
         }
 
-        // Render the smooth server position
+        // Render the smooth server position of the enemy
         Vec3 renderPos = tracked.getSmoothedPosition();
         
         double renderX = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();

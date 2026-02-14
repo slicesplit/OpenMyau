@@ -117,19 +117,21 @@ public class FakeLag extends Module {
             return;
         }
         
-        // Only render if we're actively lagging (blinking)
-        if (!Myau.blinkManager.isBlinking() || startPosition == null) {
+        // Only render if we're actively lagging (blinking) and have positions
+        if (!Myau.blinkManager.isBlinking() || positions.isEmpty()) {
             return;
         }
+        
+        // Get server position (where the server thinks we are - first queued position)
+        Vec3 serverPos = positions.get(0);
         
         double renderX = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
         double renderY = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
         double renderZ = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
         
-        // Render self at server position (start position)
-        double x = startPosition.xCoord - renderX;
-        double y = startPosition.yCoord - renderY;
-        double z = startPosition.zCoord - renderZ;
+        double x = serverPos.xCoord - renderX;
+        double y = serverPos.yCoord - renderY;
+        double z = serverPos.zCoord - renderZ;
         
         // Create bounding box at server position (where server thinks we are)
         AxisAlignedBB box = new AxisAlignedBB(
@@ -139,10 +141,8 @@ public class FakeLag extends Module {
         
         Color c = new Color(color.getValue());
         
-        // Render filled box
+        // Render semi-transparent box showing our server position
         RenderUtil.drawFilledBox(box, c.getRed(), c.getGreen(), c.getBlue());
-        
-        // Render outline
         RenderUtil.drawBoundingBox(box, c.getRed(), c.getGreen(), c.getBlue(), 180, 2.0F);
     }
 

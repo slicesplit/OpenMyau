@@ -148,7 +148,7 @@ public class Myau {
             TargetHUD.class, TargetStrafe.class, Tracers.class, Trajectories.class,
             Velocity.class, ViewClip.class, Xray.class, RearView.class,
             ViperNode.class, SkeletonESP.class, TickBase.class, AutoRegister.class,
-            AutoPartyAccept.class, OldBacktrack.class, NewBacktrack.class
+            AutoLogin.class, AutoPartyAccept.class, OldBacktrack.class, NewBacktrack.class
         };
         
         int registered = 0;

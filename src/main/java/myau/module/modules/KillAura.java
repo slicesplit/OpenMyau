@@ -52,6 +52,8 @@ import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class KillAura extends Module {
@@ -79,6 +81,18 @@ public class KillAura extends Module {
     private double lastTargetDistance = 0.0;
     private long lastGrimAttackTime = 0L;
     private int grimConsecutiveHits = 0;
+    
+    // BACKTRACK INTEGRATION: Track backtrack module state
+    private final Map<Integer, Long> lastTargetHitTime = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> targetHitCount = new ConcurrentHashMap<>();
+    
+    // HYPER SWITCH: God-tier switch delay system for 4x 20cps combo
+    private long lastSwitchTime = 0L;
+    private int currentSwitchTarget = 0;
+    private final Map<Integer, Long> targetLastAttack = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> targetComboCount = new ConcurrentHashMap<>();
+    private boolean switchCooldown = false;
+    private long switchCooldownEnd = 0L;
     public final ModeProperty mode;
     public final ModeProperty sort;
     public final ModeProperty autoBlock;
@@ -114,10 +128,32 @@ public class KillAura extends Module {
     public final ModeProperty debugLog;
 
     private long getAttackDelay() {
+        // MULTI MODE: Fast switching between targets
         if (this.mode.getValue() == 2) {
-            return 50L;
+            return 50L; // 50ms = 20 attacks per second max
         }
-        return this.isBlocking ? (long) (1000.0F / RandomUtil.nextLong(this.autoBlockMinCPS.getValue().longValue(), this.autoBlockMaxCPS.getValue().longValue())) : 1000L / RandomUtil.nextLong(this.minCPS.getValue(), this.maxCPS.getValue());
+        
+        // SWITCH MODE: Ultra-fast with backtrack
+        if (this.mode.getValue() == 1) {
+            // Check if backtrack is active
+            Module oldBacktrack = Myau.moduleManager.modules.get(OldBacktrack.class);
+            Module newBacktrack = Myau.moduleManager.modules.get(NewBacktrack.class);
+            boolean backtrackActive = (oldBacktrack != null && oldBacktrack.isEnabled()) || 
+                                     (newBacktrack != null && newBacktrack.isEnabled());
+            
+            // BACKTRACK BOOST: Faster attacks when backtrack helps with positioning
+            if (backtrackActive) {
+                // With backtrack: 18-20 CPS (50-55ms delay)
+                return this.isBlocking ? 
+                    (long) (1000.0F / RandomUtil.nextLong(this.autoBlockMinCPS.getValue().longValue(), this.autoBlockMaxCPS.getValue().longValue())) : 
+                    RandomUtil.nextLong(50L, 55L);
+            }
+        }
+        
+        // STANDARD: Normal CPS
+        return this.isBlocking ? 
+            (long) (1000.0F / RandomUtil.nextLong(this.autoBlockMinCPS.getValue().longValue(), this.autoBlockMaxCPS.getValue().longValue())) : 
+            1000L / RandomUtil.nextLong(this.minCPS.getValue(), this.maxCPS.getValue());
     }
     
 
@@ -498,7 +534,8 @@ public class KillAura extends Module {
         this.fov = new IntProperty("fov", 360, 30, 360);
         this.minCPS = new IntProperty("min-aps", 14, 1, 20);
         this.maxCPS = new IntProperty("max-aps", 14, 1, 20);
-        this.switchDelay = new IntProperty("switch-delay", 50, 0, 1000);
+        // HYPER SWITCH: God delay for 4x 20cps - 15ms = 66.6 switches/sec perfect for 4 targets @ 20cps each
+        this.switchDelay = new IntProperty("switch-delay", 15, 0, 1000);
         this.rotations = new ModeProperty("rotations", 2, new String[]{"NONE", "LEGIT", "SILENT", "LOCK_VIEW"});
         this.moveFix = new ModeProperty("move-fix", 1, new String[]{"NONE", "SILENT", "STRICT"});
         this.smoothing = new PercentProperty("smoothing", 0);
@@ -990,14 +1027,84 @@ public class KillAura extends Module {
                                     this.target = multiTargets.get(0);
                                 }
                             } else {
-                                if (this.mode.getValue() == 1 && this.hitRegistered) {
-                                    this.hitRegistered = false;
-                                    this.switchTick++;
+                                // HYPER SWITCH MODE: God-tier switching for 4x 20cps combo
+                                if (this.mode.getValue() == 1) {
+                                    long currentTime = System.currentTimeMillis();
+                                    
+                                    // BACKTRACK INTEGRATION: Check if backtrack modules are enabled
+                                    Module oldBacktrack = Myau.moduleManager.modules.get(OldBacktrack.class);
+                                    Module newBacktrack = Myau.moduleManager.modules.get(NewBacktrack.class);
+                                    boolean backtrackActive = (oldBacktrack != null && oldBacktrack.isEnabled()) || 
+                                                             (newBacktrack != null && newBacktrack.isEnabled());
+                                    
+                                    // Calculate optimal switch delay based on conditions
+                                    int baseSwitchDelay = this.switchDelay.getValue(); // Default 15ms for 66.6 switches/sec
+                                    
+                                    // BACKTRACK BOOST: If backtrack is active, reduce delay for even faster switches
+                                    if (backtrackActive) {
+                                        baseSwitchDelay = Math.max(10, baseSwitchDelay - 5); // Min 10ms = 100 switches/sec
+                                    }
+                                    
+                                    // GRIM SAFETY: Slightly increase delay if using GRIM autoblock for zero flags
+                                    if (this.autoBlock.getValue() == 9) {
+                                        baseSwitchDelay = Math.max(baseSwitchDelay, 12); // Min 12ms for safety
+                                    }
+                                    
+                                    // Check if enough time has passed since last switch
+                                    boolean canSwitch = (currentTime - lastSwitchTime) >= baseSwitchDelay;
+                                    
+                                    // INTELLIGENT SWITCHING: Only switch if hit registered OR in cooldown
+                                    if (this.hitRegistered || switchCooldown) {
+                                        this.hitRegistered = false;
+                                        
+                                        // Exit cooldown if time expired
+                                        if (switchCooldown && currentTime >= switchCooldownEnd) {
+                                            switchCooldown = false;
+                                        }
+                                        
+                                        // Only switch if delay allows
+                                        if (canSwitch && !switchCooldown) {
+                                            this.switchTick++;
+                                            lastSwitchTime = currentTime;
+                                            
+                                            // COMBO TRACKING: Track hits per target for intelligent distribution
+                                            if (this.target != null) {
+                                                int entityId = this.target.getEntity().getEntityId();
+                                                int comboHits = targetComboCount.getOrDefault(entityId, 0);
+                                                targetComboCount.put(entityId, comboHits + 1);
+                                                
+                                                // ANTI-FLAG: After 3-4 hits on same target, force brief cooldown
+                                                if (comboHits >= 3 && targets.size() > 1) {
+                                                    switchCooldown = true;
+                                                    switchCooldownEnd = currentTime + 25; // 25ms cooldown = natural look
+                                                    targetComboCount.put(entityId, 0); // Reset combo
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Wrap around if exceeded target count
+                                    if (this.switchTick >= targets.size()) {
+                                        this.switchTick = 0;
+                                        
+                                        // RESET COMBOS: New cycle, reset all combo counts
+                                        targetComboCount.clear();
+                                    }
+                                    
+                                    this.target = new AttackData(targets.get(this.switchTick));
+                                    
+                                    // BACKTRACK POSITION TRACKING: Store last attack time for backtrack sync
+                                    if (backtrackActive && this.target != null) {
+                                        int targetId = this.target.getEntity().getEntityId();
+                                        targetLastAttack.put(targetId, currentTime);
+                                    }
+                                } else {
+                                    // SINGLE MODE: No switching
+                                    if (this.mode.getValue() == 0 || this.switchTick >= targets.size()) {
+                                        this.switchTick = 0;
+                                    }
+                                    this.target = new AttackData(targets.get(this.switchTick));
                                 }
-                                if (this.mode.getValue() == 0 || this.switchTick >= targets.size()) {
-                                    this.switchTick = 0;
-                                }
-                                this.target = new AttackData(targets.get(this.switchTick));
                             }
                         }
                     }
