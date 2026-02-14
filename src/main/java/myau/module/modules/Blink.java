@@ -47,15 +47,15 @@ import java.util.List;
 public class Blink extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // LiquidBounce Features
-    public final BooleanProperty dummy = new BooleanProperty("dummy", false);
-    public final BooleanProperty ambush = new BooleanProperty("ambush", false);
-    public final BooleanProperty autoDisable = new BooleanProperty("auto-disable", true);
+    // LiquidBounce Features (Default config from user preferences)
+    public final BooleanProperty dummy = new BooleanProperty("dummy", true); // Default: true (fake player on)
+    public final BooleanProperty ambush = new BooleanProperty("ambush", true); // Default: true
+    public final BooleanProperty autoDisable = new BooleanProperty("auto-disable", true); // Default: true
     
-    // Auto Reset (LiquidBounce feature)
-    public final BooleanProperty autoReset = new BooleanProperty("auto-reset", false);
-    public final IntProperty resetAfter = new IntProperty("reset-after", 100, 1, 1000, () -> this.autoReset.getValue());
-    public final ModeProperty resetAction = new ModeProperty("reset-action", 0, new String[]{"Reset", "Blink"}, () -> this.autoReset.getValue());
+    // Auto Reset (LiquidBounce feature) - Default config from user preferences
+    public final BooleanProperty autoReset = new BooleanProperty("auto-reset", true); // Default: enabled
+    public final IntProperty resetAfter = new IntProperty("reset-after", 19, 1, 1000, () -> this.autoReset.getValue()); // Default: 19 packets
+    public final ModeProperty resetAction = new ModeProperty("reset-action", 1, new String[]{"Reset", "Blink"}, () -> this.autoReset.getValue()); // Default: "Blink" (index 1)
     
     // Visual Options
     public final BooleanProperty breadcrumbs = new BooleanProperty("breadcrumbs", true);
