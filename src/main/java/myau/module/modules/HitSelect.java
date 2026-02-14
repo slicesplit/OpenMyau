@@ -32,8 +32,8 @@ public class HitSelect extends Module {
     
     // Simple UI Options
     public final IntProperty chance = new IntProperty("Chance", 100, 0, 100);
-    public final ModeProperty mode = new ModeProperty("Mode", "Active", "Pause", "Active");
-    public final ModeProperty preference = new ModeProperty("Preference", "KB reduction", "KB reduction", "Critical hits");
+    public final ModeProperty mode = new ModeProperty("Mode", 1, new String[]{"Pause", "Active"});
+    public final ModeProperty preference = new ModeProperty("Preference", 0, new String[]{"KB reduction", "Critical hits"});
     
     // Internal state (hidden from UI)
     private int ticksSinceHit = 0;
@@ -47,7 +47,7 @@ public class HitSelect extends Module {
     
     // Advanced tracking (for intelligent decisions)
     private EntityPlayer lastTarget = null;
-    private Vec3 lastPlayerVelocity = Vec3.ZERO;
+    private Vec3 lastPlayerVelocity = new Vec3(0, 0, 0);
     private double lastKnockback = 0.0;
     private boolean lastWTap = false;
     private boolean lastBlock = false;
@@ -133,7 +133,7 @@ public class HitSelect extends Module {
         }
         
         // MODE: PAUSE - Static hit selection
-        if (mode.getValue().equals("Pause")) {
+        if (mode.getValue() == 0) { // Pause mode
             // If we're in pause duration, block the hit
             if (pauseDuration > 0) {
                 return true;
@@ -155,7 +155,7 @@ public class HitSelect extends Module {
             boolean shouldInterrupt = false;
             
             // PREFERENCE: KB REDUCTION
-            if (preference.getValue().equals("KB reduction")) {
+            if (preference.getValue() == 0) { // KB reduction
                 // Prioritize KB reduction - interrupt if W-tap would help
                 if (decision.shouldWTap) {
                     shouldInterrupt = true;
@@ -223,7 +223,7 @@ public class HitSelect extends Module {
         int basePause = 1 + random.nextInt(3);
         
         // Adjust based on preference
-        if (preference.getValue().equals("KB reduction")) {
+        if (preference.getValue() == 0) { // KB reduction
             // Longer pauses for KB reduction (gives time for W-tap)
             basePause += 1;
         } else {
@@ -242,7 +242,7 @@ public class HitSelect extends Module {
             CombatPredictionEngine.predictOptimalAction(mc.thePlayer, target);
         
         // KB reduction preference - W-tap aggressively
-        if (preference.getValue().equals("KB reduction")) {
+        if (preference.getValue() == 0) { // KB reduction
             if (decision.shouldWTap || shouldWTap(target)) {
                 startWTap();
                 lastWTap = true;
@@ -264,7 +264,7 @@ public class HitSelect extends Module {
     
     private boolean shouldWTap(EntityPlayer target) {
         if (target.isSprinting()) return true;
-        if (mc.thePlayer.isSprinting() && smartSprint.getValue()) return true;
+        if (mc.thePlayer.isSprinting()) return true;
         if (mc.thePlayer.hurtTime > 0 && mc.thePlayer.hurtTime < 5) return true;
         return false;
     }
@@ -309,7 +309,7 @@ public class HitSelect extends Module {
             try {
                 KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), 
                     mc.gameSettings.keyBindForward.isKeyDown());
-                if (smartSprint.getValue() && mc.gameSettings.keyBindSprint.isKeyDown()) {
+                if (mc.gameSettings.keyBindSprint.isKeyDown()) {
                     Thread.sleep(10);
                     mc.thePlayer.setSprinting(true);
                 }
