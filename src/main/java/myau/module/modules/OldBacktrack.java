@@ -16,6 +16,7 @@ import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.play.server.S18PacketEntityTeleport;
+import net.minecraft.network.play.server.S14PacketEntity;
 import net.minecraft.network.play.client.C0FPacketConfirmTransaction;
 import net.minecraft.network.play.server.S32PacketConfirmTransaction;
 import net.minecraft.util.AxisAlignedBB;
@@ -147,8 +148,9 @@ public class OldBacktrack extends Module {
         entityPositions.clear();
         serverPositions.clear();
         
-        // Release all delayed packets
+        // CRASH FIX: Release all delayed packets and force clear
         releaseAllPackets();
+        delayedPackets.clear();
         isLagging = false;
         lagStartTime = 0L;
         backtrackHitCount.clear();
@@ -239,7 +241,7 @@ public class OldBacktrack extends Module {
 
     @EventTarget
     public void onPacket(PacketEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null || !mode.getModeString().equals("Lag Based")) {
+        if (!this.isEnabled() || mc.thePlayer == null) {
             return;
         }
 
@@ -256,21 +258,77 @@ public class OldBacktrack extends Module {
 
         // Only process incoming entity movement packets
         if (event.getType() == EventType.RECEIVE) {
+            PositionData serverPos = null;
+            int entityId = -1;
+            boolean shouldDelay = false;
+            
+            // Handle teleport packets (large position changes)
             if (event.getPacket() instanceof S18PacketEntityTeleport) {
-                // Store server-side positions from teleport packets
                 S18PacketEntityTeleport packet = (S18PacketEntityTeleport) event.getPacket();
-                serverPositions.put(packet.getEntityId(), new PositionData(
+                entityId = packet.getEntityId();
+                serverPos = new PositionData(
                     packet.getX() / 32.0, packet.getY() / 32.0, packet.getZ() / 32.0,
                     System.currentTimeMillis()
-                ));
+                );
+                shouldDelay = true;
+            }
+            // Handle relative movement packets (smooth movement)
+            else if (event.getPacket() instanceof S14PacketEntity) {
+                S14PacketEntity packet = (S14PacketEntity) event.getPacket();
+                entityId = packet.getEntity(mc.theWorld) != null ? packet.getEntity(mc.theWorld).getEntityId() : -1;
                 
-                // Delay packets when lagging
-                if (isLagging) {
-                    delayedPackets.add(new PacketData(event.getPacket(), System.currentTimeMillis()));
-                    event.setCancelled(true);
+                if (entityId != -1) {
+                    // Get current stored position
+                    PositionData current = mode.getModeString().equals("Manual") 
+                        ? (entityPositions.containsKey(entityId) && !entityPositions.get(entityId).isEmpty() 
+                            ? entityPositions.get(entityId).getFirst() : null)
+                        : serverPositions.get(entityId);
+                    
+                    if (current != null) {
+                        // Apply relative movement (S14PacketEntity uses fixed-point with 32 units per block)
+                        double newX = current.x + packet.func_149062_c() / 32.0;
+                        double newY = current.y + packet.func_149061_d() / 32.0;
+                        double newZ = current.z + packet.func_149064_e() / 32.0;
+                        
+                        serverPos = new PositionData(newX, newY, newZ, System.currentTimeMillis());
+                        shouldDelay = true;
+                    }
                 }
             }
-            // Note: Removed S14PacketEntity handling as it caused compilation errors
+            
+            // Process the position update if we got one
+            if (serverPos != null && entityId != -1) {
+                // MANUAL MODE: Store server position in history
+                if (mode.getModeString().equals("Manual")) {
+                    LinkedList<PositionData> positions = entityPositions.computeIfAbsent(entityId, k -> new LinkedList<>());
+                    positions.addFirst(serverPos);
+                    
+                    // Limit to specified ticks
+                    while (positions.size() > ticks.getValue()) {
+                        positions.removeLast();
+                    }
+                }
+                
+                // LAG BASED MODE: Store current server position
+                if (mode.getModeString().equals("Lag Based")) {
+                    serverPositions.put(entityId, serverPos);
+                    
+                    // Delay packets when lagging
+                    if (isLagging && shouldDelay) {
+                        // CRASH FIX: Limit delayed packet queue size to prevent memory overflow
+                        // At 200ms latency with ~20 packets/sec = ~4 packets max
+                        // Cap at 100 packets as safety limit (should never reach this)
+                        if (delayedPackets.size() < 100) {
+                            delayedPackets.add(new PacketData(event.getPacket(), System.currentTimeMillis()));
+                            event.setCancelled(true);
+                        } else {
+                            // Queue overflow - force release all packets immediately
+                            releaseAllPackets();
+                            isLagging = false;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -550,56 +608,29 @@ public class OldBacktrack extends Module {
             int entityId = player.getEntityId();
             activePlayerIds.add(entityId);
             
-            // Manual Mode: Ensure position is always tracked
+            // Manual Mode: Position tracking now done via packets (onPacket method)
+            // This ensures we track TRUE server-side positions, not client interpolation
             if (mode.getModeString().equals("Manual")) {
-                LinkedList<PositionData> positions = entityPositions.computeIfAbsent(entityId, k -> {
-                    // NEW PLAYER REGISTERED
-                    LinkedList<PositionData> newList = new LinkedList<>();
-                    // Initialize interpolation tracker for smooth entry
-                    return newList;
-                });
-                
-                // Only add new position if enough time has passed (1 tick = 50ms)
-                if (positions.isEmpty() || (currentTime - positions.getFirst().timestamp) >= 50) {
-                    positions.addFirst(new PositionData(
-                        player.posX, player.posY, player.posZ,
-                        currentTime
-                    ));
-                    
-                    // Limit to specified ticks
-                    while (positions.size() > ticks.getValue()) {
-                        positions.removeLast();
-                    }
-                }
+                // Just ensure the list exists - packet handler will populate it
+                entityPositions.computeIfAbsent(entityId, k -> new LinkedList<>());
             }
             
-            // Lag Based Mode: Always track current server position
+            // Lag Based Mode: Server positions are ONLY updated from packets (line 262)
+            // This ensures we show the TRUE server-side position, not client interpolation
+            // Initialize for new players if needed
             if (mode.getModeString().equals("Lag Based")) {
                 PositionData currentServerPos = serverPositions.get(entityId);
                 
-                // NEW PLAYER REGISTRATION
+                // NEW PLAYER REGISTRATION: Initialize with current position
+                // Will be updated by packet data as soon as server sends position
                 if (currentServerPos == null) {
                     serverPositions.put(entityId, new PositionData(
                         player.posX, player.posY, player.posZ,
                         currentTime
                     ));
-                    // Initialize interpolation tracker for smooth entry
-                } else {
-                    // ANTI-SHAKE FIX: Only update if position changed significantly (> 0.01 blocks)
-                    // This prevents jittering for stationary players
-                    double dx = player.posX - currentServerPos.x;
-                    double dy = player.posY - currentServerPos.y;
-                    double dz = player.posZ - currentServerPos.z;
-                    double distSq = dx * dx + dy * dy + dz * dz;
-                    
-                    // Update if moved more than 0.01 blocks OR it's been more than 500ms
-                    if (distSq > 0.0001 || (currentTime - currentServerPos.timestamp) > 500) {
-                        serverPositions.put(entityId, new PositionData(
-                            player.posX, player.posY, player.posZ,
-                            currentTime
-                        ));
-                    }
                 }
+                // NOTE: Don't update from client position - only packet data (line 262) should update this
+                // This ensures the box shows where the server thinks the player is (lagging behind client view)
             }
         }
         
@@ -666,11 +697,22 @@ public class OldBacktrack extends Module {
             return null;
         }
 
+        // ANTI-FLAG: Calculate maximum safe age for positions
+        int maxSafeTicks = getMaxSafeTicksForCurrentSettings();
+        long maxSafeAge = maxSafeTicks * 50L; // Convert ticks to milliseconds
+        long currentTime = System.currentTimeMillis();
+
         double currentDistance = mc.thePlayer.getDistanceToEntity(target);
         PositionData bestPosition = null;
         double bestDistance = currentDistance;
 
         for (PositionData pos : positions) {
+            // ANTI-FLAG: Skip positions that are too old
+            long positionAge = currentTime - pos.timestamp;
+            if (positionAge > maxSafeAge) {
+                continue; // Position is too old, would cause excessive reach
+            }
+            
             // Use Grim's exact distance calculation method (eye to closest point on hitbox)
             double distance = calculateGrimReachDistance(pos, target);
             
@@ -1271,6 +1313,10 @@ public class OldBacktrack extends Module {
     }
 
     private void startLagging() {
+        // CRASH FIX: Don't start lagging if already lagging
+        if (isLagging) {
+            return;
+        }
         isLagging = true;
         lagStartTime = System.currentTimeMillis();
     }
@@ -1278,22 +1324,47 @@ public class OldBacktrack extends Module {
     private void processDelayedPackets() {
         if (!isLagging) return;
         long currentTime = System.currentTimeMillis();
-        if (currentTime - lagStartTime >= latency.getValue()) {
+        long lagDuration = currentTime - lagStartTime;
+        
+        // Normal release when latency duration reached
+        if (lagDuration >= latency.getValue()) {
+            releaseAllPackets();
+            isLagging = false;
+        }
+        // CRASH FIX: Force release if lag duration exceeds 5 seconds (safety timeout)
+        else if (lagDuration > 5000) {
+            releaseAllPackets();
+            isLagging = false;
+            delayedPackets.clear(); // Force clear in case release fails
+        }
+        // CRASH FIX: Force release if too many packets queued
+        else if (delayedPackets.size() > 50) {
             releaseAllPackets();
             isLagging = false;
         }
     }
 
     private void releaseAllPackets() {
-        while (!delayedPackets.isEmpty()) {
+        int released = 0;
+        while (!delayedPackets.isEmpty() && released < 200) { // Safety limit: max 200 packets
             PacketData packetData = delayedPackets.poll();
             if (packetData != null && mc.thePlayer != null && mc.getNetHandler() != null) {
                 try {
                     if (packetData.packet instanceof S18PacketEntityTeleport) {
                         mc.getNetHandler().handleEntityTeleport((S18PacketEntityTeleport) packetData.packet);
+                    } else if (packetData.packet instanceof S14PacketEntity) {
+                        mc.getNetHandler().handleEntityMovement((S14PacketEntity) packetData.packet);
                     }
-                } catch (Exception e) {}
+                    released++;
+                } catch (Exception e) {
+                    // Silently ignore packet processing errors
+                }
             }
+        }
+        
+        // CRASH FIX: If we hit the limit, force clear remaining packets
+        if (!delayedPackets.isEmpty()) {
+            delayedPackets.clear();
         }
     }
 
