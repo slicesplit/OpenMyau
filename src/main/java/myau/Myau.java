@@ -134,7 +134,7 @@ public class Myau {
             AutoClicker.class, AutoHeal.class, AutoTool.class, BedESP.class,
             BedNuker.class, BedTracker.class, Blink.class, Chams.class,
             ChestESP.class, ChestStealer.class, Eagle.class, ESP.class,
-            FastPlace.class, Freecam.class, Freeze.class,
+            FakeLag.class, FastPlace.class, Freecam.class, Freeze.class,
             Fly.class, FovFix.class, FullBright.class, GhostHand.class,
             GuiModule.class, WTap.class, HUD.class, MoreKB.class,
             Indicators.class, InventoryClicker.class, InvManager.class, InvWalk.class,
@@ -145,7 +145,7 @@ public class Myau {
             NoRotate.class, NoSlow.class, Radar.class, Reach.class,
             Refill.class, RemoteShop.class, SafeWalk.class, Scaffold.class,
             Spammer.class, Speed.class, SpeedMine.class, Sprint.class,
-            TargetHUD.class, TargetStrafe.class, Tracers.class, Trajectories.class,
+            TargetHUD.class, TargetStrafe.class, TimerRange.class, Tracers.class, Trajectories.class,
             Velocity.class, ViewClip.class, Xray.class, RearView.class,
             ViperNode.class, SkeletonESP.class, TickBase.class,
             AutoPartyAccept.class, OldBacktrack.class, NewBacktrack.class

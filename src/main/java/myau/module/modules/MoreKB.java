@@ -2,251 +2,206 @@ package myau.module.modules;
 
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
-
 import myau.event.EventTarget;
 import myau.events.AttackEvent;
-import myau.events.TickEvent;
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
 import myau.property.properties.ModeProperty;
 import myau.property.properties.IntProperty;
+import myau.property.properties.FloatProperty;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.network.play.client.C0BPacketEntityAction;
-import net.minecraft.util.MathHelper;
-import net.minecraft.util.MovingObjectPosition;
 
 /**
- * MoreKB - BRUTAL Knockback Amplifier
+ * MoreKB - GrimAC-Bypass Compatible Knockback Module
  * 
- * Makes enemies take MAXIMUM knockback while staying completely legit.
- * Uses sprint manipulation techniques that top PvPers use manually.
+ * Uses prediction engine knowledge to bypass GrimAC's sprint detection.
  * 
- * DEFAULT: LEGIT_FAST mode - Best balance of power and safety
+ * How it bypasses Grim:
+ * - Maintains proper sprint state transitions to avoid BadPacketsF
+ * - Works with Grim's prediction engine (minAttackSlow/maxAttackSlow)
+ * - All sprint resets are predicted by Grim's movement simulator
+ * - No invalid state changes that trigger detection
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class MoreKB extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // ==================== BRUTAL DEFAULT SETTINGS ====================
+    // ==================== SETTINGS ====================
     
-    // Mode - DEFAULT: LEGIT_FAST (fastest legit mode)
-    public final ModeProperty mode = new ModeProperty("mode", 1, 
-        new String[]{"LEGIT", "LEGIT_FAST", "LEGIT_BRUTAL", "LESS_PACKET", "PACKET", "DOUBLE_PACKET"});
+    public final ModeProperty mode = new ModeProperty("Mode", 0, 
+        new String[]{"Legit", "Packet", "Double-Packet", "Triple-Packet", "Extreme"});
     
-    // Intelligent - DEFAULT: ON (only KB when facing you)
-    public final BooleanProperty intelligent = new BooleanProperty("intelligent", true);
+    public final FloatProperty range = new FloatProperty("Range", 3.5f, 3.0f, 6.0f);
+    public final IntProperty delay = new IntProperty("Delay", 0, 0, 500);
+    public final BooleanProperty onlySprinting = new BooleanProperty("Only-Sprint", true);
+    public final BooleanProperty onlyGround = new BooleanProperty("Only-Ground", false);
+    public final BooleanProperty hurtTimeCheck = new BooleanProperty("Hurt-Time", false);
     
-    // Angle Threshold - DEFAULT: 100° (stricter = more KB)
-    public final IntProperty maxAngle = new IntProperty("max-angle", 100, 60, 180);
+    // ==================== STATE ====================
     
-    // Only Ground - DEFAULT: OFF (works in air too for combos)
-    public final BooleanProperty onlyGround = new BooleanProperty("only-ground", false);
-    
-    // Only When Sprinting - DEFAULT: ON (legit, natural)
-    public final BooleanProperty requireSprint = new BooleanProperty("require-sprint", true);
-    
-    // Check Enemy Hurt Time - DEFAULT: ON (perfect timing)
-    public final BooleanProperty checkHurtTime = new BooleanProperty("check-hurt-time", true);
-    
-    // ==================== STATE TRACKING ====================
-    
-    private boolean shouldSprintReset;
-    private EntityLivingBase target;
-    private long lastResetTime = 0L;
+    private EntityLivingBase lastTarget;
+    private long lastKBTime = 0L;
+    private boolean sprintState = false; // Track sprint state for Grim bypass
 
     public MoreKB() {
         super("MoreKB", false);
-        this.shouldSprintReset = false;
-        this.target = null;
     }
 
     @EventTarget
     public void onAttack(AttackEvent event) {
-        if (!this.isEnabled()) {
-            return;
-        }
-        Entity targetEntity = event.getTarget();
-        if (targetEntity != null && targetEntity instanceof EntityLivingBase) {
-            this.target = (EntityLivingBase) targetEntity;
-        }
-    }
-
-    @EventTarget
-    public void onTick(TickEvent event) {
         if (!this.isEnabled() || mc.thePlayer == null || mc.theWorld == null) {
             return;
         }
         
-        // ===== MODE 1: LEGIT_FAST (DEFAULT) =====
-        // Fastest legit mode - resets sprint internally without packets
-        if (this.mode.getValue() == 1) {
-            if (this.target != null && this.isMoving()) {
-                // Check conditions
-                if (!checkConditions(this.target)) {
-                    this.target = null;
-                    return;
-                }
-                
-                // BRUTAL: Reset sprint on every hit for max KB
-                if ((this.onlyGround.getValue() && mc.thePlayer.onGround) || !this.onlyGround.getValue()) {
-                    mc.thePlayer.sprintingTicksLeft = 0;
-                    lastResetTime = System.currentTimeMillis();
-                }
-                this.target = null;
-            }
+        Entity target = event.getTarget();
+        if (!(target instanceof EntityLivingBase)) {
             return;
         }
         
-        // ===== OTHER MODES: Packet-based for max KB =====
-        EntityLivingBase entity = null;
-        if (mc.objectMouseOver != null && 
-            mc.objectMouseOver.typeOfHit == MovingObjectPosition.MovingObjectType.ENTITY && 
-            mc.objectMouseOver.entityHit instanceof EntityLivingBase) {
-            entity = (EntityLivingBase) mc.objectMouseOver.entityHit;
-        }
+        EntityLivingBase entity = (EntityLivingBase) target;
         
-        if (entity == null) {
+        // Check delay
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastKBTime < delay.getValue()) {
             return;
         }
         
-        // Check conditions
-        if (!checkConditions(entity)) {
+        // Check range
+        double distance = mc.thePlayer.getDistanceToEntity(entity);
+        if (distance > range.getValue()) {
             return;
         }
         
-        // Check hurt time for perfect timing
-        if (this.checkHurtTime.getValue() && entity.hurtTime == 10) {
-            executeSprintReset();
-        } else if (!this.checkHurtTime.getValue()) {
-            // Always reset if hurt time check is disabled
-            executeSprintReset();
-        }
-    }
-    
-    /**
-     * BRUTAL CONDITIONS: Only KB when it's effective
-     */
-    private boolean checkConditions(EntityLivingBase entity) {
         // Check sprint requirement
-        if (requireSprint.getValue() && !mc.thePlayer.isSprinting()) {
-            return false;
+        if (onlySprinting.getValue() && !mc.thePlayer.isSprinting()) {
+            return;
         }
         
-        // Intelligent angle check - only KB enemies facing you
-        if (intelligent.getValue()) {
-            double x = mc.thePlayer.posX - entity.posX;
-            double z = mc.thePlayer.posZ - entity.posZ;
-            float calcYaw = (float) (Math.atan2(z, x) * 180.0 / Math.PI - 90.0);
-            float diffY = Math.abs(MathHelper.wrapAngleTo180_float(calcYaw - entity.rotationYawHead));
-            
-            // BRUTAL: Only hit if enemy is facing you (they take more KB)
-            if (diffY > maxAngle.getValue()) {
-                return false;
-            }
+        // Check ground requirement
+        if (onlyGround.getValue() && !mc.thePlayer.onGround) {
+            return;
         }
         
-        return true;
+        // Check hurt time - entity should be getting hit right now
+        if (hurtTimeCheck.getValue() && entity.hurtTime > 0 && entity.hurtTime < 10) {
+            return;
+        }
+        
+        // Sync sprint state before applying KB
+        sprintState = mc.thePlayer.isSprinting();
+        
+        // Execute Grim-compatible knockback
+        applyKnockback();
+        
+        lastTarget = entity;
+        lastKBTime = currentTime;
     }
     
     /**
-     * Execute sprint reset based on mode
+     * Grim-bypass knockback implementation.
+     * 
+     * Key principles:
+     * 1. Always maintain valid sprint state transitions
+     * 2. Don't send duplicate START_SPRINTING when already sprinting
+     * 3. Don't send duplicate STOP_SPRINTING when already stopped
+     * 4. Grim's prediction engine will simulate the attack slow
      */
-    private void executeSprintReset() {
-        switch (this.mode.getValue()) {
-            case 0: // LEGIT - Simple double sprint
-                this.shouldSprintReset = true;
+    private void applyKnockback() {
+        switch (mode.getValue()) {
+            case 0: // Legit
+                // Client-side only - Grim doesn't see packets
+                // Safest method, works everywhere
                 if (mc.thePlayer.isSprinting()) {
                     mc.thePlayer.setSprinting(false);
                     mc.thePlayer.setSprinting(true);
                 }
-                this.shouldSprintReset = false;
-                lastResetTime = System.currentTimeMillis();
                 break;
                 
-            case 1: // LEGIT_FAST - Fast but still legit
-                this.shouldSprintReset = true;
-                if (mc.thePlayer.isSprinting()) {
-                    mc.thePlayer.setSprinting(false);
-                    mc.thePlayer.setSprinting(true);
+            case 1: // Packet
+                // Single sprint reset with proper state management
+                // Grim sees: lastSprinting = true, applies attack slow via prediction
+                if (sprintState) {
+                    sendSprintPacket(false);
+                    sprintState = false;
                 }
-                this.shouldSprintReset = false;
-                lastResetTime = System.currentTimeMillis();
-                break;
-                
-            case 2: // LEGIT_BRUTAL - EXTREMELY DANGEROUS but 100% LEGIT
-                // Perfect sprint reset timing that looks completely human
-                // Uses triple-toggle technique for MAXIMUM knockback
-                this.shouldSprintReset = true;
-                
-                if (mc.thePlayer.isSprinting()) {
-                    // Triple toggle: Stop -> Start -> Stop -> Start
-                    // This creates maximum momentum transfer while being 100% client-side
-                    mc.thePlayer.setSprinting(false);
-                    mc.thePlayer.setSprinting(true);
-                    mc.thePlayer.setSprinting(false);
-                    mc.thePlayer.setSprinting(true);
-                }
-                
-                this.shouldSprintReset = false;
-                lastResetTime = System.currentTimeMillis();
-                break;
-                
-            case 3: // LESS_PACKET - One packet sprint reset
-                // FIX: Only toggle sprint if currently sprinting to avoid simulation desync
-                if (mc.thePlayer.isSprinting()) {
-                    mc.thePlayer.setSprinting(false);
-                    mc.getNetHandler().addToSendQueue(
-                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
-                    );
-                    mc.thePlayer.setSprinting(true);
-                }
-                lastResetTime = System.currentTimeMillis();
-                break;
-                
-            case 4: // PACKET - Double packet (more KB)
-                // FIX: Only send packets if sprinting to match client state
-                if (mc.thePlayer.isSprinting()) {
-                    mc.thePlayer.sendQueue.addToSendQueue(
-                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
-                    );
-                }
-                mc.thePlayer.sendQueue.addToSendQueue(
-                    new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
-                );
+                sendSprintPacket(true);
+                sprintState = true;
                 mc.thePlayer.setSprinting(true);
-                lastResetTime = System.currentTimeMillis();
                 break;
                 
-            case 5: // DOUBLE_PACKET - Maximum KB (4 packets)
-                // FIX: Only send packets if sprinting to match client state
-                if (mc.thePlayer.isSprinting()) {
-                    mc.thePlayer.sendQueue.addToSendQueue(
-                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
-                    );
-                    mc.thePlayer.sendQueue.addToSendQueue(
-                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
-                    );
-                    mc.thePlayer.sendQueue.addToSendQueue(
-                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
-                    );
+            case 2: // Double-Packet
+                // Double reset: STOP->START->STOP->START
+                // Increases minAttackSlow/maxAttackSlow counters
+                // Grim predicts this as valid movement
+                if (sprintState) {
+                    sendSprintPacket(false);
+                    sprintState = false;
                 }
-                mc.thePlayer.sendQueue.addToSendQueue(
-                    new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
-                );
+                sendSprintPacket(true);
+                sprintState = true;
+                
+                sendSprintPacket(false);
+                sprintState = false;
+                sendSprintPacket(true);
+                sprintState = true;
+                
                 mc.thePlayer.setSprinting(true);
-                lastResetTime = System.currentTimeMillis();
+                break;
+                
+            case 3: // Triple-Packet
+                // Triple reset for maximum attack slow
+                // Grim's prediction engine handles up to 5 attack slows
+                for (int i = 0; i < 3; i++) {
+                    if (sprintState) {
+                        sendSprintPacket(false);
+                        sprintState = false;
+                    }
+                    sendSprintPacket(true);
+                    sprintState = true;
+                }
+                mc.thePlayer.setSprinting(true);
+                break;
+                
+            case 4: // Extreme
+                // Combines client and server methods
+                // Client: immediate local effect
+                // Server: prediction engine simulates attack slow
+                mc.thePlayer.setSprinting(false);
+                mc.thePlayer.setSprinting(true);
+                
+                // Send 3 sprint resets (within Grim's 5 attack slow limit)
+                for (int i = 0; i < 3; i++) {
+                    if (sprintState) {
+                        sendSprintPacket(false);
+                        sprintState = false;
+                    }
+                    sendSprintPacket(true);
+                    sprintState = true;
+                }
+                
+                mc.thePlayer.setSprinting(true);
                 break;
         }
     }
-
-    private boolean isMoving() {
-        return mc.thePlayer.moveForward != 0.0F || mc.thePlayer.moveStrafing != 0.0F;
+    
+    /**
+     * Send sprint packet with state tracking for Grim bypass
+     */
+    private void sendSprintPacket(boolean sprinting) {
+        C0BPacketEntityAction.Action action = sprinting 
+            ? C0BPacketEntityAction.Action.START_SPRINTING 
+            : C0BPacketEntityAction.Action.STOP_SPRINTING;
+        
+        mc.thePlayer.sendQueue.addToSendQueue(
+            new C0BPacketEntityAction(mc.thePlayer, action)
+        );
     }
 
     @Override
     public String[] getSuffix() {
-        return new String[]{this.mode.getModeString()};
+        return new String[]{mode.getModeString()};
     }
 }

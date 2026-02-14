@@ -83,8 +83,8 @@ public class OldBacktrack extends Module {
     
     // Manual Mode Settings
     public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true, () -> mode.getModeString().equals("Manual"));
-    // LAGRANGE: Increased max ticks to 20 (1000ms = 20 ticks of history)
-    public final IntProperty ticks = new IntProperty("ticks", 15, 1, 20, () -> mode.getModeString().equals("Manual"));
+    // UPDATED: Increased max ticks to 100 (5000ms = 100 ticks of history)
+    public final IntProperty ticks = new IntProperty("ticks", 15, 1, 100, () -> mode.getModeString().equals("Manual"));
     
     // Lag Based Mode Settings
     public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true, () -> mode.getModeString().equals("Lag Based"));
@@ -1148,8 +1148,8 @@ public class OldBacktrack extends Module {
     }
 
     /**
-     * SMOOTH INTERPOLATED RENDERING - Uses Minecraft's exact player interpolation
-     * Shows buttery smooth boxes that move exactly like the real player would
+     * SERVER-SIDE POSITION RENDERING - Shows where the player actually is on the server
+     * Renders a simple box at the player's past server position (backtrack snapshot)
      */
     private void renderManualModePositions(float partialTicks) {
         if (entityPositions.isEmpty()) {
@@ -1174,26 +1174,20 @@ public class OldBacktrack extends Module {
                     continue;
                 }
                 
-                // Get the best backtrack position (oldest valid position)
-                PositionData bestPos = null;
-                for (PositionData pos : positions) {
-                    double distance = calculateGrimReachDistance(pos, player);
-                    if (isPositionSafeForGrim(pos, player, distance) && distance <= RISE_VAPE_SAFE_REACH) {
-                        bestPos = pos; // Use this position
-                        break;
-                    }
+                // Get the most recent stored server-side position (latest snapshot)
+                // This shows where the player was at their last recorded server position
+                PositionData serverPos = positions.getFirst();
+                
+                if (serverPos == null) {
+                    continue;
                 }
                 
-                // Fallback to most recent position
-                if (bestPos == null && !positions.isEmpty()) {
-                    bestPos = positions.getFirst();
-                }
-                
-                if (bestPos != null) {
-                    // Render the ACTUAL backtrack position where the player WAS
-                    // No interpolation to current position - this is where we want to hit
-                    RenderBoxUtil.renderPlayerBox(bestPos.x, bestPos.y, bestPos.z);
-                }
+                // Render box at the SERVER-SIDE POSITION
+                // This shows where the player actually is in the backtrack history
+                Color c = new Color(color.getValue());
+                Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
+                Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);
+                RenderBoxUtil.renderPlayerBox(serverPos.x, serverPos.y, serverPos.z, fillColor, outlineColor);
             }
         } catch (Exception e) {
             // Prevent render errors
@@ -1201,8 +1195,8 @@ public class OldBacktrack extends Module {
     }
     
     /**
-     * SMOOTH INTERPOLATED RENDERING - Uses Minecraft's exact player interpolation
-     * Shows buttery smooth boxes at server-side positions
+     * BACKTRACK TARGET RENDERING - Shows the server-side backtrack position
+     * Renders a box at the actual position where backtrack will attack
      */
     private void renderLagBasedPositions(float partialTicks) {
         if (serverPositions.isEmpty()) {
@@ -1222,13 +1216,19 @@ public class OldBacktrack extends Module {
                     continue;
                 }
 
+                // BACKTRACK TARGET: Get the server-side position (where backtrack attacks)
                 PositionData serverPos = entry.getValue();
                 
-                if (serverPos != null) {
-                    // Render the server-side position (where server thinks player is)
-                    // This is the lagged position we attack through
-                    RenderBoxUtil.renderPlayerBox(serverPos.x, serverPos.y, serverPos.z);
+                if (serverPos == null) {
+                    continue;
                 }
+                
+                // Render box at the BACKTRACK TARGET POSITION
+                // This visually matches where lag-based backtrack will hit
+                Color c = new Color(color.getValue());
+                Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
+                Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);
+                RenderBoxUtil.renderPlayerBox(serverPos.x, serverPos.y, serverPos.z, fillColor, outlineColor);
             }
         } catch (Exception e) {
             // Prevent render errors
