@@ -343,6 +343,11 @@ public class Scaffold extends Module {
     @EventTarget(Priority.HIGH)
     public void onUpdate(UpdateEvent event) {
         if (this.isEnabled() && event.getType() == EventType.PRE) {
+            // PRIORITY OVERRIDE: Pause if AntiFireball is actively deflecting
+            AntiFireball antiFireball = (AntiFireball) Myau.moduleManager.modules.get(AntiFireball.class);
+            if (antiFireball != null && antiFireball.isDeflecting()) {
+                return; // Pause scaffolding while deflecting fireball
+            }
             
             if (this.infiniteClutch.getValue()) {
                 handleInfiniteClutch();

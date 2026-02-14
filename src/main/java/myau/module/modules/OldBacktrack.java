@@ -1190,39 +1190,9 @@ public class OldBacktrack extends Module {
                 }
                 
                 if (bestPos != null) {
-                    // Use Minecraft's exact interpolation formula for smooth movement
-                    // This is the SAME math Minecraft uses to render players smoothly
-                    double smoothX = bestPos.x + (bestPos.x - bestPos.x) * partialTicks;
-                    double smoothY = bestPos.y + (bestPos.y - bestPos.y) * partialTicks;
-                    double smoothZ = bestPos.z + (bestPos.z - bestPos.z) * partialTicks;
-                    
-                    // Actually, use the player's current interpolation for buttery smoothness
-                    // This makes the box move EXACTLY like the player model would
-                    double prevX = player.prevPosX;
-                    double prevY = player.prevPosY;
-                    double prevZ = player.prevPosZ;
-                    double currentX = player.posX;
-                    double currentY = player.posY;
-                    double currentZ = player.posZ;
-                    
-                    // Calculate how far back in time this position is
-                    long posAge = System.currentTimeMillis() - bestPos.timestamp;
-                    int ticksOld = (int)(posAge / 50); // 50ms per tick
-                    
-                    // If it's a recent position (0-1 ticks), use Minecraft's smooth interpolation
-                    if (ticksOld <= 1) {
-                        smoothX = prevX + (currentX - prevX) * partialTicks;
-                        smoothY = prevY + (currentY - prevY) * partialTicks;
-                        smoothZ = prevZ + (currentZ - prevZ) * partialTicks;
-                    } else {
-                        // For older positions, just use the position data directly
-                        smoothX = bestPos.x;
-                        smoothY = bestPos.y;
-                        smoothZ = bestPos.z;
-                    }
-                    
-                    // Render Vape V4 style box at the smoothly interpolated position
-                    RenderBoxUtil.renderPlayerBox(smoothX, smoothY, smoothZ);
+                    // Render the ACTUAL backtrack position where the player WAS
+                    // No interpolation to current position - this is where we want to hit
+                    RenderBoxUtil.renderPlayerBox(bestPos.x, bestPos.y, bestPos.z);
                 }
             }
         } catch (Exception e) {
@@ -1255,22 +1225,9 @@ public class OldBacktrack extends Module {
                 PositionData serverPos = entry.getValue();
                 
                 if (serverPos != null) {
-                    // Use Minecraft's exact interpolation between server position and current position
-                    // This creates buttery smooth movement that matches player rendering
-                    double prevX = player.prevPosX;
-                    double prevY = player.prevPosY;
-                    double prevZ = player.prevPosZ;
-                    double currentX = player.posX;
-                    double currentY = player.posY;
-                    double currentZ = player.posZ;
-                    
-                    // Interpolate using partialTicks (Minecraft's method)
-                    double smoothX = prevX + (currentX - prevX) * partialTicks;
-                    double smoothY = prevY + (currentY - prevY) * partialTicks;
-                    double smoothZ = prevZ + (currentZ - prevZ) * partialTicks;
-                    
-                    // Render Vape V4 style box at the smoothly interpolated position
-                    RenderBoxUtil.renderPlayerBox(smoothX, smoothY, smoothZ);
+                    // Render the server-side position (where server thinks player is)
+                    // This is the lagged position we attack through
+                    RenderBoxUtil.renderPlayerBox(serverPos.x, serverPos.y, serverPos.z);
                 }
             }
         } catch (Exception e) {

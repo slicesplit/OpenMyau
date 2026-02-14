@@ -14,6 +14,7 @@ import myau.enums.ModuleCategory;
 import myau.util.PacketUtil;
 import myau.util.PlayerUtil;
 import myau.util.RandomUtil;
+import myau.util.PredictionEngine;
 import myau.property.properties.FloatProperty;
 import myau.property.properties.ModeProperty;
 import net.minecraft.client.Minecraft;
@@ -108,9 +109,28 @@ public class AntiVoid extends Module {
                     }
                 }
                 if (!this.wasInVoid && this.isInVoid && this.canUseAntiVoid()) {
+                    // PREDICTION ENGINE: Find PERFECT safe block position
+                    // Predicts where player will land, ensures it's on solid block
+                    PredictionEngine.Vec3D predictedPos = PredictionEngine.predictPlayerPosition(mc.thePlayer, 3);
+                    
+                    // Find nearest solid block below predicted position
+                    double safeY = PredictionEngine.findSafeYPosition(
+                        mc.theWorld, 
+                        predictedPos.x, 
+                        predictedPos.y, 
+                        predictedPos.z
+                    );
+                    
                     // Use internal blink instead of main BlinkManager
                     setInternalBlinkState(true);
-                    this.lastSafePosition = new double[]{mc.thePlayer.prevPosX, mc.thePlayer.prevPosY, mc.thePlayer.prevPosZ};
+                    
+                    // Save position that's guaranteed to be on a block
+                    if (safeY != -1) {
+                        this.lastSafePosition = new double[]{predictedPos.x, safeY, predictedPos.z};
+                    } else {
+                        // Fallback to previous position if no block found
+                        this.lastSafePosition = new double[]{mc.thePlayer.prevPosX, mc.thePlayer.prevPosY, mc.thePlayer.prevPosZ};
+                    }
                 }
                 if (this.internalBlinking
                         && this.lastSafePosition != null

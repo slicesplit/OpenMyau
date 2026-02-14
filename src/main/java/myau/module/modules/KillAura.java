@@ -541,8 +541,9 @@ public class KillAura extends Module {
                 "auto-block", 2, new String[]{"NONE", "VANILLA", "SPOOF", "HYPIXEL", "BLINK", "INTERACT", "SWAP", "LEGIT", "FAKE", "GRIM"}
         );
         this.autoBlockRequirePress = new BooleanProperty("auto-block-require-press", false);
-        this.autoBlockMinCPS = new FloatProperty("auto-block-min-aps", 8.0F, 1.0F, 20.0F);
-        this.autoBlockMaxCPS = new FloatProperty("auto-block-max-aps", 10.0F, 1.0F, 20.0F);
+        // OPTIMIZED: Increased default CPS for GRIM autoblock to compete with legit players
+        this.autoBlockMinCPS = new FloatProperty("auto-block-min-aps", 14.0F, 1.0F, 20.0F);
+        this.autoBlockMaxCPS = new FloatProperty("auto-block-max-aps", 16.0F, 1.0F, 20.0F);
         // GRIM BYPASS: Reduced max range from 8.0 to 6.0 for safer autoblock
         this.autoBlockRange = new FloatProperty("auto-block-range", 5.5F, 3.0F, 6.0F);
         this.swingRange = new FloatProperty("swing-range", 3.5F, 3.0F, 6.0F);
@@ -619,6 +620,13 @@ public class KillAura extends Module {
             Myau.blinkManager.setBlinkState(true, BlinkModules.AUTO_BLOCK);
         }
         if (this.isEnabled() && event.getType() == EventType.PRE) {
+            // PRIORITY OVERRIDE: Let AntiFireball take control if deflecting
+            AntiFireball antiFireball = (AntiFireball) Myau.moduleManager.modules.get(AntiFireball.class);
+            if (antiFireball != null && antiFireball.isDeflecting()) {
+                // AntiFireball is handling rotations and attacks, pause KillAura
+                return;
+            }
+            
             if (this.attackDelayMS > 0L) {
                 this.attackDelayMS -= 50L;
             }
@@ -1316,15 +1324,17 @@ public class KillAura extends Module {
                 if (this.autoBlockMinCPS.getValue() > this.autoBlockMaxCPS.getValue()) {
                     this.autoBlockMaxCPS.setValue(this.autoBlockMinCPS.getValue());
                 }
-                if(autoBlockMinCPS.getValue() > 10.0F && badCps){
-                    autoBlockMinCPS.setValue(10.0F);
+                // REMOVED: 10 CPS cap limitation - allow up to 20 CPS for competitive play
+                if(autoBlockMinCPS.getValue() > 18.0F && badCps){
+                    autoBlockMinCPS.setValue(16.0F);
                 }
             } else if (this.autoBlockMaxCPS.getName().equals(value)) {
                 if (this.autoBlockMinCPS.getValue() > this.autoBlockMaxCPS.getValue()) {
                     this.autoBlockMinCPS.setValue(this.autoBlockMaxCPS.getValue());
                 }
-                if(autoBlockMaxCPS.getValue() > 10.0F && badCps){
-                    autoBlockMaxCPS.setValue(10.0F);
+                // REMOVED: 10 CPS cap limitation - allow up to 20 CPS for competitive play
+                if(autoBlockMaxCPS.getValue() > 18.0F && badCps){
+                    autoBlockMaxCPS.setValue(16.0F);
                 }
             } else {
                 if (this.maxCPS.getName().equals(value) && this.minCPS.getValue() > this.maxCPS.getValue()) {
@@ -1332,9 +1342,10 @@ public class KillAura extends Module {
                 }
             }
         } else {
-            if (badCps && (this.autoBlockMinCPS.getValue() > 10.0F || this.autoBlockMaxCPS.getValue() > 10.0F)) {
-                this.autoBlockMinCPS.setValue(8.0F);
-                this.autoBlockMaxCPS.setValue(10.0F);
+            // OPTIMIZED: Increased CPS cap for competitive play against legit players
+            if (badCps && (this.autoBlockMinCPS.getValue() > 18.0F || this.autoBlockMaxCPS.getValue() > 18.0F)) {
+                this.autoBlockMinCPS.setValue(14.0F);
+                this.autoBlockMaxCPS.setValue(16.0F);
             }
         }
     }

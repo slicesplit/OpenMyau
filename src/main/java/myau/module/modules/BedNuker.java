@@ -334,6 +334,12 @@ public class BedNuker extends Module {
     @EventTarget(Priority.HIGH)
     public void onTick(TickEvent event) {
         if (this.isEnabled() && event.getType() == EventType.PRE) {
+            // PRIORITY OVERRIDE: Pause if AntiFireball is actively deflecting
+            AntiFireball antiFireball = (AntiFireball) Myau.moduleManager.modules.get(AntiFireball.class);
+            if (antiFireball != null && antiFireball.isDeflecting()) {
+                return; // Pause bed nuking while deflecting fireball
+            }
+            
             if (this.targetBed != null) {
                 if (mc.theWorld.isAirBlock(this.targetBed) || !PlayerUtil.canReach(this.targetBed, this.range.getValue().doubleValue())) {
                     this.restoreSlot();
