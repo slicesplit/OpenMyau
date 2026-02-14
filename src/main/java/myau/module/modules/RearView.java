@@ -39,14 +39,15 @@ public class RearView extends Module {
     // Framebuffers for high-quality rendering
     private Framebuffer rearViewFramebuffer = null;
     
-    // Properties
+    // Properties - Optimized for balanced rear view advantage
     public final ModeProperty position = new ModeProperty("Position", 1, new String[]{"TopLeft", "TopRight", "BottomLeft", "BottomRight"});
-    public final FloatProperty scale = new FloatProperty("Scale", 0.25F, 0.1F, 0.6F);
+    public final FloatProperty scale = new FloatProperty("Scale", 0.20F, 0.10F, 0.35F); // Smaller default, max 35% for balanced advantage
     public final FloatProperty offsetX = new FloatProperty("OffsetX", 10.0F, 0.0F, 200.0F);
     public final FloatProperty offsetY = new FloatProperty("OffsetY", 10.0F, 0.0F, 200.0F);
-    public final FloatProperty opacity = new FloatProperty("Opacity", 1.0F, 0.1F, 1.0F);
+    public final FloatProperty opacity = new FloatProperty("Opacity", 0.85F, 0.3F, 1.0F); // Slightly transparent default
     public final BooleanProperty border = new BooleanProperty("Border", true);
-    public final BooleanProperty smoothUpdate = new BooleanProperty("SmoothUpdate", false);
+    public final BooleanProperty smoothUpdate = new BooleanProperty("SmoothUpdate", true); // Smooth by default
+    public final BooleanProperty alwaysRearView = new BooleanProperty("AlwaysRearView", true); // Always show back even in F5
     
     // Performance tracking
     private long lastRenderTime = 0;
@@ -92,18 +93,18 @@ public class RearView extends Module {
     }
     
     /**
-     * Initialize framebuffer with appropriate size - PRODUCTION QUALITY
-     * Uses full depth buffer for proper 3D rendering
+     * Initialize framebuffer with appropriate size - OPTIMIZED for HUD element
+     * Smaller framebuffer = better performance, still great quality
      */
     private void initFramebuffer() {
         if (rearViewFramebuffer != null) {
             rearViewFramebuffer.deleteFramebuffer();
         }
         
-        // Use full display resolution for maximum quality
-        // The scale will be applied during rendering, not framebuffer creation
-        int fbWidth = mc.displayWidth;
-        int fbHeight = mc.displayHeight;
+        // Use smaller resolution for HUD element - saves performance
+        // 720p is perfect for a small rear view window
+        int fbWidth = 1280;
+        int fbHeight = 720;
         
         // Create framebuffer with depth buffer enabled (true) for proper 3D rendering
         rearViewFramebuffer = new Framebuffer(fbWidth, fbHeight, true);
@@ -181,11 +182,18 @@ public class RearView extends Module {
         GlStateManager.pushAttrib();
         
         try {
-            // Modify rotation: yaw + 180 degrees (rear view)
-            // Also update head rotation for proper entity rendering
+            // ALWAYS REAR VIEW: Always add 180 degrees regardless of F5 mode
+            // This ensures you ALWAYS see behind you, even when in third person
             float reversedYaw = savedYaw + 180.0F;
+            
+            // Apply rotation
             renderEntity.rotationYaw = reversedYaw;
             renderEntity.prevRotationYaw = savedPrevYaw + 180.0F;
+            
+            // Keep pitch the same (don't reverse up/down view)
+            // This makes the rear view feel natural
+            renderEntity.rotationPitch = savedPitch;
+            renderEntity.prevRotationPitch = savedPrevPitch;
             
             // Update head rotation if entity player
             if (renderEntity == mc.thePlayer) {
@@ -264,9 +272,9 @@ public class RearView extends Module {
     }
     
     /**
-     * Draw the rear view framebuffer as a PiP window on the HUD - PRODUCTION QUALITY
-     * High-quality texture filtering and proper alpha blending
-     * Supports position modes: TopLeft, TopRight, BottomLeft, BottomRight
+     * Draw the rear view framebuffer as a PiP window on the HUD - FIXED
+     * No longer covers F3 debug menu or other UI elements
+     * Renders as a proper HUD element with depth buffer disabled
      */
     private void drawRearViewWindow(float partialTicks) {
         if (rearViewFramebuffer == null) return;
@@ -307,48 +315,62 @@ public class RearView extends Module {
                 break;
         }
         
-        // Set up rendering state
-        GlStateManager.pushMatrix();
-        GlStateManager.pushAttrib();
+        // CRITICAL FIX: Proper HUD rendering that doesn't interfere with other UI
+        GL11.glPushMatrix();
+        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
         
-        // Disable depth test for HUD rendering
-        GlStateManager.disableDepth();
-        GlStateManager.disableLighting();
-        GlStateManager.enableBlend();
-        GlStateManager.tryBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO);
-        GlStateManager.enableTexture2D();
-        GlStateManager.disableAlpha();
+        // Disable depth buffer completely - HUD element should not use depth
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
+        GL11.glDepthMask(false);
+        
+        // Disable lighting for 2D rendering
+        GL11.glDisable(GL11.GL_LIGHTING);
+        
+        // Enable blending for transparency
+        GL11.glEnable(GL11.GL_BLEND);
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        
+        // Enable 2D texture rendering
+        GL11.glEnable(GL11.GL_TEXTURE_2D);
+        
+        // Disable alpha test (we use blending instead)
+        GL11.glDisable(GL11.GL_ALPHA_TEST);
         
         // Draw border if enabled (outer black border for visibility)
         if (border.getValue()) {
+            // Disable texture for border drawing
+            GL11.glDisable(GL11.GL_TEXTURE_2D);
+            
             float borderWidth = 2.0F;
-            int borderColor = 0xFF000000 | ((int)(opacity.getValue() * 255) << 24);
             
-            // Outer border
-            RenderUtil.drawRect(windowX - borderWidth, windowY - borderWidth, 
-                              windowX + windowWidth + borderWidth, windowY + windowHeight + borderWidth, 
-                              borderColor);
+            // Outer black border
+            GL11.glColor4f(0.0F, 0.0F, 0.0F, opacity.getValue());
+            drawRect(windowX - borderWidth, windowY - borderWidth, 
+                    windowX + windowWidth + borderWidth, windowY + windowHeight + borderWidth);
             
-            // Inner white border for contrast
-            RenderUtil.drawRect(windowX - 1, windowY - 1, 
-                              windowX + windowWidth + 1, windowY + windowHeight + 1, 
-                              0xFFFFFFFF | ((int)(opacity.getValue() * 255) << 24));
+            // Inner accent border (light gray)
+            GL11.glColor4f(0.4F, 0.4F, 0.4F, opacity.getValue());
+            drawRect(windowX - 1, windowY - 1, 
+                    windowX + windowWidth + 1, windowY + windowHeight + 1);
+            
+            // Re-enable texture for framebuffer
+            GL11.glEnable(GL11.GL_TEXTURE_2D);
         }
         
-        // Apply opacity
-        GlStateManager.color(1.0F, 1.0F, 1.0F, opacity.getValue());
+        // Apply opacity to framebuffer
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, opacity.getValue());
         
         // Bind framebuffer texture with high-quality filtering
-        GlStateManager.bindTexture(rearViewFramebuffer.framebufferTexture);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, rearViewFramebuffer.framebufferTexture);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL11.GL_CLAMP);
         GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL11.GL_CLAMP);
         
-        // Draw textured quad with proper UVs
+        // Draw textured quad with proper UVs (flipped vertically)
         GL11.glBegin(GL11.GL_QUADS);
         
-        // Bottom-left (texture is flipped)
+        // Bottom-left (texture coordinate 0,1 because framebuffer is flipped)
         GL11.glTexCoord2f(0.0F, 1.0F);
         GL11.glVertex2f(windowX, windowY);
         
@@ -366,14 +388,24 @@ public class RearView extends Module {
         
         GL11.glEnd();
         
-        // Restore state
-        GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
-        GlStateManager.bindTexture(0);
-        GlStateManager.enableAlpha();
-        GlStateManager.enableDepth();
-        GlStateManager.disableBlend();
-        GlStateManager.popAttrib();
-        GlStateManager.popMatrix();
+        // Restore GL state completely
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+        
+        GL11.glPopAttrib();
+        GL11.glPopMatrix();
+    }
+    
+    /**
+     * Simple rect drawing helper for borders
+     */
+    private void drawRect(float x1, float y1, float x2, float y2) {
+        GL11.glBegin(GL11.GL_QUADS);
+        GL11.glVertex2f(x1, y1);
+        GL11.glVertex2f(x2, y1);
+        GL11.glVertex2f(x2, y2);
+        GL11.glVertex2f(x1, y2);
+        GL11.glEnd();
     }
     
     /**

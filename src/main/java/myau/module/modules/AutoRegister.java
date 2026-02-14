@@ -28,6 +28,7 @@ public class AutoRegister extends Module {
     
     private boolean hasRegistered = false;
     private long detectionTime = 0L;
+    private int lastWorldId = 0;
     private static final long DELAY = 1000; // 1 second delay before sending command
     
     public AutoRegister() {
@@ -53,13 +54,22 @@ public class AutoRegister extends Module {
         }
         
         String text = "";
+        boolean detected = false;
         
-        // Check S45PacketTitle (title/subtitle/actionbar)
+        // Check S45PacketTitle (title/subtitle/actionbar) - ALL TYPES
         if (event.getPacket() instanceof S45PacketTitle) {
             S45PacketTitle packet = (S45PacketTitle) event.getPacket();
+            
+            // Get message from packet - works for ALL title types (TITLE, SUBTITLE, ACTIONBAR)
             IChatComponent message = packet.getMessage();
             if (message != null) {
                 text = message.getUnformattedText().toLowerCase();
+                
+                // Enhanced detection - check for "register" AND "password" separately
+                if (containsRegister(text) || containsPassword(text)) {
+                    detected = true;
+                    ChatUtil.sendFormatted("§a[AutoRegister] §fDetected in TITLE: §7" + text);
+                }
             }
         }
         
@@ -67,14 +77,18 @@ public class AutoRegister extends Module {
         if (event.getPacket() instanceof S02PacketChat) {
             S02PacketChat packet = (S02PacketChat) event.getPacket();
             text = packet.getChatComponent().getUnformattedText().toLowerCase();
+            
+            // Enhanced detection
+            if (containsRegister(text) || containsPassword(text)) {
+                detected = true;
+                ChatUtil.sendFormatted("§a[AutoRegister] §fDetected in CHAT: §7" + text);
+            }
         }
         
-        // Detect register/login keywords
-        if (containsAuthKeywords(text)) {
-            if (detectionTime == 0L) {
-                detectionTime = System.currentTimeMillis();
-                ChatUtil.sendFormatted("§a[AutoRegister] §fDetected auth prompt, sending credentials in 1 second...");
-            }
+        // Trigger registration if detected
+        if (detected && detectionTime == 0L) {
+            detectionTime = System.currentTimeMillis();
+            ChatUtil.sendFormatted("§a[AutoRegister] §fAuth prompt detected! Sending credentials in 1 second...");
         }
     }
     
@@ -85,6 +99,14 @@ public class AutoRegister extends Module {
             return;
         }
         
+        // Reset on world change/respawn detection
+        if (lastWorldId != (mc.theWorld != null ? mc.theWorld.hashCode() : 0)) {
+            lastWorldId = mc.theWorld != null ? mc.theWorld.hashCode() : 0;
+            hasRegistered = false;
+            detectionTime = 0L;
+            ChatUtil.sendFormatted("§a[AutoRegister] §fReset - Ready to detect auth prompts");
+        }
+        
         // If we detected and delay passed, send command
         if (detectionTime > 0L && System.currentTimeMillis() - detectionTime >= DELAY && !hasRegistered) {
             sendRegisterCommand();
@@ -93,21 +115,57 @@ public class AutoRegister extends Module {
         }
     }
     
-    private boolean containsAuthKeywords(String text) {
-        String[] keywords = {
-            "register", "login", "/register", "/login",
-            "регистрация", "вход", // Russian
-            "password", "пароль",
-            "authenticate", "auth"
+    /**
+     * Check if text contains "register" or related words
+     */
+    private boolean containsRegister(String text) {
+        String[] registerWords = {
+            "register",
+            "/register",
+            "registration",
+            "регистр", // Russian
+            "rejestr", // Polish
+            "cadastr", // Portuguese
+            "s'inscrire" // French
         };
         
-        for (String keyword : keywords) {
-            if (text.contains(keyword)) {
+        for (String word : registerWords) {
+            if (text.contains(word)) {
                 return true;
             }
         }
-        
         return false;
+    }
+    
+    /**
+     * Check if text contains "password" or related words
+     */
+    private boolean containsPassword(String text) {
+        String[] passwordWords = {
+            "password",
+            "pass",
+            "senha", // Portuguese
+            "пароль", // Russian
+            "hasło", // Polish
+            "mot de passe", // French
+            "contraseña", // Spanish
+            "passwort" // German
+        };
+        
+        for (String word : passwordWords) {
+            if (text.contains(word)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Legacy method for backwards compatibility
+     */
+    private boolean containsAuthKeywords(String text) {
+        return containsRegister(text) || containsPassword(text) || 
+               text.contains("login") || text.contains("auth");
     }
     
     private void sendRegisterCommand() {

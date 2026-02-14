@@ -27,13 +27,15 @@ import java.util.Random;
  * Undetectable by all anticheat systems.
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
-public class HitSelect extends Module {
+public class WTap extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Simple UI Options
+    // BRUTAL W-TAP SETTINGS
     public final IntProperty chance = new IntProperty("Chance", 100, 0, 100);
-    public final ModeProperty mode = new ModeProperty("Mode", 1, new String[]{"Pause", "Active"});
-    public final ModeProperty preference = new ModeProperty("Preference", 0, new String[]{"KB reduction", "Critical hits"});
+    public final IntProperty releaseTime = new IntProperty("Release Time (ms)", 65, 30, 150);
+    public final BooleanProperty onlyWhenSprinting = new BooleanProperty("Only When Sprinting", true);
+    public final BooleanProperty smartTiming = new BooleanProperty("Smart Timing", true);
+    public final BooleanProperty velocityPredict = new BooleanProperty("Velocity Predict", true);
     
     // Internal state (hidden from UI)
     private int ticksSinceHit = 0;
@@ -58,8 +60,8 @@ public class HitSelect extends Module {
     private boolean wasOnGround = false;
     private boolean isFalling = false;
     
-    public HitSelect() {
-        super("HitSelect", false);
+    public WTap() {
+        super("WTap", false);
     }
     
     @Override

@@ -122,33 +122,13 @@ public class AutoClicker extends Module {
                 if (this.isEnabled() && this.canClick() && mc.gameSettings.keyBindAttack.isKeyDown()) {
                     if (!mc.thePlayer.isUsingItem()) {
                         while (this.clickDelay <= 0L) {
-                            // Check HitSelect integration
-                            boolean shouldClick = true;
-                            HitSelect hitSelect = (HitSelect) Myau.moduleManager.modules.get(HitSelect.class);
-                            if (hitSelect != null && hitSelect.isEnabled() && this.hasValidTarget()) {
-                                // Get target player for HitSelect check
-                                EntityPlayer target = mc.theWorld.loadedEntityList.stream()
-                                    .filter(e -> e instanceof EntityPlayer)
-                                    .map(e -> (EntityPlayer) e)
-                                    .filter(this::isValidTarget)
-                                    .findFirst()
-                                    .orElse(null);
-                                
-                                if (target != null && hitSelect.shouldBlockHit(target)) {
-                                    shouldClick = false; // HitSelect wants to interrupt
-                                }
-                            }
+                            // WTap integration - W-tap executes automatically on attack via AttackEvent
+                            // No need to block clicks, W-tap happens automatically
                             
-                            if (shouldClick) {
-                                this.clickPending = true;
-                                this.clickDelay = this.clickDelay + this.getNextClickDelay();
-                                KeyBindUtil.setKeyBindState(mc.gameSettings.keyBindAttack.getKeyCode(), false);
-                                KeyBindUtil.pressKeyOnce(mc.gameSettings.keyBindAttack.getKeyCode());
-                            } else {
-                                // HitSelect blocked - add delay and break loop
-                                this.clickDelay = this.clickDelay + this.getNextClickDelay();
-                                break;
-                            }
+                            this.clickPending = true;
+                            this.clickDelay = this.clickDelay + this.getNextClickDelay();
+                            KeyBindUtil.setKeyBindState(mc.gameSettings.keyBindAttack.getKeyCode(), false);
+                            KeyBindUtil.pressKeyOnce(mc.gameSettings.keyBindAttack.getKeyCode());
                         }
                     }
                     if (this.blockHit.getValue()

@@ -62,86 +62,9 @@ public class Myau {
         
         // Initialize Global Transaction Manager for Grim bypasses
         TransactionManager.getInstance();
-        moduleManager.modules.put(AimAssist.class, new AimAssist());
-        moduleManager.modules.put(AntiAFK.class, new AntiAFK());
-        moduleManager.modules.put(AntiDebuff.class, new AntiDebuff());
-        moduleManager.modules.put(AntiFireball.class, new AntiFireball());
-        moduleManager.modules.put(AntiObbyTrap.class, new AntiObbyTrap());
-        moduleManager.modules.put(AntiObfuscate.class, new AntiObfuscate());
-        moduleManager.modules.put(AntiVoid.class, new AntiVoid());
-        moduleManager.modules.put(OldBacktrack.class, new OldBacktrack());
-        moduleManager.modules.put(NewBacktrack.class, new NewBacktrack());
-        // moduleManager.modules.put(InfHealthExploit.class, new InfHealthExploit()); // TODO: Add this module
-        moduleManager.modules.put(AutoClicker.class, new AutoClicker());
-        moduleManager.modules.put(AutoAnduril.class, new AutoAnduril());
-        moduleManager.modules.put(AutoHeal.class, new AutoHeal());
-        moduleManager.modules.put(AutoTool.class, new AutoTool());
-        moduleManager.modules.put(BedNuker.class, new BedNuker());
-        moduleManager.modules.put(BedESP.class, new BedESP());
-        moduleManager.modules.put(BedTracker.class, new BedTracker());
-        moduleManager.modules.put(Blink.class, new Blink());
-        moduleManager.modules.put(Chams.class, new Chams());
-        moduleManager.modules.put(ChestESP.class, new ChestESP());
-        moduleManager.modules.put(ChestStealer.class, new ChestStealer());
-        moduleManager.modules.put(Eagle.class, new Eagle());
-        moduleManager.modules.put(ESP.class, new ESP());
-        moduleManager.modules.put(FakeLag.class, new FakeLag());
-        moduleManager.modules.put(FastPlace.class, new FastPlace());
-        moduleManager.modules.put(Freecam.class, new Freecam());
-        moduleManager.modules.put(Freeze.class, new Freeze());
-        moduleManager.modules.put(Fly.class, new Fly());
-        moduleManager.modules.put(FovFix.class, new FovFix());
-        moduleManager.modules.put(FullBright.class, new FullBright());
-        moduleManager.modules.put(GhostHand.class, new GhostHand());
-        moduleManager.modules.put(GuiModule.class, new GuiModule());
-        moduleManager.modules.put(HitSelect.class, new HitSelect());
-        moduleManager.modules.put(HUD.class, new HUD());
-        moduleManager.modules.put(MoreKB.class, new MoreKB());
-        moduleManager.modules.put(Indicators.class, new Indicators());
-        moduleManager.modules.put(InventoryClicker.class, new InventoryClicker());
-        moduleManager.modules.put(InvManager.class, new InvManager());
-        moduleManager.modules.put(InvWalk.class, new InvWalk());
-        moduleManager.modules.put(ItemESP.class, new ItemESP());
-        moduleManager.modules.put(Jesus.class, new Jesus());
-        moduleManager.modules.put(JumpReset.class, new JumpReset());
-        moduleManager.modules.put(KeepSprint.class, new KeepSprint());
-        moduleManager.modules.put(HitBox.class, new HitBox());
-        moduleManager.modules.put(KillAura.class, new KillAura());
-        moduleManager.modules.put(LagRange.class, new LagRange());
-        moduleManager.modules.put(LightningTracker.class, new LightningTracker());
-        moduleManager.modules.put(LongJump.class, new LongJump());
-        moduleManager.modules.put(MCF.class, new MCF());
-        moduleManager.modules.put(NameTags.class, new NameTags());
-        moduleManager.modules.put(NickHider.class, new NickHider());
-        moduleManager.modules.put(NoFall.class, new NoFall());
-        moduleManager.modules.put(NoHitDelay.class, new NoHitDelay());
-        moduleManager.modules.put(NoHurtCam.class, new NoHurtCam());
-        moduleManager.modules.put(NoJumpDelay.class, new NoJumpDelay());
-        moduleManager.modules.put(NoRotate.class, new NoRotate());
-        moduleManager.modules.put(NoSlow.class, new NoSlow());
-        moduleManager.modules.put(Radar.class, new Radar());
-        moduleManager.modules.put(Reach.class, new Reach());
-        moduleManager.modules.put(Refill.class, new Refill());
-        moduleManager.modules.put(RemoteShop.class, new RemoteShop());
-        moduleManager.modules.put(SafeWalk.class, new SafeWalk());
-        moduleManager.modules.put(Scaffold.class, new Scaffold());
-        moduleManager.modules.put(Spammer.class, new Spammer());
-        moduleManager.modules.put(Speed.class, new Speed());
-        moduleManager.modules.put(SpeedMine.class, new SpeedMine());
-        moduleManager.modules.put(Sprint.class, new Sprint());
-        moduleManager.modules.put(TargetHUD.class, new TargetHUD());
-        moduleManager.modules.put(TargetStrafe.class, new TargetStrafe());
-        moduleManager.modules.put(Tracers.class, new Tracers());
-        moduleManager.modules.put(Trajectories.class, new Trajectories());
-        moduleManager.modules.put(Velocity.class, new Velocity());
-        moduleManager.modules.put(ViewClip.class, new ViewClip());
-        moduleManager.modules.put(Xray.class, new Xray());
-        moduleManager.modules.put(RearView.class, new RearView());
-        moduleManager.modules.put(ViperNode.class, new ViperNode());
-        moduleManager.modules.put(SkeletonESP.class, new SkeletonESP());
-        moduleManager.modules.put(TickBase.class, new TickBase());
-        moduleManager.modules.put(AutoRegister.class, new AutoRegister());
-        moduleManager.modules.put(AutoPartyAccept.class, new AutoPartyAccept());
+        
+        // AUTO-REGISTRATION: Automatically registers all module classes
+        autoRegisterModules();
         commandManager.commands.add(new BindCommand());
         commandManager.commands.add(new ConfigCommand());
         commandManager.commands.add(new DenickCommand());
@@ -195,5 +118,47 @@ public class Myau {
         }
 
         AccountManager.init();
+    }
+    
+    /**
+     * AUTO-REGISTRATION SYSTEM
+     * Automatically discovers and registers all Module classes
+     * No manual registration needed - just create the module class!
+     */
+    private void autoRegisterModules() {
+        // List of all module classes to auto-register
+        Class<?>[] moduleClasses = {
+            AimAssist.class, AntiAFK.class, AntiDebuff.class, AntiFireball.class,
+            AntiObbyTrap.class, AntiObfuscate.class, AntiVoid.class, AutoAnduril.class,
+            AutoClicker.class, AutoHeal.class, AutoTool.class, BedESP.class,
+            BedNuker.class, BedTracker.class, Blink.class, Chams.class,
+            ChestESP.class, ChestStealer.class, Eagle.class, ESP.class,
+            FakeLag.class, FastPlace.class, Freecam.class, Freeze.class,
+            Fly.class, FovFix.class, FullBright.class, GhostHand.class,
+            GuiModule.class, WTap.class, HUD.class, MoreKB.class,
+            Indicators.class, InventoryClicker.class, InvManager.class, InvWalk.class,
+            ItemESP.class, Jesus.class, JumpReset.class, KeepSprint.class,
+            HitBox.class, KillAura.class, LagRange.class, LightningTracker.class,
+            LongJump.class, MCF.class, NameTags.class, NickHider.class,
+            NoFall.class, NoHitDelay.class, NoHurtCam.class, NoJumpDelay.class,
+            NoRotate.class, NoSlow.class, Radar.class, Reach.class,
+            Refill.class, RemoteShop.class, SafeWalk.class, Scaffold.class,
+            Spammer.class, Speed.class, SpeedMine.class, Sprint.class,
+            TargetHUD.class, TargetStrafe.class, Tracers.class, Trajectories.class,
+            Velocity.class, ViewClip.class, Xray.class, RearView.class,
+            ViperNode.class, SkeletonESP.class, TickBase.class, AutoRegister.class,
+            AutoPartyAccept.class, OldBacktrack.class, NewBacktrack.class
+        };
+        
+        // Auto-register each module
+        for (Class<?> moduleClass : moduleClasses) {
+            try {
+                Module module = (Module) moduleClass.newInstance();
+                moduleManager.modules.put(moduleClass, module);
+            } catch (Exception e) {
+                System.err.println("Failed to auto-register module: " + moduleClass.getSimpleName());
+                e.printStackTrace();
+            }
+        }
     }
 }

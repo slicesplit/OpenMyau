@@ -21,6 +21,7 @@ import net.minecraft.network.play.server.S32PacketConfirmTransaction;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
+import org.lwjgl.opengl.GL11;
 
 import java.awt.*;
 import java.util.*;
@@ -1422,7 +1423,7 @@ public class OldBacktrack extends Module {
 
     /**
      * Renders a single Vape V4 style box with smooth edges and clean aesthetic
-     * 65% opacity light blue with crisp outlines
+     * FIXED: Proper GL state management for smooth, butter rendering
      */
     private void renderVapeV4Box(PositionData pos, Color color) {
         double renderX = pos.x - ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
@@ -1435,15 +1436,114 @@ public class OldBacktrack extends Module {
             renderX + 0.3, renderY + 1.8, renderZ + 0.3
         );
         
-        RenderUtil.enableRenderState();
+        // FIXED: Manual GL state management for proper rendering
+        GL11.glPushMatrix();
+        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
         
-        // Vape V4 style: Filled box (opacity is handled by RenderUtil internally)
-        RenderUtil.drawFilledBox(box, color.getRed(), color.getGreen(), color.getBlue());
+        // Disable depth test and lighting for overlay rendering
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
+        GL11.glDisable(GL11.GL_LIGHTING);
+        GL11.glDisable(GL11.GL_TEXTURE_2D);
+        GL11.glEnable(GL11.GL_BLEND);
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        GL11.glDisable(GL11.GL_CULL_FACE);
+        GL11.glLineWidth(1.5F);
         
-        // Vape V4 style: Clean, thin outline with full opacity for visibility
-        RenderUtil.drawBoundingBox(box, color.getRed(), color.getGreen(), color.getBlue(), 255, 1.5F);
+        // Draw filled box with transparency (165 alpha = 65% opacity)
+        drawFilledBoundingBox(box, color.getRed(), color.getGreen(), color.getBlue(), 165);
         
-        RenderUtil.disableRenderState();
+        // Draw outline with full opacity
+        drawBoundingBoxOutline(box, color.getRed(), color.getGreen(), color.getBlue(), 255);
+        
+        // Restore GL state
+        GL11.glPopAttrib();
+        GL11.glPopMatrix();
+    }
+    
+    /**
+     * Draw filled bounding box - manual implementation for control
+     */
+    private void drawFilledBoundingBox(AxisAlignedBB box, int r, int g, int b, int a) {
+        GL11.glColor4f(r / 255.0F, g / 255.0F, b / 255.0F, a / 255.0F);
+        GL11.glBegin(GL11.GL_QUADS);
+        
+        // Bottom
+        GL11.glVertex3d(box.minX, box.minY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
+        
+        // Top
+        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
+        
+        // Front
+        GL11.glVertex3d(box.minX, box.minY, box.minZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
+        
+        // Back
+        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
+        
+        // Left
+        GL11.glVertex3d(box.minX, box.minY, box.minZ);
+        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
+        
+        // Right
+        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
+        
+        GL11.glEnd();
+    }
+    
+    /**
+     * Draw bounding box outline - manual implementation for control
+     */
+    private void drawBoundingBoxOutline(AxisAlignedBB box, int r, int g, int b, int a) {
+        GL11.glColor4f(r / 255.0F, g / 255.0F, b / 255.0F, a / 255.0F);
+        GL11.glBegin(GL11.GL_LINES);
+        
+        // Bottom edges
+        GL11.glVertex3d(box.minX, box.minY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.minY, box.minZ);
+        
+        // Top edges
+        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
+        
+        // Vertical edges
+        GL11.glVertex3d(box.minX, box.minY, box.minZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.minZ);
+        GL11.glVertex3d(box.maxX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.maxX, box.maxY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.minY, box.maxZ);
+        GL11.glVertex3d(box.minX, box.maxY, box.maxZ);
+        
+        GL11.glEnd();
     }
 
     // ==================== Intelligent AI System ====================
