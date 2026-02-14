@@ -10,11 +10,13 @@ import myau.event.EventManager;
 import myau.management.*;
 import myau.management.TransactionManager;
 import myau.module.Module;
+import myau.module.ModuleInfo;
 import myau.module.ModuleManager;
 import myau.module.modules.*;
 import myau.property.Property;
 import myau.property.PropertyManager;
 
+import java.io.File;
 import java.io.InputStreamReader;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
@@ -121,44 +123,66 @@ public class Myau {
     }
     
     /**
-     * AUTO-REGISTRATION SYSTEM
-     * Automatically discovers and registers all Module classes
-     * No manual registration needed - just create the module class!
+     * TRUE AUTO-REGISTRATION SYSTEM
+     * Uses reflection to scan for ALL classes with @ModuleInfo annotation
+     * ZERO manual registration needed - just create the module class with @ModuleInfo!
      */
     private void autoRegisterModules() {
-        // List of all module classes to auto-register
-        Class<?>[] moduleClasses = {
-            AimAssist.class, AntiAFK.class, AntiDebuff.class, AntiFireball.class,
-            AntiObbyTrap.class, AntiObfuscate.class, AntiVoid.class, AutoAnduril.class,
-            AutoClicker.class, AutoHeal.class, AutoTool.class, BedESP.class,
-            BedNuker.class, BedTracker.class, Blink.class, Chams.class,
-            ChestESP.class, ChestStealer.class, Eagle.class, ESP.class,
-            FakeLag.class, FastPlace.class, Freecam.class, Freeze.class,
-            Fly.class, FovFix.class, FullBright.class, GhostHand.class,
-            GuiModule.class, WTap.class, HUD.class, MoreKB.class,
-            Indicators.class, InventoryClicker.class, InvManager.class, InvWalk.class,
-            ItemESP.class, Jesus.class, JumpReset.class, KeepSprint.class,
-            HitBox.class, KillAura.class, LagRange.class, LightningTracker.class,
-            LongJump.class, MCF.class, NameTags.class, NickHider.class,
-            NoFall.class, NoHitDelay.class, NoHurtCam.class, NoJumpDelay.class,
-            NoRotate.class, NoSlow.class, Radar.class, Reach.class,
-            Refill.class, RemoteShop.class, SafeWalk.class, Scaffold.class,
-            Spammer.class, Speed.class, SpeedMine.class, Sprint.class,
-            TargetHUD.class, TargetStrafe.class, Tracers.class, Trajectories.class,
-            Velocity.class, ViewClip.class, Xray.class, RearView.class,
-            ViperNode.class, SkeletonESP.class, TickBase.class, AutoRegister.class,
-            AutoPartyAccept.class, OldBacktrack.class, NewBacktrack.class
-        };
-        
-        // Auto-register each module
-        for (Class<?> moduleClass : moduleClasses) {
-            try {
-                Module module = (Module) moduleClass.newInstance();
-                moduleManager.modules.put(moduleClass, module);
-            } catch (Exception e) {
-                System.err.println("Failed to auto-register module: " + moduleClass.getSimpleName());
-                e.printStackTrace();
+        try {
+            // Get all classes in the modules package
+            Package modulesPackage = Module.class.getPackage();
+            String packageName = "myau.module.modules";
+            
+            // Scan classpath for module classes
+            ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+            String path = packageName.replace('.', '/');
+            
+            // Get all .class files in the modules directory
+            java.net.URL resource = classLoader.getResource(path);
+            if (resource == null) {
+                System.err.println("Could not find modules package!");
+                return;
             }
+            
+            File directory = new File(resource.getFile());
+            if (!directory.exists()) {
+                System.err.println("Modules directory does not exist!");
+                return;
+            }
+            
+            // Scan all .class files
+            File[] files = directory.listFiles((dir, name) -> name.endsWith(".class"));
+            if (files == null) return;
+            
+            int registered = 0;
+            for (File file : files) {
+                String className = file.getName().replace(".class", "");
+                String fullClassName = packageName + "." + className;
+                
+                try {
+                    // Load the class
+                    Class<?> clazz = Class.forName(fullClassName);
+                    
+                    // Check if it has @ModuleInfo annotation
+                    if (clazz.isAnnotationPresent(ModuleInfo.class)) {
+                        // Check if it extends Module
+                        if (Module.class.isAssignableFrom(clazz)) {
+                            // Create instance and register
+                            Module module = (Module) clazz.newInstance();
+                            moduleManager.modules.put(clazz, module);
+                            registered++;
+                        }
+                    }
+                } catch (Exception e) {
+                    // Skip classes that can't be loaded
+                }
+            }
+            
+            System.out.println("[Myau] Auto-registered " + registered + " modules");
+            
+        } catch (Exception e) {
+            System.err.println("Failed to auto-register modules!");
+            e.printStackTrace();
         }
     }
 }
