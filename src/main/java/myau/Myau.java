@@ -123,66 +123,47 @@ public class Myau {
     }
     
     /**
-     * TRUE AUTO-REGISTRATION SYSTEM
-     * Uses reflection to scan for ALL classes with @ModuleInfo annotation
-     * ZERO manual registration needed - just create the module class with @ModuleInfo!
+     * SIMPLE AUTO-REGISTRATION SYSTEM
+     * Hardcoded list but cleaner than manual registration everywhere
+     * Add your module class here and it auto-registers!
      */
     private void autoRegisterModules() {
-        try {
-            // Get all classes in the modules package
-            Package modulesPackage = Module.class.getPackage();
-            String packageName = "myau.module.modules";
-            
-            // Scan classpath for module classes
-            ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-            String path = packageName.replace('.', '/');
-            
-            // Get all .class files in the modules directory
-            java.net.URL resource = classLoader.getResource(path);
-            if (resource == null) {
-                System.err.println("Could not find modules package!");
-                return;
-            }
-            
-            File directory = new File(resource.getFile());
-            if (!directory.exists()) {
-                System.err.println("Modules directory does not exist!");
-                return;
-            }
-            
-            // Scan all .class files
-            File[] files = directory.listFiles((dir, name) -> name.endsWith(".class"));
-            if (files == null) return;
-            
-            int registered = 0;
-            for (File file : files) {
-                String className = file.getName().replace(".class", "");
-                String fullClassName = packageName + "." + className;
-                
-                try {
-                    // Load the class
-                    Class<?> clazz = Class.forName(fullClassName);
-                    
-                    // Check if it has @ModuleInfo annotation
-                    if (clazz.isAnnotationPresent(ModuleInfo.class)) {
-                        // Check if it extends Module
-                        if (Module.class.isAssignableFrom(clazz)) {
-                            // Create instance and register
-                            Module module = (Module) clazz.newInstance();
-                            moduleManager.modules.put(clazz, module);
-                            registered++;
-                        }
-                    }
-                } catch (Exception e) {
-                    // Skip classes that can't be loaded
+        Class<?>[] moduleClasses = {
+            AimAssist.class, AntiAFK.class, AntiDebuff.class, AntiFireball.class,
+            AntiObbyTrap.class, AntiObfuscate.class, AntiVoid.class, AutoAnduril.class,
+            AutoClicker.class, AutoHeal.class, AutoTool.class, BedESP.class,
+            BedNuker.class, BedTracker.class, Blink.class, Chams.class,
+            ChestESP.class, ChestStealer.class, Eagle.class, ESP.class,
+            FakeLag.class, FastPlace.class, Freecam.class, Freeze.class,
+            Fly.class, FovFix.class, FullBright.class, GhostHand.class,
+            GuiModule.class, WTap.class, HUD.class, MoreKB.class,
+            Indicators.class, InventoryClicker.class, InvManager.class, InvWalk.class,
+            ItemESP.class, Jesus.class, JumpReset.class, KeepSprint.class,
+            HitBox.class, KillAura.class, LagRange.class, LightningTracker.class,
+            LongJump.class, MCF.class, NameTags.class, NickHider.class,
+            NoFall.class, NoHitDelay.class, NoHurtCam.class, NoJumpDelay.class,
+            NoRotate.class, NoSlow.class, Radar.class, Reach.class,
+            Refill.class, RemoteShop.class, SafeWalk.class, Scaffold.class,
+            Spammer.class, Speed.class, SpeedMine.class, Sprint.class,
+            TargetHUD.class, TargetStrafe.class, Tracers.class, Trajectories.class,
+            Velocity.class, ViewClip.class, Xray.class, RearView.class,
+            ViperNode.class, SkeletonESP.class, TickBase.class, AutoRegister.class,
+            AutoPartyAccept.class, OldBacktrack.class, NewBacktrack.class
+        };
+        
+        int registered = 0;
+        for (Class<?> moduleClass : moduleClasses) {
+            try {
+                if (moduleClass.isAnnotationPresent(ModuleInfo.class) && Module.class.isAssignableFrom(moduleClass)) {
+                    Module module = (Module) moduleClass.newInstance();
+                    moduleManager.modules.put(moduleClass, module);
+                    registered++;
                 }
+            } catch (Exception e) {
+                System.err.println("[Myau] Failed to register: " + moduleClass.getSimpleName());
             }
-            
-            System.out.println("[Myau] Auto-registered " + registered + " modules");
-            
-        } catch (Exception e) {
-            System.err.println("Failed to auto-register modules!");
-            e.printStackTrace();
         }
+        
+        System.out.println("[Myau] Auto-registered " + registered + " modules");
     }
 }
