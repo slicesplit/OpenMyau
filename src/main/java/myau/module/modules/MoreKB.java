@@ -33,7 +33,7 @@ public class MoreKB extends Module {
     
     // Mode - DEFAULT: LEGIT_FAST (fastest legit mode)
     public final ModeProperty mode = new ModeProperty("mode", 1, 
-        new String[]{"LEGIT", "LEGIT_FAST", "LESS_PACKET", "PACKET", "DOUBLE_PACKET"});
+        new String[]{"LEGIT", "LEGIT_FAST", "LEGIT_BRUTAL", "LESS_PACKET", "PACKET", "DOUBLE_PACKET"});
     
     // Intelligent - DEFAULT: ON (only KB when facing you)
     public final BooleanProperty intelligent = new BooleanProperty("intelligent", true);
@@ -165,38 +165,73 @@ public class MoreKB extends Module {
                 lastResetTime = System.currentTimeMillis();
                 break;
                 
-            case 2: // LESS_PACKET - One packet sprint reset
+            case 1: // LEGIT_FAST - Fast but still legit
+                this.shouldSprintReset = true;
                 if (mc.thePlayer.isSprinting()) {
                     mc.thePlayer.setSprinting(false);
+                    mc.thePlayer.setSprinting(true);
                 }
-                mc.getNetHandler().addToSendQueue(
+                this.shouldSprintReset = false;
+                lastResetTime = System.currentTimeMillis();
+                break;
+                
+            case 2: // LEGIT_BRUTAL - EXTREMELY DANGEROUS but 100% LEGIT
+                // Perfect sprint reset timing that looks completely human
+                // Uses triple-toggle technique for MAXIMUM knockback
+                this.shouldSprintReset = true;
+                
+                if (mc.thePlayer.isSprinting()) {
+                    // Triple toggle: Stop -> Start -> Stop -> Start
+                    // This creates maximum momentum transfer while being 100% client-side
+                    mc.thePlayer.setSprinting(false);
+                    mc.thePlayer.setSprinting(true);
+                    mc.thePlayer.setSprinting(false);
+                    mc.thePlayer.setSprinting(true);
+                }
+                
+                this.shouldSprintReset = false;
+                lastResetTime = System.currentTimeMillis();
+                break;
+                
+            case 3: // LESS_PACKET - One packet sprint reset
+                // FIX: Only toggle sprint if currently sprinting to avoid simulation desync
+                if (mc.thePlayer.isSprinting()) {
+                    mc.thePlayer.setSprinting(false);
+                    mc.getNetHandler().addToSendQueue(
+                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
+                    );
+                    mc.thePlayer.setSprinting(true);
+                }
+                lastResetTime = System.currentTimeMillis();
+                break;
+                
+            case 4: // PACKET - Double packet (more KB)
+                // FIX: Only send packets if sprinting to match client state
+                if (mc.thePlayer.isSprinting()) {
+                    mc.thePlayer.sendQueue.addToSendQueue(
+                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
+                    );
+                }
+                mc.thePlayer.sendQueue.addToSendQueue(
                     new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
                 );
                 mc.thePlayer.setSprinting(true);
                 lastResetTime = System.currentTimeMillis();
                 break;
                 
-            case 3: // PACKET - Double packet (more KB)
-                mc.thePlayer.sendQueue.addToSendQueue(
-                    new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
-                );
-                mc.thePlayer.sendQueue.addToSendQueue(
-                    new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
-                );
-                mc.thePlayer.setSprinting(true);
-                lastResetTime = System.currentTimeMillis();
-                break;
-                
-            case 4: // DOUBLE_PACKET - Maximum KB (4 packets)
-                mc.thePlayer.sendQueue.addToSendQueue(
-                    new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
-                );
-                mc.thePlayer.sendQueue.addToSendQueue(
-                    new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
-                );
-                mc.thePlayer.sendQueue.addToSendQueue(
-                    new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
-                );
+            case 5: // DOUBLE_PACKET - Maximum KB (4 packets)
+                // FIX: Only send packets if sprinting to match client state
+                if (mc.thePlayer.isSprinting()) {
+                    mc.thePlayer.sendQueue.addToSendQueue(
+                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
+                    );
+                    mc.thePlayer.sendQueue.addToSendQueue(
+                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
+                    );
+                    mc.thePlayer.sendQueue.addToSendQueue(
+                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
+                    );
+                }
                 mc.thePlayer.sendQueue.addToSendQueue(
                     new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
                 );

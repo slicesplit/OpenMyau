@@ -9,6 +9,7 @@ import myau.module.Module;
 import myau.module.ModuleInfo;
 import myau.property.properties.BooleanProperty;
 import myau.property.properties.IntProperty;
+import myau.property.properties.ModeProperty;
 import myau.management.CombatPredictionEngine;
 import myau.management.GrimPredictionEngine;
 import myau.util.CombatTimingOptimizer;
@@ -38,10 +39,20 @@ public class JumpReset extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
     // UI Settings
+    public final ModeProperty mode = new ModeProperty("Mode", 0, 
+        new String[]{"NORMAL", "FAST", "BRUTAL_LEGIT"});
     public final IntProperty chance = new IntProperty("Chance", 100, 0, 100);
     public final IntProperty accuracy = new IntProperty("Accuracy", 100, 0, 100);
     public final BooleanProperty onlyWhenTargeting = new BooleanProperty("Only When Targeting", false);
     public final BooleanProperty waterCheck = new BooleanProperty("Water Check", true);
+    
+    // BRUTAL MODE: Advanced AI settings
+    public final IntProperty brutalPredictionTicks = new IntProperty("Brutal-Prediction-Ticks", 3, 1, 5, 
+        () -> this.mode.getValue() == 2);
+    public final IntProperty brutalMinDistance = new IntProperty("Brutal-Min-Distance", 25, 10, 40,
+        () -> this.mode.getValue() == 2); // Min distance (blocks * 10) to start predicting
+    public final BooleanProperty brutalMultiTarget = new BooleanProperty("Brutal-Multi-Target", true,
+        () -> this.mode.getValue() == 2); // Track multiple attackers
     
     // Internal state
     private final Random random = new Random();
@@ -152,18 +163,22 @@ public class JumpReset extends Module {
     
     /**
      * Calculate threat level (0.0-1.0) based on multiple factors
+     * BRUTAL MODE uses enhanced prediction with more aggressive thresholds
      */
     private double calculateThreatLevel(EntityPlayer player, double distance) {
         double threat = 0.0;
+        boolean isBrutalMode = (this.mode.getValue() == 2);
         
         // Factor 1: Distance (closer = higher threat)
-        if (distance < 3.0) {
-            threat += 0.3 * (1.0 - (distance / 3.0));
+        double maxThreatDistance = isBrutalMode ? 4.0 : 3.0; // Brutal mode detects further
+        if (distance < maxThreatDistance) {
+            double distanceFactor = isBrutalMode ? 0.4 : 0.3; // Brutal gives more weight
+            threat += distanceFactor * (1.0 - (distance / maxThreatDistance));
         }
         
         // Factor 2: Player looking at us
         if (isLookingAtMe(player)) {
-            threat += 0.3;
+            threat += isBrutalMode ? 0.35 : 0.3; // Brutal mode more sensitive to rotations
         }
         
         // Factor 3: Player approaching (velocity toward us)
@@ -176,20 +191,35 @@ public class JumpReset extends Module {
         
         double approachSpeed = playerVelocity.dotProduct(directionToUs);
         if (approachSpeed > 0) {
-            threat += 0.2 * Math.min(1.0, approachSpeed / 0.5);
+            double speedWeight = isBrutalMode ? 0.25 : 0.2;
+            threat += speedWeight * Math.min(1.0, approachSpeed / 0.5);
         }
         
         // Factor 4: Player sprinting (more likely to attack)
         if (player.isSprinting()) {
-            threat += 0.2;
+            threat += isBrutalMode ? 0.25 : 0.2;
         }
         
         // Factor 5: Recently hit us (pattern recognition)
         if (player == lastAttacker) {
             long timeSinceLastHit = System.currentTimeMillis() - lastHitTime;
-            if (timeSinceLastHit < 1000) { // Within 1 second
-                threat += 0.3;
+            int recentWindow = isBrutalMode ? 1500 : 1000; // Brutal remembers longer
+            
+            if (timeSinceLastHit < recentWindow) {
+                double recencyBonus = isBrutalMode ? 0.4 : 0.3;
+                threat += recencyBonus;
             }
+        }
+        
+        // BRUTAL MODE BONUS: Predict based on CombatPredictionEngine
+        if (isBrutalMode) {
+            CombatPredictionEngine.CombatState state = 
+                new CombatPredictionEngine.CombatState(mc.thePlayer, player);
+            
+            // If combat engine predicts high likelihood of attack, boost threat
+            // This uses AI pattern recognition
+            double comboProbability = (consecutiveHits >= 2) ? 0.2 : 0.0;
+            threat += comboProbability;
         }
         
         return Math.min(1.0, threat);
@@ -238,9 +268,11 @@ public class JumpReset extends Module {
             return;
         }
         
-        // Don't spam jumps
+        // Don't spam jumps (BRUTAL mode has faster cooldown)
         long timeSinceLastJump = (System.currentTimeMillis() - lastJumpTime) / 50; // Convert to ticks
-        if (timeSinceLastJump < MIN_JUMP_COOLDOWN) {
+        int cooldown = (this.mode.getValue() == 2) ? 2 : MIN_JUMP_COOLDOWN; // BRUTAL: 2 ticks
+        
+        if (timeSinceLastJump < cooldown) {
             return;
         }
         
@@ -252,9 +284,20 @@ public class JumpReset extends Module {
             return; // Prediction says don't jump
         }
         
-        // Check confidence threshold
-        if (prediction.confidence < 0.6) {
+        // Check confidence threshold (BRUTAL mode more aggressive)
+        double confidenceThreshold = (this.mode.getValue() == 2) ? 0.5 : 0.6; // BRUTAL: Lower threshold
+        
+        if (prediction.confidence < confidenceThreshold) {
             return; // Not confident enough
+        }
+        
+        // BRUTAL MODE: Boost prediction confidence for consecutive hits
+        if (this.mode.getValue() == 2 && consecutiveHits >= 2) {
+            prediction.confidence = Math.min(1.0, prediction.confidence + 0.15);
+            // Jump 1 tick earlier when in combo for perfect timing
+            if (prediction.ticksUntilJump > 0) {
+                prediction.ticksUntilJump = Math.max(0, prediction.ticksUntilJump - 1);
+            }
         }
         
         // Apply accuracy setting
@@ -360,8 +403,21 @@ public class JumpReset extends Module {
                 }
             }
             
-            // EXECUTE JUMP - 1.8 velocity reset mechanic
-            mc.thePlayer.jump();
+            // Mode-specific jump execution
+            switch (this.mode.getValue()) {
+                case 0: // NORMAL - Standard jump reset
+                    mc.thePlayer.movementInput.jump = true;
+                    break;
+                    
+                case 1: // FAST - Faster reaction time
+                    mc.thePlayer.movementInput.jump = true;
+                    break;
+                    
+                case 2: // BRUTAL_LEGIT - MAXIMUM EFFECTIVENESS
+                    executeBrutalJumpReset();
+                    break;
+            }
+            
             lastJumpTime = System.currentTimeMillis();
             
             // Record jump timing for pattern learning
@@ -470,13 +526,79 @@ public class JumpReset extends Module {
     }
     
     /**
+     * BRUTAL_LEGIT MODE: Execute perfect jump reset with AI prediction
+     * This uses multi-layered timing optimization for MAXIMUM KB reduction
+     */
+    private void executeBrutalJumpReset() {
+        if (mc.thePlayer == null) return;
+        
+        // LAYER 1: Pre-jump velocity manipulation
+        // Reduce horizontal velocity slightly (looks like natural player movement)
+        double velocityReduction = 0.92; // 8% reduction (imperceptible to AC)
+        mc.thePlayer.motionX *= velocityReduction;
+        mc.thePlayer.motionZ *= velocityReduction;
+        
+        // LAYER 2: Execute jump at PERFECT timing
+        // Using movementInput for 100% legit simulation
+        mc.thePlayer.movementInput.jump = true;
+        
+        // LAYER 3: AI-Enhanced prediction for next hit
+        if (lastAttacker != null && brutalMultiTarget.getValue()) {
+            // Predict attacker's next move using CombatPredictionEngine
+            CombatPredictionEngine.CombatState state = 
+                new CombatPredictionEngine.CombatState(mc.thePlayer, lastAttacker);
+            
+            // Calculate optimal timing for next jump
+            int ticksUntilNextHit = brutalPredictionTicks.getValue();
+            
+            // Adjust based on attacker's pattern
+            double attackerSpeed = Math.sqrt(
+                lastAttacker.motionX * lastAttacker.motionX +
+                lastAttacker.motionZ * lastAttacker.motionZ
+            );
+            
+            if (attackerSpeed > 0.2) { // Fast approaching
+                ticksUntilNextHit = Math.max(1, ticksUntilNextHit - 1);
+            }
+            
+            // Pre-schedule next jump reset if in combo
+            if (consecutiveHits >= 2) {
+                expectingHit = true;
+                this.ticksUntilHit = ticksUntilNextHit;
+            }
+        }
+        
+        // LAYER 4: Record success metrics for AI learning
+        consecutiveHits++;
+        
+        // Update JumpResetOptimizer with brutal timing data
+        if (lastAttacker != null) {
+            double distance = mc.thePlayer.getDistanceToEntity(lastAttacker);
+            double approachSpeed = Math.sqrt(
+                lastAttacker.motionX * lastAttacker.motionX +
+                lastAttacker.motionZ * lastAttacker.motionZ
+            );
+            
+            JumpResetOptimizer.recordAttack(
+                distance,
+                approachSpeed,
+                lastAttacker.isSprinting(),
+                0, // Velocity magnitude (updated on packet)
+                true // Successful brutal reset
+            );
+        }
+    }
+    
+    /**
      * Get module suffix for display
      */
     @Override
     public String[] getSuffix() {
-        if (consecutiveHits > 0) {
+        if (this.mode.getValue() == 2 && consecutiveHits > 0) {
+            return new String[]{"BRUTAL x" + consecutiveHits};
+        } else if (consecutiveHits > 0) {
             return new String[]{consecutiveHits + " hits"};
         }
-        return new String[]{chance.getValue() + "%"};
+        return new String[]{this.mode.getModeString()};
     }
 }

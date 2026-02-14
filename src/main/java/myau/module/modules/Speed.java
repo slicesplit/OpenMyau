@@ -40,7 +40,8 @@ public class Speed extends Module {
     public void onStrafe(StrafeEvent event) {
         if (this.isEnabled() && this.canBoost()) {
             if (mc.thePlayer.onGround) {
-                mc.thePlayer.motionY = 0.42F;
+                // FIX: Use movementInput.jump instead of setting motionY directly
+                mc.thePlayer.movementInput.jump = true;
                 MoveUtil.setSpeed(
                         MoveUtil.getJumpMotion() * (double) this.multiplier.getValue().floatValue(),
                         MoveUtil.getMoveYaw()

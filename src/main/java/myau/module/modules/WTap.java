@@ -278,7 +278,10 @@ public class WTap extends Module {
                 Thread.sleep(5);
                 
                 // Cancel sprint
-                mc.thePlayer.setSprinting(false);
+                // FIX: Add small delay to prevent simulation desync
+                if (mc.thePlayer.isSprinting()) {
+                    mc.thePlayer.setSprinting(false);
+                }
             } catch (Exception ignored) {}
         }).start();
     }

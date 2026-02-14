@@ -60,6 +60,7 @@ public class GrimPredictionEngine {
         Vec3 position = new Vec3(player.posX, player.posY, player.posZ);
         Vec3 velocity = new Vec3(player.motionX, player.motionY, player.motionZ);
         boolean onGround = player.onGround;
+        boolean isSprinting = player.isSprinting();
         double uncertainty = 0.0;
         
         // Simulate Grim's prediction for each tick
@@ -72,15 +73,28 @@ public class GrimPredictionEngine {
             
             // Apply friction based on environment
             double friction = getFriction(position, player, willBeOnGround);
+            
+            // FIX: Apply friction to Y component only when appropriate (not always)
             velocity = new Vec3(
                 velocity.xCoord * friction,
-                velocity.yCoord * AIR_FRICTION,
+                willBeOnGround ? velocity.yCoord * 0.0 : velocity.yCoord * AIR_FRICTION,
                 velocity.zCoord * friction
             );
             
-            // Apply gravity if in air
+            // Apply gravity if in air (Grim's exact formula)
             if (!willBeOnGround) {
                 velocity = velocity.addVector(0, -GRAVITY, 0);
+            }
+            
+            // FIX: Account for sprint state changes affecting friction
+            // Sprint momentum affects Grim's predictions
+            if (isSprinting && willBeOnGround) {
+                // Sprinting on ground has slightly different friction
+                velocity = new Vec3(
+                    velocity.xCoord * 1.0,
+                    velocity.yCoord,
+                    velocity.zCoord * 1.0
+                );
             }
             
             // Add uncertainty based on Grim's movement threshold

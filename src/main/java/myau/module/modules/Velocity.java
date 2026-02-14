@@ -172,7 +172,7 @@ public class Velocity extends Module {
                 }
             }
             
-            // GRIM MODE: Gradual velocity application over 3 ticks
+            // GRIM MODE: Apply velocity in single tick to avoid position desync
             if (this.mode.getValue() == 5 && grimApplyTick > 0 && grimPendingVelocity != null) {
                 // Calculate safe velocity using prediction engine
                 double horizReduce = 1.0 - ((double) this.horizontal.getValue() / 100.0);
@@ -183,23 +183,12 @@ public class Velocity extends Module {
                     Math.max(horizReduce, vertReduce)
                 );
                 
-                if (grimApplyTick == 1) {
-                    // Tick 1: Apply 40% immediately after transaction window
-                    if (transactionManager.isSafeForBypass()) {
-                        mc.thePlayer.motionX = safeVelocity.xCoord * 0.4;
-                        mc.thePlayer.motionY = safeVelocity.yCoord * 0.4;
-                        mc.thePlayer.motionZ = safeVelocity.zCoord * 0.4;
-                        grimApplyTick = 2;
-                    }
-                } else if (grimApplyTick == 2) {
-                    // Tick 2: Add 30% more
-                    mc.thePlayer.motionX += safeVelocity.xCoord * 0.3;
-                    mc.thePlayer.motionZ += safeVelocity.zCoord * 0.3;
-                    grimApplyTick = 3;
-                } else if (grimApplyTick == 3) {
-                    // Tick 3: Add final 30%
-                    mc.thePlayer.motionX += safeVelocity.xCoord * 0.3;
-                    mc.thePlayer.motionZ += safeVelocity.zCoord * 0.3;
+                // FIX: Apply all at once when transaction window is safe
+                if (grimApplyTick == 1 && transactionManager.isSafeForBypass()) {
+                    // Apply full reduced velocity in single tick (Grim expects this)
+                    mc.thePlayer.motionX = safeVelocity.xCoord;
+                    mc.thePlayer.motionY = safeVelocity.yCoord;
+                    mc.thePlayer.motionZ = safeVelocity.zCoord;
                     grimApplyTick = 0;
                     grimPendingVelocity = null;
                 }
