@@ -9,6 +9,8 @@ import myau.events.KeyEvent;
 import myau.events.PacketEvent;
 import myau.events.PlayerUpdateEvent;
 import myau.module.Module;
+import myau.module.ModuleCategory;
+import myau.module.ModuleInfo;
 import myau.util.PacketUtil;
 import myau.util.PlayerUtil;
 import myau.util.RandomUtil;
@@ -28,6 +30,7 @@ import net.minecraft.util.AxisAlignedBB;
 import java.util.Deque;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
+@ModuleInfo(category = ModuleCategory.MOVEMENT)
 public class AntiVoid extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private boolean isInVoid = false;
