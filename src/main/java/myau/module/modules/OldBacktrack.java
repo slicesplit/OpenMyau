@@ -14,6 +14,7 @@ import myau.mixin.IAccessorRenderManager;
 import myau.util.RenderBoxUtil;
 import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.play.server.S18PacketEntityTeleport;
 import net.minecraft.network.play.server.S14PacketEntity;
@@ -56,6 +57,9 @@ public class OldBacktrack extends Module {
     private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // 1.7-1.8 clients get 0.1 extra hitbox
     private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Movement uncertainty (0.03 blocks)
     
+    // BACKTRACK SAFETY: Conservative reach limit for backtrack attacks
+    private static final double BACKTRACK_SAFE_REACH = 3.01; // Very conservative for backtrack
+    
     // Grim's ReachInterpolationData.java constants
     private static final double INTERPOLATION_EXPANSION_X = 0.03125; // Non-relative teleport expansion X/Z
     private static final double INTERPOLATION_EXPANSION_Y = 0.015625; // Non-relative teleport expansion Y
@@ -95,6 +99,12 @@ public class OldBacktrack extends Module {
     // Shared Settings - Vape V4 Style Light Blue
     public final ColorProperty color = new ColorProperty("color", 0x87CEEB); // Sky blue / light blue
     
+    // ==================== INTELLIGENT PREDICTION SYSTEM ====================
+    // Predicts the BEST time to backtrack without killing ourselves
+    public final BooleanProperty smartPrediction = new BooleanProperty("smart-prediction", true);
+    public final BooleanProperty smoothBacktrack = new BooleanProperty("smooth-backtrack", true);
+    public final BooleanProperty safetyChecks = new BooleanProperty("safety-checks", true);
+    
     // Cooldown Settings (for undetected behavior)
     public final BooleanProperty cooldownEnabled = new BooleanProperty("cooldown-enabled", true);
     public final IntProperty cooldownHits = new IntProperty("cooldown-hits", 3, 1, 10, () -> this.cooldownEnabled.getValue());
@@ -124,6 +134,12 @@ public class OldBacktrack extends Module {
     private int consecutiveBacktrackSuccesses = 0;
     private long lastFlagTime = 0L;
     
+    // ==================== INTELLIGENT PREDICTION STATE ====================
+    // Smart prediction: Track combat context for optimal timing
+    private final Map<Integer, CombatContext> combatContexts = new ConcurrentHashMap<>();
+    private final Map<Integer, Double> smoothPositionOffsets = new ConcurrentHashMap<>();
+    private long lastDamageReceivedTime = 0L;
+    private double lastHealthValue = 20.0;
     
     // World change detection - CRITICAL for fixing flags after match transitions
     private String lastWorldName = null;
@@ -141,6 +157,9 @@ public class OldBacktrack extends Module {
         lagStartTime = 0L;
         backtrackHitCount.clear();
         lastBacktrackTime.clear();
+        combatContexts.clear();
+        smoothPositionOffsets.clear();
+        lastHealthValue = mc.thePlayer != null ? mc.thePlayer.getHealth() : 20.0;
     }
 
     @Override
@@ -155,12 +174,64 @@ public class OldBacktrack extends Module {
         lagStartTime = 0L;
         backtrackHitCount.clear();
         lastBacktrackTime.clear();
+        combatContexts.clear();
+        smoothPositionOffsets.clear();
+    }
+    
+    /**
+     * PUBLIC API: Get current target for KillAura integration
+     * Returns the best backtrack target position if available
+     */
+    public PositionData getBestBacktrackPosition(EntityPlayer target) {
+        if (!this.isEnabled() || target == null) {
+            return null;
+        }
+        
+        if (mode.getModeString().equals("Manual")) {
+            LinkedList<PositionData> positions = entityPositions.get(target.getEntityId());
+            if (positions != null && !positions.isEmpty()) {
+                return selectBestPosition(positions, target);
+            }
+        } else if (mode.getModeString().equals("Lag Based")) {
+            return serverPositions.get(target.getEntityId());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * PUBLIC API: Check if backtrack can be safely used on target
+     */
+    public boolean canBacktrackTarget(EntityPlayer target) {
+        if (!this.isEnabled() || target == null) {
+            return false;
+        }
+        
+        // Apply all prediction and safety checks
+        if (smartPrediction.getValue() && !isPredictedSafeToBacktrack(target)) {
+            return false;
+        }
+        
+        if (safetyChecks.getValue() && !isSafeFromSelfDamage(target)) {
+            return false;
+        }
+        
+        return true;
     }
 
     @EventTarget
     public void onTick(TickEvent event) {
         if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
             return;
+        }
+        
+        // SMART PREDICTION: Track player health for safety checks
+        if (safetyChecks.getValue() && mc.thePlayer != null) {
+            double currentHealth = mc.thePlayer.getHealth();
+            if (currentHealth < lastHealthValue) {
+                lastDamageReceivedTime = System.currentTimeMillis();
+            }
+            lastHealthValue = currentHealth;
         }
         
         // CRITICAL FIX: Detect world changes and reset all state
@@ -173,6 +244,8 @@ public class OldBacktrack extends Module {
             backtrackHitCount.clear();
             lastBacktrackTime.clear();
             targetProfiles.clear();
+            combatContexts.clear();
+            smoothPositionOffsets.clear();
             consecutiveBacktrackSuccesses = 0;
             
             // Release any pending packets
@@ -346,6 +419,16 @@ public class OldBacktrack extends Module {
                 return;
             }
             
+            // SMART PREDICTION: Check if it's safe to backtrack right now
+            if (smartPrediction.getValue() && !isPredictedSafeToBacktrack(target)) {
+                return; // Prediction says it's not safe
+            }
+            
+            // SAFETY CHECKS: Prevent backtrack if we're in danger
+            if (safetyChecks.getValue() && !isSafeFromSelfDamage(target)) {
+                return; // Too risky, would get us killed
+            }
+            
             // RISE/VAPE BYPASS: Intelligent anti-pattern system
             if (!shouldBacktrackRiseVape(target)) {
                 return; // Anti-pattern detection blocked this backtrack
@@ -375,8 +458,12 @@ public class OldBacktrack extends Module {
                         // RISE/VAPE: Apply position jitter to prevent pattern detection
                         PositionData jitteredPos = applyPositionJitter(bestPos);
                         
+                        // SMOOTH BACKTRACK: Apply position smoothly if enabled
+                        PositionData finalPos = smoothBacktrack.getValue() ? 
+                            applySmoothBacktrack(target, jitteredPos) : jitteredPos;
+                        
                         // Apply backtrack position CLIENT-SIDE
-                        applyBacktrackPosition(target, jitteredPos);
+                        applyBacktrackPosition(target, finalPos);
                         
                         
                         // RISE/VAPE: Increment consecutive counter
@@ -721,9 +808,9 @@ public class OldBacktrack extends Module {
                 continue; // Skip positions that would flag
             }
             
-            // RISE/VAPE BYPASS: Use ultra-conservative reach limit (3.06)
-            // This is safer than Grim's theoretical max (3.1295) for 0% ban rate
-            if (distance < currentDistance && distance <= RISE_VAPE_SAFE_REACH && distance < bestDistance) {
+            // BACKTRACK BYPASS: Use VERY conservative reach limit for backtrack
+            // Backtrack adds complexity, so we need to be extra safe
+            if (distance < currentDistance && distance <= BACKTRACK_SAFE_REACH && distance < bestDistance) {
                 bestDistance = distance;
                 bestPosition = pos;
             }
@@ -1194,42 +1281,40 @@ public class OldBacktrack extends Module {
      * Renders a simple box at the player's past server position (backtrack snapshot)
      */
     private void renderManualModePositions(float partialTicks) {
-        if (entityPositions.isEmpty()) {
-            return;
-        }
-        
         try {
-            for (Map.Entry<Integer, LinkedList<PositionData>> entry : entityPositions.entrySet()) {
-                int entityId = entry.getKey();
-                EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entityId);
+            // Render boxes at player positions (which are set to backtrack positions when active)
+            for (Entity entity : mc.theWorld.loadedEntityList) {
+                if (!(entity instanceof EntityPlayer)) {
+                    continue;
+                }
                 
-                if (player == null || player == mc.thePlayer || player.isDead) {
+                EntityPlayer player = (EntityPlayer) entity;
+                
+                if (player == mc.thePlayer || player.isDead) {
                     continue;
                 }
                 
                 if (TeamUtil.isFriend(player)) {
                     continue;
                 }
+                
+                // Check if this player has backtrack history
+                if (!entityPositions.containsKey(player.getEntityId())) {
+                    continue;
+                }
 
-                LinkedList<PositionData> positions = entry.getValue();
-                if (positions.isEmpty()) {
-                    continue;
-                }
+                // BACKTRACK TARGET: Client entity position
+                // When backtrack is triggered, applyBacktrackPosition() moves the entity
+                // So rendering the entity's current position shows the backtrack target
+                double renderX = player.lastTickPosX + (player.posX - player.lastTickPosX) * partialTicks;
+                double renderY = player.lastTickPosY + (player.posY - player.lastTickPosY) * partialTicks;
+                double renderZ = player.lastTickPosZ + (player.posZ - player.lastTickPosZ) * partialTicks;
                 
-                // Get the most recent stored server-side position (latest snapshot)
-                // This shows where the player was at their last recorded server position
-                PositionData serverPos = positions.getFirst();
-                
-                if (serverPos == null) {
-                    continue;
-                }
-                
-                // Render box at the SERVER-SIDE POSITION
-                // This shows where the player actually is in the backtrack history
+                // Render box at current position (backtrack target when active)
                 Color c = new Color(color.getValue());
                 Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
                 Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);
-                RenderBoxUtil.renderPlayerBox(serverPos.x, serverPos.y, serverPos.z, fillColor, outlineColor);
+                RenderBoxUtil.renderPlayerBox(renderX, renderY, renderZ, fillColor, outlineColor);
             }
         } catch (Exception e) {
             // Prevent render errors
@@ -1241,16 +1326,20 @@ public class OldBacktrack extends Module {
      * Renders a box at the actual position where backtrack will attack
      */
     private void renderLagBasedPositions(float partialTicks) {
-        if (serverPositions.isEmpty()) {
-            return;
+        if (!isLagging) {
+            return; // Only render when actively lagging
         }
         
         try {
-            for (Map.Entry<Integer, PositionData> entry : serverPositions.entrySet()) {
-                int entityId = entry.getKey();
-                EntityPlayer player = (EntityPlayer) mc.theWorld.getEntityByID(entityId);
+            // Render boxes at the FROZEN CLIENT POSITIONS (where backtrack attacks)
+            for (Entity entity : mc.theWorld.loadedEntityList) {
+                if (!(entity instanceof EntityPlayer)) {
+                    continue;
+                }
                 
-                if (player == null || player == mc.thePlayer || player.isDead) {
+                EntityPlayer player = (EntityPlayer) entity;
+                
+                if (player == mc.thePlayer || player.isDead) {
                     continue;
                 }
                 
@@ -1258,19 +1347,17 @@ public class OldBacktrack extends Module {
                     continue;
                 }
 
-                // BACKTRACK TARGET: Get the server-side position (where backtrack attacks)
-                PositionData serverPos = entry.getValue();
+                // BACKTRACK TARGET: Client entity position (frozen due to delayed packets)
+                // This is the position we attack - where you SEE them on your screen
+                double renderX = player.lastTickPosX + (player.posX - player.lastTickPosX) * partialTicks;
+                double renderY = player.lastTickPosY + (player.posY - player.lastTickPosY) * partialTicks;
+                double renderZ = player.lastTickPosZ + (player.posZ - player.lastTickPosZ) * partialTicks;
                 
-                if (serverPos == null) {
-                    continue;
-                }
-                
-                // Render box at the BACKTRACK TARGET POSITION
-                // This visually matches where lag-based backtrack will hit
+                // Render box at the FROZEN position (backtrack attack target)
                 Color c = new Color(color.getValue());
                 Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
                 Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);
-                RenderBoxUtil.renderPlayerBox(serverPos.x, serverPos.y, serverPos.z, fillColor, outlineColor);
+                RenderBoxUtil.renderPlayerBox(renderX, renderY, renderZ, fillColor, outlineColor);
             }
         } catch (Exception e) {
             // Prevent render errors
@@ -1397,6 +1484,207 @@ public class OldBacktrack extends Module {
         }
     }
 
+    // ==================== INTELLIGENT PREDICTION METHODS ====================
+    
+    /**
+     * SMART PREDICTION: Predicts if backtrack is safe to use right now
+     * Analyzes combat context to avoid self-damage scenarios
+     */
+    private boolean isPredictedSafeToBacktrack(EntityPlayer target) {
+        int entityId = target.getEntityId();
+        CombatContext context = combatContexts.computeIfAbsent(entityId, k -> new CombatContext());
+        
+        // Update combat context
+        context.update(target, mc.thePlayer);
+        
+        // 1. Check if target is moving towards us aggressively
+        double targetVelocity = Math.sqrt(target.motionX * target.motionX + target.motionZ * target.motionZ);
+        Vec3 targetToUs = new Vec3(
+            mc.thePlayer.posX - target.posX,
+            mc.thePlayer.posY - target.posY,
+            mc.thePlayer.posZ - target.posZ
+        );
+        Vec3 targetMotion = new Vec3(target.motionX, target.motionY, target.motionZ);
+        
+        // Dot product to check if target is moving towards us
+        double dotProduct = targetToUs.xCoord * targetMotion.xCoord + 
+                           targetToUs.zCoord * targetMotion.zCoord;
+        
+        if (dotProduct > 0 && targetVelocity > 0.2) {
+            // Target is rushing towards us - backtrack is advantageous
+            context.rushingTowardsUs = true;
+        } else {
+            context.rushingTowardsUs = false;
+        }
+        
+        // 2. Check if we're retreating (moving away from target)
+        double ourVelocity = Math.sqrt(mc.thePlayer.motionX * mc.thePlayer.motionX + 
+                                      mc.thePlayer.motionZ * mc.thePlayer.motionZ);
+        Vec3 usToTarget = new Vec3(
+            target.posX - mc.thePlayer.posX,
+            target.posY - mc.thePlayer.posY,
+            target.posZ - mc.thePlayer.posZ
+        );
+        Vec3 ourMotion = new Vec3(mc.thePlayer.motionX, mc.thePlayer.motionY, mc.thePlayer.motionZ);
+        
+        double ourDotProduct = usToTarget.xCoord * ourMotion.xCoord + 
+                               usToTarget.zCoord * ourMotion.zCoord;
+        
+        if (ourDotProduct < 0 && ourVelocity > 0.15) {
+            // We're retreating - backtrack helps maintain distance
+            context.retreating = true;
+        } else {
+            context.retreating = false;
+        }
+        
+        // 3. Predict optimal timing based on target movement pattern
+        double currentDistance = mc.thePlayer.getDistanceToEntity(target);
+        
+        // If target is moving away, backtrack is advantageous
+        if (targetVelocity > 0.1 && dotProduct < 0) {
+            context.targetMovingAway = true;
+            return true; // Perfect time to backtrack
+        }
+        
+        // If we're in combo range (close distance) and target is rushing
+        if (currentDistance < 3.5 && context.rushingTowardsUs) {
+            return true; // Backtrack to maintain advantage
+        }
+        
+        // If target is at edge of reach and moving away
+        if (currentDistance > 2.8 && currentDistance < 3.2 && context.targetMovingAway) {
+            return true; // Backtrack to extend reach
+        }
+        
+        // Default: allow backtrack if not in dangerous situation
+        return !context.isHighRisk();
+    }
+    
+    /**
+     * SAFETY CHECKS: Ensures backtrack won't get us killed
+     */
+    private boolean isSafeFromSelfDamage(EntityPlayer target) {
+        // 1. Check our health
+        double ourHealth = mc.thePlayer.getHealth();
+        if (ourHealth < 6.0) {
+            // Low health - only backtrack if we have clear advantage
+            double targetHealth = target.getHealth();
+            if (targetHealth >= ourHealth) {
+                return false; // Too risky when low health
+            }
+        }
+        
+        // 2. Check if we recently took damage
+        long timeSinceLastDamage = System.currentTimeMillis() - lastDamageReceivedTime;
+        if (timeSinceLastDamage < 500) {
+            // Just took damage - be cautious
+            return ourHealth > 10.0; // Only if we have decent health
+        }
+        
+        // 3. Check if target has weapon advantage
+        if (target.getHeldItem() != null) {
+            String itemName = target.getHeldItem().getDisplayName().toLowerCase();
+            if (itemName.contains("sword") || itemName.contains("axe")) {
+                // Target has weapon - ensure we're not at disadvantage
+                if (mc.thePlayer.getHeldItem() == null) {
+                    return ourHealth > 12.0; // Need good health if we're unarmed
+                }
+            }
+        }
+        
+        // 4. Check nearby enemies
+        int nearbyEnemies = 0;
+        for (EntityPlayer player : mc.theWorld.playerEntities) {
+            if (player == mc.thePlayer || player.isDead || TeamUtil.isFriend(player)) {
+                continue;
+            }
+            if (mc.thePlayer.getDistanceToEntity(player) < 5.0) {
+                nearbyEnemies++;
+            }
+        }
+        
+        if (nearbyEnemies > 1 && ourHealth < 14.0) {
+            return false; // Multiple enemies and low health - too risky
+        }
+        
+        // All safety checks passed
+        return true;
+    }
+    
+    /**
+     * SMOOTH BACKTRACK: Apply position smoothly to hide backtrack from visual detection
+     * Returns a slightly interpolated position for smoother, less detectable backtrack
+     */
+    private PositionData applySmoothBacktrack(EntityPlayer target, PositionData targetPos) {
+        int entityId = target.getEntityId();
+        
+        // Get or initialize smooth offset for this target
+        Double lastOffset = smoothPositionOffsets.get(entityId);
+        if (lastOffset == null) {
+            lastOffset = 0.0;
+        }
+        
+        // Calculate distance to backtrack
+        double currentX = target.posX;
+        double currentY = target.posY;
+        double currentZ = target.posZ;
+        
+        double deltaX = targetPos.x - currentX;
+        double deltaY = targetPos.y - currentY;
+        double deltaZ = targetPos.z - currentZ;
+        
+        // Smooth factor: gradually move towards target position
+        // Higher = snappier, Lower = smoother but slower
+        double smoothFactor = 0.7; // 70% towards target per frame
+        
+        // Interpolate position
+        double smoothX = currentX + (deltaX * smoothFactor);
+        double smoothY = currentY + (deltaY * smoothFactor);
+        double smoothZ = currentZ + (deltaZ * smoothFactor);
+        
+        // Store offset for next iteration
+        double offset = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
+        smoothPositionOffsets.put(entityId, offset);
+        
+        // Return smoothed position
+        return new PositionData(smoothX, smoothY, smoothZ, targetPos.timestamp);
+    }
+    
+    // ==================== COMBAT CONTEXT CLASS ====================
+    
+    private static class CombatContext {
+        boolean rushingTowardsUs = false;
+        boolean retreating = false;
+        boolean targetMovingAway = false;
+        double lastTargetDistance = 0;
+        double lastTargetVelocity = 0;
+        long lastUpdateTime = 0L;
+        int aggressiveMovementCount = 0;
+        
+        void update(EntityPlayer target, EntityPlayer us) {
+            long currentTime = System.currentTimeMillis();
+            double currentDistance = us.getDistanceToEntity(target);
+            double currentVelocity = Math.sqrt(target.motionX * target.motionX + 
+                                              target.motionZ * target.motionZ);
+            
+            // Track aggressive movement patterns
+            if (currentDistance < lastTargetDistance && currentVelocity > 0.2) {
+                aggressiveMovementCount++;
+            } else {
+                aggressiveMovementCount = Math.max(0, aggressiveMovementCount - 1);
+            }
+            
+            lastTargetDistance = currentDistance;
+            lastTargetVelocity = currentVelocity;
+            lastUpdateTime = currentTime;
+        }
+        
+        boolean isHighRisk() {
+            // High risk if target is very aggressive (rushing for multiple ticks)
+            return aggressiveMovementCount > 5;
+        }
+    }
+    
     // ==================== Data Classes ====================
     
     private static class PositionData {
