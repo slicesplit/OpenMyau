@@ -164,19 +164,11 @@ public class KillAura extends Module {
 
     private boolean performAttack(float yaw, float pitch) {
         if (!Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {
-            // ANTI-FLAG: Check reach before attacking when backtrack is active
+            // GRIM BYPASS: Keep strict 3.0 reach for proper bypass
             if (this.target != null) {
-                Module oldBacktrack = Myau.moduleManager.modules.get(OldBacktrack.class);
-                Module newBacktrack = Myau.moduleManager.modules.get(NewBacktrack.class);
-                boolean backtrackActive = (oldBacktrack != null && oldBacktrack.isEnabled()) || 
-                                         (newBacktrack != null && newBacktrack.isEnabled());
-                
-                if (backtrackActive) {
-                    double distance = mc.thePlayer.getDistanceToEntity(this.target.getEntity());
-                    // GRIM enforces 3.0 blocks max reach (with tiny tolerance)
-                    if (distance > 3.0) {
-                        return false; // Don't attack if too far - prevents reach flags
-                    }
+                double distance = mc.thePlayer.getDistanceToEntity(this.target.getEntity());
+                if (distance > 3.0) {
+                    return false;
                 }
             }
             
@@ -185,14 +177,12 @@ public class KillAura extends Module {
             } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2 && this.mode.getValue() != 3 && this.autoBlock.getValue() != 9) {
                 return false; // COMBO mode and GRIM mode bypass attack delay for speed
             } else {
-                // GRIM BYPASS: Enhanced reach calculation for precision
+                // GRIM BYPASS: Simple, safe reach check
                 double targetDistance = RotationUtil.distanceToEntity(this.target.getEntity());
-                
-                // GRIM MODE: Safer reach limits (reduced from 2.99 to 2.92)
                 double maxReach = (this.autoBlock.getValue() == 9) ? 2.92 : 2.90;
                 
                 if (targetDistance > maxReach) {
-                    return false; // Too far - don't attack to avoid reach flags
+                    return false; // Too far
                 }
                 
                 // Get current time first

@@ -7,458 +7,544 @@ import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.event.types.EventType;
 import myau.module.Module;
-import myau.module.modules.KillAura;
 import myau.property.properties.*;
 import myau.Myau;
-// Removed unused import: UnifiedPredictionSystem
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.client.*;
 import net.minecraft.util.AxisAlignedBB;
 
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.ArrayDeque;
 
 /**
- * FakeLag - Premium Distance-Based Lag System
+ * FakeLag - PROPERLY ARCHITECTED
  * 
- * INTELLIGENT DESIGN:
- * - Distance-based activation (only lag when approaching target)
- * - Delay system prevents constant activation
- * - Clean packet queue with proper timing
- * - No fake "priority" system - FIFO is correct
- * - No packet dropping (causes desync)
- * - Integrates with UnifiedPredictionSystem
+ * Delays movement packets to create lag compensation advantage.
+ * Works by holding packets during approach then releasing for burst hits.
  * 
- * HOW IT WORKS:
- * 1. When approaching target (distance decreasing)
- * 2. Wait for delay period (prevents spam)
- * 3. Hold packets for X ticks
- * 4. Release all at once (creates teleport effect)
- * 5. Repeat when distance resets
+ * Architecture:
+ * - Clean state machine: IDLE -> SPOOFING -> RELEASING -> COOLDOWN
+ * - Proper distance tracking with target change detection
+ * - Safe packet handling via addToSendQueue
+ * - Performance optimized (squared distance, cached references)
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class FakeLag extends Module {
+    
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    public FakeLag() {
-        super("FakeLag", false);
+    // ==================== STATE MACHINE ====================
+    private enum State {
+        IDLE,       // Not active, waiting for conditions
+        SPOOFING,   // Holding packets, building queue
+        RELEASING,  // Sending queued packets
+        COOLDOWN    // Waiting before next spoof cycle
     }
     
-    // State machine for clean logic
-    private enum FakeLagState {
-        IDLE,           // Not active, waiting
-        COOLDOWN,       // Waiting after last spoof
-        SPOOFING        // Actively holding packets
-    }
+    private State currentState = State.IDLE;
     
-    // Settings
-    public final FloatProperty distance = new FloatProperty("distance", 3.5F, 1.0F, 6.0F);
-    public final FloatProperty minDistance = new FloatProperty("min-distance", 2.0F, 1.0F, 4.0F);
+    // ==================== SETTINGS ====================
+    // Range settings
+    public final FloatProperty maxSpoofRange = new FloatProperty("max-spoof-range", 3.5F, 1.0F, 6.0F);
+    public final FloatProperty minSpoofRange = new FloatProperty("min-spoof-range", 2.0F, 1.0F, 4.0F);
+    public final FloatProperty releaseRangeBuffer = new FloatProperty("release-buffer", 0.5F, 0.1F, 2.0F);
+    
+    // Timing settings
     public final IntProperty minSpoofTicks = new IntProperty("min-spoof-ticks", 5, 3, 15);
     public final IntProperty maxSpoofTicks = new IntProperty("max-spoof-ticks", 15, 5, 40);
     public final IntProperty cooldownTicks = new IntProperty("cooldown-ticks", 20, 5, 60);
-    public final IntProperty maxQueueSize = new IntProperty("max-queue", 30, 10, 100);
-    public final BooleanProperty onlyWhenMoving = new BooleanProperty("only-moving", true);
-    public final BooleanProperty burstRelease = new BooleanProperty("burst-release", true);
+    public final IntProperty maxTimeoutTicks = new IntProperty("max-timeout-ticks", 60, 20, 200);
+    
+    // Queue settings
+    public final IntProperty maxQueueSize = new IntProperty("max-queue-size", 20, 10, 50);
     public final IntProperty releasePerTick = new IntProperty("release-per-tick", 3, 1, 10);
     
-    // State tracking with proper separation
-    private FakeLagState state = FakeLagState.IDLE;
+    // Behavior settings
+    public final BooleanProperty onlyWhenMoving = new BooleanProperty("only-when-moving", true);
+    public final BooleanProperty onlyWhenAttacking = new BooleanProperty("only-when-attacking", true);
+    public final BooleanProperty requireGround = new BooleanProperty("require-ground", true);
+    
+    // Integration settings
+    public final BooleanProperty smartIntegration = new BooleanProperty("smart-integration", true);
+    public final IntProperty maxTotalLagTicks = new IntProperty("max-total-lag-ticks", 25, 10, 50);
+    
+    // Smoothing settings
+    public final IntProperty smoothingWindow = new IntProperty("smoothing-window", 5, 3, 10);
+    public final FloatProperty closingSpeedThreshold = new FloatProperty("closing-speed-threshold", 0.15F, 0.05F, 0.5F);
+    
+    // ==================== STATE VARIABLES ====================
+    private final ArrayDeque<Packet<?>> packetQueue = new ArrayDeque<>();
+    
     private int spoofTicksElapsed = 0;
     private int cooldownTicksElapsed = 0;
-    private int releaseTicksElapsed = 0;
+    private int totalTicksSinceSpoof = 0; // Timeout safety
     
-    // Distance smoothing (anti-jitter)
-    private final double[] distanceHistory = new double[10];
+    // Rubberband detection
+    private double lastPosX = 0.0;
+    private double lastPosY = 0.0;
+    private double lastPosZ = 0.0;
+    
+    // Distance tracking
+    private final double[] distanceHistory;
     private int distanceHistoryIndex = 0;
-    private static final double DISTANCE_DEADZONE = 0.05;
+    private double currentSmoothedDistance = 0.0;
+    private double prevSmoothedDistance = 0.0;
+    private int lastTargetId = -1;
     
-    // Packet queue with safety
-    private final ConcurrentLinkedQueue<DelayedPacket> packetQueue = new ConcurrentLinkedQueue<>();
+    // Cached references
+    private KillAura killAura = null;
+    private OldBacktrack oldBacktrack = null;
+    private NewBacktrack newBacktrack = null;
+    private LagRange lagRange = null;
     
-    /**
-     * Simple packet wrapper with timestamp
-     */
-    private static class DelayedPacket {
-        private final Packet<?> packet;
-        private final long time;
-        
-        public DelayedPacket(Packet<?> packet) {
-            this.packet = packet;
-            this.time = System.currentTimeMillis();
-        }
-        
-        public Packet<?> getPacket() {
-            return packet;
-        }
-        
-        public long getTime() {
-            return time;
-        }
+    // ==================== CONSTRUCTOR ====================
+    public FakeLag() {
+        super("FakeLag", false);
+        this.distanceHistory = new double[10]; // Max smoothing window
     }
     
+    // ==================== LIFECYCLE ====================
     @Override
     public void onEnabled() {
-        resetState();
+        super.onEnabled();
+        
+        // Cache module references
+        killAura = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
+        oldBacktrack = (OldBacktrack) Myau.moduleManager.modules.get(OldBacktrack.class);
+        newBacktrack = (NewBacktrack) Myau.moduleManager.modules.get(NewBacktrack.class);
+        lagRange = (LagRange) Myau.moduleManager.modules.get(LagRange.class);
+        
+        // Reset state
+        transitionTo(State.IDLE);
+        flushPackets();
+        resetDistanceTracking();
+        
+        spoofTicksElapsed = 0;
+        cooldownTicksElapsed = 0;
+        totalTicksSinceSpoof = 0;
+        lastTargetId = -1;
     }
     
     @Override
     public void onDisabled() {
-        resetState();
-        safeFlushQueue();
+        super.onDisabled();
+        
+        // Safety: release all packets
+        flushPackets();
+        transitionTo(State.IDLE);
     }
     
-    /**
-     * Reset all state to idle
-     */
-    private void resetState() {
-        state = FakeLagState.IDLE;
-        spoofTicksElapsed = 0;
-        cooldownTicksElapsed = 0;
-        releaseTicksElapsed = 0;
-        clearDistanceHistory();
-        packetQueue.clear();
-    }
-    
-    /**
-     * Clear distance history
-     */
-    private void clearDistanceHistory() {
-        for (int i = 0; i < distanceHistory.length; i++) {
-            distanceHistory[i] = 0;
+    // ==================== EVENT HANDLERS ====================
+    @EventTarget
+    public void onPacket(PacketEvent event) {
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+        
+        // FIXED: Use correct EventType for outgoing packets
+        if (event.getType() != EventType.SEND) return;
+        
+        Packet<?> packet = event.getPacket();
+        
+        // Only intercept position packets
+        if (!(packet instanceof C03PacketPlayer)) return;
+        
+        // Only hold packets in SPOOFING state
+        if (currentState != State.SPOOFING) return;
+        
+        // SMART INTEGRATION: Check if we should hold this packet
+        if (smartIntegration.getValue()) {
+            int smartMaxTicks = getSmartMaxTicks();
+            if (packetQueue.size() >= smartMaxTicks) {
+                return; // Already at smart limit, let packet through
+            }
         }
-        distanceHistoryIndex = 0;
-    }
-    
-    /**
-     * Main tick logic with state machine
-     */
-    public void tickCheck() {
-        if (!isEnabled() || mc.thePlayer == null || mc.theWorld == null) {
+        
+        // Check queue size limit
+        if (packetQueue.size() >= maxQueueSize.getValue()) {
+            // Queue full, start releasing
+            transitionTo(State.RELEASING);
             return;
         }
         
-        // Validate target
-        Module killAura = Myau.moduleManager.modules.get(KillAura.class);
-        if (killAura == null || !killAura.isEnabled()) {
-            if (state != FakeLagState.IDLE) {
-                transitionToIdle();
+        // Hold the packet
+        packetQueue.add(packet);
+        event.setCancelled(true);
+    }
+    
+    @EventTarget
+    public void onTick(TickEvent event) {
+        // FIXED: Only run on PRE tick to avoid double execution
+        if (event.getType() != EventType.PRE) return;
+        
+        if (mc.thePlayer == null || mc.theWorld == null) {
+            // FIXED: Safety flush on disconnect/world change
+            if (!packetQueue.isEmpty()) {
+                flushPackets();
             }
             return;
         }
         
-        KillAura ka = (KillAura) killAura;
-        if (ka.target == null || ka.target.getEntity().isDead) {
-            if (state != FakeLagState.IDLE) {
-                transitionToIdle();
-            }
-            return;
-        }
-        
-        // Only spoof when moving (if enabled)
-        if (onlyWhenMoving.getValue()) {
-            double playerSpeed = Math.sqrt(
-                mc.thePlayer.motionX * mc.thePlayer.motionX +
-                mc.thePlayer.motionZ * mc.thePlayer.motionZ
-            );
-            if (playerSpeed < 0.05) {
-                if (state == FakeLagState.SPOOFING) {
-                    transitionToRelease();
-                }
-                return;
-            }
-        }
-        
-        // Calculate smoothed distance
-        double currentDistance = getDistanceToBox(ka.target.getBox());
-        addToDistanceHistory(currentDistance);
-        double smoothedDistance = getSmoothedDistance();
-        double previousDistance = getPreviousSmoothedDistance();
-        
-        // Calculate closing speed with deadzone
-        double closingSpeed = previousDistance - smoothedDistance;
-        boolean isApproaching = closingSpeed > DISTANCE_DEADZONE;
-        boolean inRange = smoothedDistance >= minDistance.getValue() && 
-                         smoothedDistance <= distance.getValue();
+        // Update distance tracking
+        updateDistanceTracking();
         
         // State machine
-        switch (state) {
+        switch (currentState) {
             case IDLE:
-                // Transition to spoofing if conditions met
-                if (inRange && isApproaching) {
-                    transitionToSpoofing();
-                }
+                tickIdle();
                 break;
-                
             case SPOOFING:
-                spoofTicksElapsed++;
-                
-                // Check stop conditions
-                boolean minTimeReached = spoofTicksElapsed >= minSpoofTicks.getValue();
-                boolean maxTimeReached = spoofTicksElapsed >= maxSpoofTicks.getValue();
-                boolean queueFull = packetQueue.size() >= maxQueueSize.getValue();
-                boolean outOfRange = smoothedDistance > distance.getValue() + 1.0;
-                boolean targetMovedAway = closingSpeed < -DISTANCE_DEADZONE;
-                
-                // GRIM FIX: Release earlier to prevent massive rubberbanding
-                // Limit queue size to 20 packets max (prevents desync)
-                if (queueFull || outOfRange || packetQueue.size() > 20) {
-                    // Emergency stop
-                    transitionToRelease();
-                } else if (minTimeReached && (maxTimeReached || targetMovedAway)) {
-                    // Normal stop
-                    transitionToRelease();
-                }
+                tickSpoofing();
                 break;
-                
+            case RELEASING:
+                tickReleasing();
+                break;
             case COOLDOWN:
-                cooldownTicksElapsed++;
-                
-                // GRIM FIX: Always release packets quickly to reduce rubberband
-                // Release 2-3 packets per tick instead of 1
-                if (!packetQueue.isEmpty()) {
-                    if (burstRelease.getValue()) {
-                        releasePacketsGradually();
-                    } else {
-                        // Fast release: 3 packets per tick
-                        int packetsToRelease = Math.min(3, packetQueue.size());
-                        for (int i = 0; i < packetsToRelease; i++) {
-                            DelayedPacket delayedPacket = packetQueue.poll();
-                            if (delayedPacket != null) {
-                                mc.thePlayer.sendQueue.addToSendQueue(delayedPacket.getPacket());
-                            }
-                        }
-                    }
-                }
-                
-                // Return to idle after cooldown
-                if (cooldownTicksElapsed >= cooldownTicks.getValue() && packetQueue.isEmpty()) {
-                    transitionToIdle();
-                }
+                tickCooldown();
                 break;
+        }
+        
+        // Timeout safety: force release if stuck spoofing too long
+        if (currentState == State.SPOOFING) {
+            totalTicksSinceSpoof++;
+            if (totalTicksSinceSpoof >= maxTimeoutTicks.getValue()) {
+                transitionTo(State.RELEASING);
+            }
         }
     }
     
+    // ==================== STATE MACHINE LOGIC ====================
+    private void tickIdle() {
+        // Check if we should start spoofing
+        if (!shouldStartSpoof()) return;
+        
+        // Transition to spoofing
+        transitionTo(State.SPOOFING);
+    }
+    
+    private void tickSpoofing() {
+        spoofTicksElapsed++;
+        
+        // SMART INTEGRATION: Get safe max ticks based on other active modules
+        int smartMaxTicks = getSmartMaxTicks();
+        
+        // ANTI-RUBBERBAND: Check total system lag limit
+        if (packetQueue.size() > maxTotalLagTicks.getValue()) {
+            transitionTo(State.RELEASING);
+            return;
+        }
+        
+        // ANTI-RUBBERBAND: Detect large position desync (rubberband indicator)
+        if (detectRubberband()) {
+            transitionTo(State.RELEASING);
+            return;
+        }
+        
+        // Check if we should stop spoofing
+        boolean shouldStop = false;
+        
+        // SMART INTEGRATION: Max ticks reached (using smart calculation)
+        if (spoofTicksElapsed >= smartMaxTicks) {
+            shouldStop = true;
+        }
+        
+        // Target conditions broke
+        if (!canSpoofTarget()) {
+            shouldStop = true;
+        }
+        
+        // FIXED: Moving away detection using prev/current smoothed distance
+        if (currentSmoothedDistance > prevSmoothedDistance + releaseRangeBuffer.getValue()) {
+            shouldStop = true;
+        }
+        
+        if (shouldStop && spoofTicksElapsed >= minSpoofTicks.getValue()) {
+            transitionTo(State.RELEASING);
+        }
+    }
+    
+    private void tickReleasing() {
+        // Release packets gradually
+        int toRelease = Math.min(releasePerTick.getValue(), packetQueue.size());
+        
+        for (int i = 0; i < toRelease; i++) {
+            Packet<?> packet = packetQueue.poll();
+            if (packet != null) {
+                // FIXED: Use addToSendQueue instead of sendPacketDirect
+                mc.thePlayer.sendQueue.addToSendQueue(packet);
+            }
+        }
+        
+        // Check if done releasing
+        if (packetQueue.isEmpty()) {
+            transitionTo(State.COOLDOWN);
+        }
+    }
+    
+    private void tickCooldown() {
+        cooldownTicksElapsed++;
+        
+        if (cooldownTicksElapsed >= cooldownTicks.getValue()) {
+            transitionTo(State.IDLE);
+        }
+    }
+    
+    // ==================== STATE TRANSITIONS ====================
+    private void transitionTo(State newState) {
+        if (currentState == newState) return;
+        
+        // Exit current state
+        switch (currentState) {
+            case SPOOFING:
+                // Leaving spoofing: ensure we release if needed
+                if (newState != State.RELEASING && !packetQueue.isEmpty()) {
+                    // Safety: flush packets if not transitioning to release
+                    flushPackets();
+                }
+                break;
+        }
+        
+        // Enter new state
+        switch (newState) {
+            case IDLE:
+                spoofTicksElapsed = 0;
+                cooldownTicksElapsed = 0;
+                totalTicksSinceSpoof = 0;
+                // FIXED: Ensure queue is always empty in IDLE
+                if (!packetQueue.isEmpty()) {
+                    flushPackets();
+                }
+                break;
+            case SPOOFING:
+                spoofTicksElapsed = 0;
+                totalTicksSinceSpoof = 0;
+                break;
+            case RELEASING:
+                // Nothing to reset
+                break;
+            case COOLDOWN:
+                cooldownTicksElapsed = 0;
+                break;
+        }
+        
+        currentState = newState;
+    }
+    
+    // ==================== CONDITION CHECKS ====================
+    private boolean shouldStartSpoof() {
+        // Must have target
+        if (!canSpoofTarget()) return false;
+        
+        // FIXED: Use prevSmoothedDistance for closing speed calculation
+        double closingSpeed = prevSmoothedDistance - currentSmoothedDistance;
+        
+        if (closingSpeed < closingSpeedThreshold.getValue()) {
+            return false; // Not approaching fast enough
+        }
+        
+        // Check range
+        if (currentSmoothedDistance < minSpoofRange.getValue() || currentSmoothedDistance > maxSpoofRange.getValue()) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    private boolean canSpoofTarget() {
+        // Check basic conditions
+        if (onlyWhenMoving.getValue() && !isPlayerMoving()) {
+            return false;
+        }
+        
+        if (requireGround.getValue() && !mc.thePlayer.onGround) {
+            return false;
+        }
+        
+        // FIXED: Refresh KillAura if null
+        if (killAura == null) {
+            killAura = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
+        }
+        
+        // FIXED: Always check KillAura since distance tracking depends on it
+        if (killAura == null || !killAura.isEnabled() || killAura.target == null) {
+            return false;
+        }
+        
+        if (killAura.target.getEntity() == null || killAura.target.getEntity().isDead) {
+            return false;
+        }
+        
+        // Additional check: only when attacking mode
+        if (onlyWhenAttacking.getValue()) {
+            // Already validated above
+        }
+        
+        return true;
+    }
+    
+    private boolean isPlayerMoving() {
+        return mc.thePlayer.movementInput.moveForward != 0.0F || 
+               mc.thePlayer.movementInput.moveStrafe != 0.0F;
+    }
+    
+    private boolean isBacktrackActive() {
+        // Refresh references if null
+        if (oldBacktrack == null) {
+            oldBacktrack = (OldBacktrack) Myau.moduleManager.modules.get(OldBacktrack.class);
+        }
+        if (newBacktrack == null) {
+            newBacktrack = (NewBacktrack) Myau.moduleManager.modules.get(NewBacktrack.class);
+        }
+        
+        return (oldBacktrack != null && oldBacktrack.isEnabled()) || 
+               (newBacktrack != null && newBacktrack.isEnabled());
+    }
+    
+    private boolean isLagRangeActive() {
+        // Refresh reference if null
+        if (lagRange == null) {
+            lagRange = (LagRange) Myau.moduleManager.modules.get(LagRange.class);
+        }
+        
+        return lagRange != null && lagRange.isEnabled();
+    }
+    
     /**
-     * Add distance to smoothing history
+     * SMART INTEGRATION: Calculate how many ticks we can safely spoof
+     * considering backtrack and lagrange delays
      */
-    private void addToDistanceHistory(double distance) {
+    private int getSmartMaxTicks() {
+        if (!smartIntegration.getValue()) {
+            return maxSpoofTicks.getValue(); // No coordination, use full value
+        }
+        
+        int baseTicks = maxSpoofTicks.getValue();
+        int totalSystemLag = 0;
+        
+        // Estimate backtrack lag (typically holds 3-5 ticks)
+        if (isBacktrackActive()) {
+            totalSystemLag += 5; // Conservative estimate: 5 ticks from backtrack
+        }
+        
+        // Estimate LagRange lag (convert ms to ticks: 50ms = 1 tick)
+        if (isLagRangeActive() && lagRange != null) {
+            int lagRangeDelay = lagRange.delay.getValue(); // in milliseconds
+            int lagRangeTicks = lagRangeDelay / 50; // Convert to ticks
+            totalSystemLag += lagRangeTicks;
+        }
+        
+        // Calculate safe FakeLag ticks: maxTotalLag - other module lags
+        int safeFakeLagTicks = maxTotalLagTicks.getValue() - totalSystemLag;
+        
+        // Clamp to minimum 3 ticks and maximum baseTicks
+        return Math.max(3, Math.min(baseTicks, safeFakeLagTicks));
+    }
+    
+    private boolean detectRubberband() {
+        // Detect large sudden position changes (server rubberband)
+        double dx = mc.thePlayer.posX - lastPosX;
+        double dy = mc.thePlayer.posY - lastPosY;
+        double dz = mc.thePlayer.posZ - lastPosZ;
+        double distanceSq = dx * dx + dy * dy + dz * dz;
+        
+        // Update last position
+        lastPosX = mc.thePlayer.posX;
+        lastPosY = mc.thePlayer.posY;
+        lastPosZ = mc.thePlayer.posZ;
+        
+        // If moved more than 5 blocks in one tick = rubberband
+        // Normal player movement is max ~0.6 blocks/tick
+        return distanceSq > 25.0; // 5 blocks squared
+    }
+    
+    // ==================== DISTANCE TRACKING ====================
+    private void updateDistanceTracking() {
+        // FIXED: Refresh KillAura reference if null (module reload safety)
+        if (killAura == null) {
+            killAura = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
+        }
+        
+        // No tracking without KillAura target
+        if (killAura == null || killAura.target == null) {
+            return;
+        }
+        
+        int currentTargetId = killAura.target.getEntity().getEntityId();
+        
+        // FIXED: Reset smoothing when target changes
+        if (currentTargetId != lastTargetId) {
+            resetDistanceTracking();
+            lastTargetId = currentTargetId;
+        }
+        
+        // FIXED: Use squared distance for performance
+        double distanceSq = getDistanceToBoxSquared(killAura.target.getBox());
+        double distance = Math.sqrt(distanceSq);
+        
+        // FIXED: Add to history using array length (not smoothingWindow which can change)
         distanceHistory[distanceHistoryIndex] = distance;
         distanceHistoryIndex = (distanceHistoryIndex + 1) % distanceHistory.length;
     }
     
-    /**
-     * Get smoothed distance (average of last N samples)
-     */
-    private double getSmoothedDistance() {
-        double sum = 0;
+    private double getCurrentSmoothedDistance() {
+        // FIXED: Read circular buffer correctly based on current index
+        int window = smoothingWindow.getValue();
+        double sum = 0.0;
         int count = 0;
-        for (double d : distanceHistory) {
-            if (d > 0) {
-                sum += d;
+        
+        // Read last N samples from circular buffer
+        for (int i = 0; i < window; i++) {
+            int index = (distanceHistoryIndex - 1 - i + distanceHistory.length) % distanceHistory.length;
+            if (distanceHistory[index] > 0.0) {
+                sum += distanceHistory[index];
                 count++;
             }
         }
-        return count > 0 ? sum / count : 0;
-    }
-    
-    /**
-     * Get previous smoothed distance for trend detection
-     */
-    private double getPreviousSmoothedDistance() {
-        int prevIndex = (distanceHistoryIndex - 3 + distanceHistory.length) % distanceHistory.length;
-        return distanceHistory[prevIndex] > 0 ? distanceHistory[prevIndex] : getSmoothedDistance();
-    }
-    
-    /**
-     * Transition to spoofing state
-     */
-    private void transitionToSpoofing() {
-        state = FakeLagState.SPOOFING;
-        spoofTicksElapsed = 0;
-    }
-    
-    /**
-     * Transition to release/cooldown state
-     */
-    private void transitionToRelease() {
-        state = FakeLagState.COOLDOWN;
-        cooldownTicksElapsed = 0;
         
-        if (!burstRelease.getValue()) {
-            // Instant flush
-            safeFlushQueue();
+        if (count == 0) return currentSmoothedDistance; // Return previous if no data
+        
+        // FIXED: Update prev before current
+        prevSmoothedDistance = currentSmoothedDistance;
+        currentSmoothedDistance = sum / count;
+        return currentSmoothedDistance;
+    }
+    
+    private void resetDistanceTracking() {
+        for (int i = 0; i < distanceHistory.length; i++) {
+            distanceHistory[i] = 0.0;
         }
+        distanceHistoryIndex = 0;
+        currentSmoothedDistance = 0.0;
+        prevSmoothedDistance = 0.0;
     }
     
-    /**
-     * Transition to idle state
-     */
-    private void transitionToIdle() {
-        state = FakeLagState.IDLE;
-        spoofTicksElapsed = 0;
-        cooldownTicksElapsed = 0;
-        safeFlushQueue();
+    private double getDistanceToBoxSquared(AxisAlignedBB box) {
+        double x = mc.thePlayer.posX;
+        double y = mc.thePlayer.posY + mc.thePlayer.getEyeHeight();
+        double z = mc.thePlayer.posZ;
+        
+        double dx = Math.max(0.0, Math.max(box.minX - x, x - box.maxX));
+        double dy = Math.max(0.0, Math.max(box.minY - y, y - box.maxY));
+        double dz = Math.max(0.0, Math.max(box.minZ - z, z - box.maxZ));
+        
+        return dx * dx + dy * dy + dz * dz;
     }
     
-    /**
-     * Release packets gradually (burst mode)
-     */
-    private void releasePacketsGradually() {
-        int released = 0;
-        while (released < releasePerTick.getValue() && !packetQueue.isEmpty()) {
-            DelayedPacket delayed = packetQueue.poll();
-            if (delayed != null) {
-                sendPacketDirect(delayed.getPacket());
-                released++;
+    // ==================== PACKET MANAGEMENT ====================
+    private void flushPackets() {
+        while (!packetQueue.isEmpty()) {
+            Packet<?> packet = packetQueue.poll();
+            if (packet != null) {
+                mc.thePlayer.sendQueue.addToSendQueue(packet);
             }
         }
     }
     
-    /**
-     * Calculate distance to bounding box
-     */
-    private double getDistanceToBox(AxisAlignedBB box) {
-        double centerX = (box.minX + box.maxX) / 2.0;
-        double centerY = (box.minY + box.maxY) / 2.0;
-        double centerZ = (box.minZ + box.maxZ) / 2.0;
+    // ==================== HUD ====================
+    public String getHUDInfo() {
+        if (!isEnabled()) return null;
         
-        double dx = mc.thePlayer.posX - centerX;
-        double dy = mc.thePlayer.posY - centerY;
-        double dz = mc.thePlayer.posZ - centerZ;
-        
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
-    }
-    
-    /**
-     * Safe flush - controlled packet release
-     */
-    private void safeFlushQueue() {
-        DelayedPacket delayed;
-        while ((delayed = packetQueue.poll()) != null) {
-            sendPacketDirect(delayed.getPacket());
-        }
-    }
-    
-    /**
-     * Send packet directly without interception
-     */
-    private void sendPacketDirect(Packet<?> packet) {
-        if (mc.thePlayer != null && mc.thePlayer.sendQueue != null) {
-            mc.thePlayer.sendQueue.getNetworkManager().sendPacket(packet);
-        }
-    }
-    
-    /**
-     * Tick event handler
-     */
-    @EventTarget
-    public void onTick(TickEvent event) {
-        if (event.getType() == EventType.PRE) {
-            tickCheck();
-        }
-    }
-    
-    /**
-     * Handle outbound packets
-     */
-    @EventTarget
-    public void onPacket(PacketEvent event) {
-        if (!isEnabled() || mc.thePlayer == null) {
-            return;
-        }
-        
-        if (event.getType() == EventType.SEND) {
-            Packet<?> packet = event.getPacket();
-            
-            // Only intercept movement packets when spoofing
-            if (state == FakeLagState.SPOOFING && isMovementPacket(packet)) {
-                // Safety check: don't overflow queue
-                if (packetQueue.size() < maxQueueSize.getValue()) {
-                    event.setCancelled(true);
-                    packetQueue.add(new DelayedPacket(packet));
-                }
-            }
-        }
-    }
-    
-    /**
-     * Check if packet is a movement packet (GRIM-SAFE)
-     */
-    private boolean isMovementPacket(Packet<?> packet) {
-        // ONLY delay player position packets
-        // NEVER delay transactions (C0F) - causes BadPacketsN flags
-        // NEVER delay use entity (C02) - breaks attack timing
-        return packet instanceof C03PacketPlayer;
-    }
-    
-    /**
-     * UNIFIED PREDICTION INTEGRATION: Check if currently releasing packets
-     */
-    public boolean isReleasingPackets() {
-        return state != FakeLagState.SPOOFING && packetQueue.isEmpty();
-    }
-    
-    /**
-     * Get current queue size
-     */
-    public int getQueueSize() {
-        return packetQueue.size();
-    }
-    
-    /**
-     * Check if actively holding (pulse active)
-     */
-    public boolean isPulseActive() {
-        return state == FakeLagState.SPOOFING;
-    }
-    
-    /**
-     * Get visualized target position (for ESP)
-     */
-    public AxisAlignedBB getTargetPosition() {
-        Module killAura = Myau.moduleManager.modules.get(KillAura.class);
-        if (killAura != null && killAura.isEnabled()) {
-            KillAura ka = (KillAura) killAura;
-            if (ka.target != null) {
-                return ka.target.getBox();
-            }
-        }
-        return null;
-    }
-    
-    /**
-     * Get color for visualization based on state
-     */
-    public int getVisualizationColor() {
-        if (state != FakeLagState.SPOOFING) {
-            return 0x00FF00; // Green - not spoofing
-        }
-        
-        int maxTicks = maxSpoofTicks.getValue();
-        if (spoofTicksElapsed > maxTicks * 0.85) {
-            return 0xFF0000; // Red - about to release
-        } else if (spoofTicksElapsed > maxTicks * 0.65) {
-            return 0xFFA500; // Orange
-        } else if (spoofTicksElapsed > maxTicks * 0.35) {
-            return 0xFFFF00; // Yellow
-        }
-        return 0x00FF00; // Green
-    }
-    
-    public String[] getHUDInfo() {
-        if (!isEnabled()) {
-            return new String[]{};
-        }
-        
-        switch (state) {
-            case SPOOFING:
-                return new String[]{"SPOOF [" + spoofTicksElapsed + "/" + maxSpoofTicks.getValue() + "]"};
-            case COOLDOWN:
-                return new String[]{"CD [" + packetQueue.size() + "q]"};
-            case IDLE:
-            default:
-                return new String[]{"READY"};
-        }
+        return String.format("%s [Q:%d]", 
+            currentState.name(), 
+            packetQueue.size()
+        );
     }
 }
