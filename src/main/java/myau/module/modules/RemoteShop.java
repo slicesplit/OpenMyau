@@ -1,151 +1,112 @@
 package myau.module.modules;
 
-import myau.module.ModuleInfo;
-import myau.enums.ModuleCategory;
-
 import myau.event.EventTarget;
 import myau.event.types.EventType;
-import myau.events.LoadWorldEvent;
-import myau.events.PacketEvent;
 import myau.events.TickEvent;
 import myau.module.Module;
-import myau.module.modules.remoteshop.HypixelRemoteShop;
-import myau.module.modules.remoteshop.IRemoteShop;
-import myau.module.modules.remoteshop.NormalRemoteShop;
-import myau.property.properties.BooleanProperty;
-import myau.property.properties.ModeProperty;
+import myau.module.ModuleInfo;
+import myau.enums.ModuleCategory;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.inventory.GuiContainer;
+import net.minecraft.client.gui.GuiScreen;
+import net.minecraft.client.gui.inventory.GuiChest;
 import net.minecraft.client.gui.inventory.GuiInventory;
-import net.minecraft.network.play.client.C0BPacketEntityAction;
-import net.minecraft.network.play.server.S2EPacketCloseWindow;
 import org.lwjgl.input.Keyboard;
 
 /**
- * RemoteShop - Cache and reopen shop GUIs remotely
+ * RemoteShop - AliExpress style shop caching
  * 
- * Allows you to access shop menus from anywhere by caching the GUI.
- * Press HOME key (default) to reopen the last cached shop.
+ * Simple logic:
+ * 1. Open a shop GUI (Bedwars, SkyWars, etc.)
+ * 2. Press HOME → GUI closes CLIENT-SIDE (server thinks it's still open)
+ * 3. Press HOME again → GUI reopens instantly from cache
+ * 4. Buy stuff normally - server never knew you "closed" it
+ * 5. Repeat infinitely
  * 
- * Modes:
- * - Normal: Cache any chest GUI
- * - Hypixel: Smart detection of Hypixel shop menus
- * 
- * Based on KeystrokesMod's architecture
+ * Perfect for quick shopping without the GUI blocking your view!
  */
 @ModuleInfo(category = ModuleCategory.MISC)
 public class RemoteShop extends Module {
-    public static final int KEYCODE = Keyboard.KEY_HOME;
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Mode selection with submodes
-    private final IRemoteShop[] modes;
-    public final ModeProperty mode;
-    public final BooleanProperty cancelInventory;
+    // Cache the last non-inventory GUI
+    private GuiScreen cachedGui = null;
+    private boolean isHidden = false;
     
-    // State tracking
-    private boolean isToggled = false;
+    // Toggle key
+    private boolean wasHomePressed = false;
     
     public RemoteShop() {
         super("RemoteShop", false);
-        
-        // Initialize modes
-        this.modes = new IRemoteShop[]{
-            new NormalRemoteShop("Normal", this),
-            new HypixelRemoteShop("Hypixel", this)
-        };
-        
-        // Create mode property
-        String[] modeNames = new String[modes.length];
-        for (int i = 0; i < modes.length; i++) {
-            modeNames[i] = modes[i].getName();
-        }
-        this.mode = new ModeProperty("mode", 0, modeNames);
-        
-        // Settings
-        this.cancelInventory = new BooleanProperty("cancel-inventory", true);
     }
     
     @Override
     public void onEnabled() {
-        isToggled = false;
-        getSelectedMode().onEnable();
+        super.onEnabled();
+        cachedGui = null;
+        isHidden = false;
+        wasHomePressed = false;
     }
     
     @Override
     public void onDisabled() {
-        getSelectedMode().onDisable();
-        isToggled = false;
+        super.onDisabled();
+        // Restore GUI if it was hidden
+        if (isHidden && cachedGui != null) {
+            mc.displayGuiScreen(cachedGui);
+        }
+        cachedGui = null;
+        isHidden = false;
     }
     
     @EventTarget
     public void onTick(TickEvent event) {
-        if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
-            return;
+        if (event.getType() != EventType.PRE) return;
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+        
+        // Cache any non-inventory GUI that opens
+        if (mc.currentScreen != null && !(mc.currentScreen instanceof GuiInventory)) {
+            // This is a shop/chest GUI - cache it!
+            if (cachedGui == null || mc.currentScreen != cachedGui) {
+                cachedGui = mc.currentScreen;
+                isHidden = false;
+            }
         }
         
-        try {
-            // Handle activation key (like RenderTickEvent in KeystrokesMod)
-            if (!this.isToggled && Keyboard.isKeyDown(KEYCODE)) {
-                getSelectedMode().remoteShop();
-                this.isToggled = true;
-            } else if (!Keyboard.isKeyDown(KEYCODE)) {
-                this.isToggled = false;
+        // HOME key toggle logic
+        boolean homePressed = Keyboard.isKeyDown(Keyboard.KEY_HOME);
+        
+        if (homePressed && !wasHomePressed) {
+            // HOME key just pressed - toggle!
+            
+            if (cachedGui == null) {
+                // No cached GUI
+                return;
             }
             
-            // Keep container open (onUpdate equivalent)
-            if (mc.currentScreen instanceof GuiContainer && 
-                !(mc.currentScreen instanceof GuiInventory && this.cancelInventory.getValue())) {
-                getSelectedMode().openContainer();
-            }
-        } catch (Throwable ignored) {
-            // Silently catch any errors
-        }
-    }
-    
-    @EventTarget
-    public void onPacket(PacketEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null) {
-            return;
-        }
-        
-        // Handle incoming packets
-        if (event.getType() == EventType.RECEIVE) {
-            if (event.getPacket() instanceof S2EPacketCloseWindow) {
-                getSelectedMode().forceClose();
-            }
-        }
-        
-        // Handle outgoing packets
-        if (event.getType() == EventType.SEND) {
-            // Cancel inventory open if enabled
-            if (event.getPacket() instanceof C0BPacketEntityAction && this.cancelInventory.getValue()) {
-                C0BPacketEntityAction packet = (C0BPacketEntityAction) event.getPacket();
-                if (packet.getAction() == C0BPacketEntityAction.Action.OPEN_INVENTORY) {
-                    event.setCancelled(true);
+            if (isHidden) {
+                // GUI is hidden - reopen it!
+                mc.displayGuiScreen(cachedGui);
+                isHidden = false;
+            } else {
+                // GUI is open - hide it CLIENT-SIDE!
+                if (mc.currentScreen == cachedGui) {
+                    mc.displayGuiScreen(null);
+                    isHidden = true;
+                    // Server still thinks GUI is open - you can still buy stuff!
                 }
             }
         }
-    }
-    
-    @EventTarget
-    public void onWorldChange(LoadWorldEvent event) {
-        getSelectedMode().forceClose();
-    }
-    
-    /**
-     * Get currently selected mode
-     */
-    private IRemoteShop getSelectedMode() {
-        int index = mode.getValue();
-        if (index >= 0 && index < modes.length) {
-            return modes[index];
-        }
-        return modes[0]; // Fallback to Normal
+        
+        wasHomePressed = homePressed;
     }
     
     @Override
     public String[] getSuffix() {
-        return new String[]{getSelectedMode().getPrettyName()};
+        if (cachedGui != null) {
+            String status = isHidden ? "Hidden" : "Shown";
+            String guiType = cachedGui instanceof GuiChest ? "Shop" : "GUI";
+            return new String[]{status + " [" + guiType + "]"};
+        }
+        return new String[]{"No Cache"};
     }
 }
