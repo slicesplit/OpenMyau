@@ -2,423 +2,398 @@ package myau.module.modules;
 
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
-
 import myau.event.EventTarget;
+import myau.events.PacketEvent;
+import myau.events.TickEvent;
 import myau.event.types.EventType;
-import myau.events.*;
 import myau.module.Module;
+import myau.module.modules.KillAura;
 import myau.property.properties.*;
-import myau.util.TeamUtil;
-import myau.util.RenderUtil;
-import myau.mixin.IAccessorRenderManager;
+import myau.Myau;
+import myau.management.UnifiedPredictionSystem;
 import net.minecraft.client.Minecraft;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.server.*;
 import net.minecraft.network.play.client.*;
 import net.minecraft.util.AxisAlignedBB;
-import net.minecraft.util.Vec3;
 
-import java.awt.*;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
- * NewBacktrack - GrimAC Compatible Backtrack
+ * NewBacktrack - Premium Distance-Based Backtrack
  * 
- * GRIM-SAFE DESIGN:
- * - Only tracks server-side entity positions
- * - NO packet cancellation (prevents bad packets flag)
- * - NO camera manipulation
- * - Pure visual tracking for hit optimization
+ * SMART DESIGN:
+ * - Only backtracks when target moves AWAY from optimal distance
+ * - Sensitivity controls how much position difference triggers backtrack
+ * - No transaction canceling (Grim-safe)
+ * - Clean inbound packet queue
+ * - Integrates with UnifiedPredictionSystem
+ * 
+ * HOW IT WORKS:
+ * 1. Track target's server position
+ * 2. If new position is WORSE than current (further away), hold packets
+ * 3. This keeps target at the "backtracked" closer position
+ * 4. Release when position improves or queue gets too large
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class NewBacktrack extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
-
-    // Range settings
-    public final FloatProperty minRange = new FloatProperty("min-range", 2.5f, 0.0f, 8.0f);
-    public final FloatProperty maxRange = new FloatProperty("max-range", 4.0f, 0.0f, 8.0f);
     
-    // Timing settings
-    public final IntProperty maxTrackTime = new IntProperty("max-track-time", 200, 50, 1000);
-    public final IntProperty cooldownTime = new IntProperty("cooldown-time", 100, 0, 500);
-    
-    // Behavior
-    public final BooleanProperty pauseOnHurtTime = new BooleanProperty("pause-on-hurt", false);
-    public final IntProperty hurtTimePause = new IntProperty("hurt-time-pause", 3, 0, 10, () -> pauseOnHurtTime.getValue());
-    public final FloatProperty activationChance = new FloatProperty("chance", 80.0f, 0.0f, 100.0f);
-    
-    // Mode
-    public final ModeProperty targetMode = new ModeProperty("target-mode", 0, new String[]{"Attack", "Range"});
-    public final IntProperty attackTimeWindow = new IntProperty("attack-time-window", 1000, 0, 5000);
-    
-    // Rendering
-    public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true);
-    public final ColorProperty color = new ColorProperty("color", 0x87CEEB); // Sky blue
-
-    // Tracking data per player
-    private final Map<Integer, TrackedPlayer> trackedPlayers = new ConcurrentHashMap<>();
-    private final Random random = new Random();
-    
-    private EntityPlayer currentTarget = null;
-    private long lastAttackTime = 0L;
-    private long nextBacktrackAllowed = 0L;
-    private boolean shouldTrack = false;
-
     public NewBacktrack() {
         super("NewBacktrack", false);
     }
-
+    
+    // State machine for clean logic
+    private enum BacktrackState {
+        IDLE,           // Not backtracking
+        HOLDING,        // Holding packets (backtracking active)
+        RELEASING       // Releasing packets
+    }
+    
+    // Settings
+    public final FloatProperty sensitivityBlocks = new FloatProperty("sensitivity", 0.3F, 0.1F, 2.0F);
+    public final IntProperty maxQueueSize = new IntProperty("max-queue", 20, 5, 50);
+    public final IntProperty minHoldTicks = new IntProperty("min-hold", 3, 1, 10);
+    public final IntProperty maxHoldTicks = new IntProperty("max-hold", 30, 10, 60);
+    public final FloatProperty maxDistance = new FloatProperty("max-distance", 6.0F, 3.0F, 8.0F);
+    public final BooleanProperty onlyInCombat = new BooleanProperty("only-combat", true);
+    
+    // State tracking
+    private BacktrackState state = BacktrackState.IDLE;
+    private AxisAlignedBB backtrackedPos = null;
+    private int holdTicks = 0;
+    private int targetEntityId = -1;
+    
+    // Distance smoothing
+    private final double[] distanceHistory = new double[10];
+    private int distanceHistoryIndex = 0;
+    private static final double DISTANCE_DEADZONE = 0.05;
+    
+    // Packet queue for inbound packets
+    private final ConcurrentLinkedQueue<DelayedPacket> inboundQueue = new ConcurrentLinkedQueue<>();
+    
+    /**
+     * Packet wrapper with timestamp
+     */
+    private static class DelayedPacket {
+        private final Packet<?> packet;
+        private final long time;
+        
+        public DelayedPacket(Packet<?> packet) {
+            this.packet = packet;
+            this.time = System.currentTimeMillis();
+        }
+        
+        public Packet<?> getPacket() {
+            return packet;
+        }
+        
+        public long getTime() {
+            return time;
+        }
+    }
+    
     @Override
     public void onEnabled() {
-        trackedPlayers.clear();
-        currentTarget = null;
-        lastAttackTime = 0L;
-        nextBacktrackAllowed = 0L;
-        shouldTrack = false;
+        resetState();
     }
-
+    
     @Override
     public void onDisabled() {
-        trackedPlayers.clear();
-        currentTarget = null;
-        shouldTrack = false;
+        resetState();
     }
-
-    @EventTarget
-    public void onPacket(PacketEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null || event.getType() != EventType.RECEIVE) {
+    
+    /**
+     * Reset all state
+     */
+    private void resetState() {
+        state = BacktrackState.IDLE;
+        backtrackedPos = null;
+        holdTicks = 0;
+        targetEntityId = -1;
+        clearDistanceHistory();
+        safeReleaseQueue();
+    }
+    
+    /**
+     * Clear distance history
+     */
+    private void clearDistanceHistory() {
+        for (int i = 0; i < distanceHistory.length; i++) {
+            distanceHistory[i] = 0;
+        }
+        distanceHistoryIndex = 0;
+    }
+    
+    /**
+     * Main tick logic with state machine
+     */
+    public void tickCheck() {
+        if (!isEnabled() || mc.thePlayer == null || mc.theWorld == null) {
             return;
         }
-
-        Packet packet = event.getPacket();
         
-        // CRITICAL: Reset on server teleport/disconnect (prevents desync)
-        if (packet instanceof S08PacketPlayerPosLook || packet instanceof S40PacketDisconnect) {
-            trackedPlayers.clear();
-            currentTarget = null;
+        // Validate target
+        Module killAura = Myau.moduleManager.modules.get(KillAura.class);
+        if (killAura == null || !killAura.isEnabled()) {
+            if (state != BacktrackState.IDLE) {
+                transitionToIdle();
+            }
             return;
         }
-
-        // Reset on death
-        if (packet instanceof S06PacketUpdateHealth) {
-            S06PacketUpdateHealth healthPacket = (S06PacketUpdateHealth) packet;
-            if (healthPacket.getHealth() <= 0) {
-                trackedPlayers.clear();
-                currentTarget = null;
+        
+        KillAura ka = (KillAura) killAura;
+        if (ka.target == null || ka.target.getEntity().isDead) {
+            if (state != BacktrackState.IDLE) {
+                transitionToIdle();
+            }
+            return;
+        }
+        
+        // Check if target changed
+        int currentTargetId = ka.target.getEntity().getEntityId();
+        if (targetEntityId != -1 && targetEntityId != currentTargetId) {
+            // Target changed - reset
+            transitionToIdle();
+            return;
+        }
+        targetEntityId = currentTargetId;
+        
+        // Only backtrack when in combat (if enabled)
+        if (onlyInCombat.getValue()) {
+            if (mc.thePlayer.hurtTime > 0 || !mc.thePlayer.isSwingInProgress) {
+                if (state == BacktrackState.HOLDING) {
+                    transitionToRelease();
+                }
                 return;
             }
         }
-
-        // GRIM-SAFE: Only track entity positions, DON'T CANCEL PACKETS
-        // This prevents "bad packets" flag while still allowing hit optimization
-        if (packet instanceof S14PacketEntity) {
-            handleEntityMovement((S14PacketEntity) packet);
-        } else if (packet instanceof S18PacketEntityTeleport) {
-            handleEntityTeleport((S18PacketEntityTeleport) packet);
-        }
-    }
-
-    private void handleEntityMovement(S14PacketEntity packet) {
-        int entityId = packet.getEntity(mc.theWorld).getEntityId();
         
-        TrackedPlayer tracked = trackedPlayers.get(entityId);
-        if (tracked == null) return;
-
-        // Update server position based on movement
-        double dx = packet.func_149062_c() / 32.0; // getDeltaX
-        double dy = packet.func_149061_d() / 32.0; // getDeltaY
-        double dz = packet.func_149064_e() / 32.0; // getDeltaZ
+        // Get current target position
+        AxisAlignedBB currentServerPos = ka.target.getBox();
+        double currentDistance = getDistanceToBox(currentServerPos);
         
-        tracked.updatePosition(
-            tracked.serverX + dx,
-            tracked.serverY + dy,
-            tracked.serverZ + dz
-        );
-    }
-
-    private void handleEntityTeleport(S18PacketEntityTeleport packet) {
-        int entityId = packet.getEntityId();
+        // Add to distance history for smoothing
+        addToDistanceHistory(currentDistance);
+        double smoothedDistance = getSmoothedDistance();
         
-        TrackedPlayer tracked = trackedPlayers.get(entityId);
-        if (tracked == null) return;
-
-        // Update to exact teleport position
-        tracked.updatePosition(
-            packet.getX() / 32.0,
-            packet.getY() / 32.0,
-            packet.getZ() / 32.0
-        );
-    }
-
-    @EventTarget
-    public void onTick(TickEvent event) {
-        if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
+        // Check max range
+        if (smoothedDistance > maxDistance.getValue()) {
+            if (state != BacktrackState.IDLE) {
+                transitionToIdle();
+            }
             return;
         }
-
-        long currentTime = System.currentTimeMillis();
-
-        // Clean up old tracked players
-        trackedPlayers.entrySet().removeIf(entry -> {
-            TrackedPlayer tracked = entry.getValue();
-            Entity entity = mc.theWorld.getEntityByID(entry.getKey());
-            
-            // Remove if entity is gone or tracking expired
-            return entity == null || !entity.isEntityAlive() || 
-                   (currentTime - tracked.startTrackTime) > maxTrackTime.getValue();
-        });
-
-        // Update current target tracking
-        if ("Range".equals(targetMode.getModeString())) {
-            updateRangeTarget();
+        
+        // State machine
+        switch (state) {
+            case IDLE:
+                // Start backtracking if we have a position to track
+                backtrackedPos = currentServerPos;
+                transitionToHolding();
+                break;
+                
+            case HOLDING:
+                holdTicks++;
+                
+                // Calculate if new position is worse
+                double backtrackedDistance = getDistanceToBox(backtrackedPos);
+                double positionDifference = currentDistance - backtrackedDistance;
+                
+                // Check stop conditions
+                boolean minTimeReached = holdTicks >= minHoldTicks.getValue();
+                boolean maxTimeReached = holdTicks >= maxHoldTicks.getValue();
+                boolean queueFull = inboundQueue.size() >= maxQueueSize.getValue();
+                boolean newPosIsBetter = positionDifference < -sensitivityBlocks.getValue();
+                boolean newPosIsSimilar = Math.abs(positionDifference) < DISTANCE_DEADZONE;
+                
+                if (queueFull || maxTimeReached) {
+                    // Emergency/max stop
+                    transitionToRelease();
+                } else if (minTimeReached && (newPosIsBetter || newPosIsSimilar)) {
+                    // New position is good enough
+                    transitionToRelease();
+                }
+                // Otherwise keep holding - old position is still better
+                break;
+                
+            case RELEASING:
+                // Wait for queue to empty
+                if (inboundQueue.isEmpty()) {
+                    transitionToIdle();
+                }
+                break;
         }
-    }
-
-    @EventTarget
-    public void onAttack(AttackEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null) {
-            return;
-        }
-
-        lastAttackTime = System.currentTimeMillis();
-
-        if ("Attack".equals(targetMode.getModeString()) && event.getTarget() instanceof EntityPlayer) {
-            updateAttackTarget((EntityPlayer) event.getTarget());
-        }
-    }
-
-    @EventTarget
-    public void onUpdate(UpdateEvent event) {
-        if (!this.isEnabled() || event.getType() != EventType.PRE || mc.thePlayer == null || mc.theWorld == null) {
-            return;
-        }
-
-        if ("Range".equals(targetMode.getModeString())) {
-            updateRangeTarget();
-        }
-    }
-
-    @EventTarget
-    public void onLoadWorld(LoadWorldEvent event) {
-        trackedPlayers.clear();
-        currentTarget = null;
     }
     
-    @EventTarget
-    public void onRender3D(Render3DEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null || mc.theWorld == null || !renderServerPos.getValue()) {
-            return;
-        }
-        
-        if (currentTarget == null) {
-            return;
-        }
-
-        TrackedPlayer tracked = trackedPlayers.get(currentTarget.getEntityId());
-        if (tracked == null) {
-            return;
-        }
-
-        // Render the smooth server position of the enemy
-        Vec3 renderPos = tracked.getSmoothedPosition();
-        
-        double renderX = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX();
-        double renderY = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY();
-        double renderZ = ((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ();
-        
-        double x = renderPos.xCoord - renderX;
-        double y = renderPos.yCoord - renderY;
-        double z = renderPos.zCoord - renderZ;
-        
-        // Create bounding box at server position
-        AxisAlignedBB box = new AxisAlignedBB(
-            x - 0.3, y, z - 0.3,
-            x + 0.3, y + 1.8, z + 0.3
-        );
-        
-        Color c = new Color(color.getValue());
-        
-        // Render with transparency
-        RenderUtil.drawFilledBox(box, c.getRed(), c.getGreen(), c.getBlue());
-        RenderUtil.drawBoundingBox(box, c.getRed(), c.getGreen(), c.getBlue(), 180, 2.0F);
-    }
-
-    private void updateAttackTarget(EntityPlayer target) {
-        if (!shouldTrackPlayer(target)) {
-            return;
-        }
-
-        currentTarget = target;
-        ensureTracking(target);
-    }
-
-    private void updateRangeTarget() {
-        EntityPlayer nearest = findNearestEnemy();
-        
-        if (nearest == null || !shouldTrackPlayer(nearest)) {
-            currentTarget = null;
-            return;
-        }
-
-        currentTarget = nearest;
-        ensureTracking(nearest);
-    }
-
-    private void ensureTracking(EntityPlayer player) {
-        if (player == null) return;
-
-        int entityId = player.getEntityId();
-        
-        trackedPlayers.computeIfAbsent(entityId, id -> 
-            new TrackedPlayer(player.posX, player.posY, player.posZ)
-        );
-    }
-
-    private boolean shouldTrackPlayer(EntityPlayer player) {
-        if (player == null || player.isDead || player.getHealth() <= 0) {
-            return false;
-        }
-
-        if (TeamUtil.isFriend(player)) {
-            return false;
-        }
-
-        long currentTime = System.currentTimeMillis();
-        
-        // Check cooldown
-        if (currentTime < nextBacktrackAllowed) {
-            return false;
-        }
-
-        // Check attack window
-        long timeSinceAttack = currentTime - lastAttackTime;
-        if (timeSinceAttack > attackTimeWindow.getValue()) {
-            return false;
-        }
-
-        // Check hurt time pause
-        if (pauseOnHurtTime.getValue() && player.hurtTime >= hurtTimePause.getValue()) {
-            return false;
-        }
-
-        // Check range
-        double dist = mc.thePlayer.getDistanceToEntity(player);
-        if (dist < minRange.getValue() || dist > maxRange.getValue()) {
-            return false;
-        }
-
-        // Check activation chance
-        if (random.nextInt(100) >= activationChance.getValue()) {
-            return false;
-        }
-
-        return true;
-    }
-
-    private EntityPlayer findNearestEnemy() {
-        EntityPlayer nearest = null;
-        double nearestDist = Double.MAX_VALUE;
-
-        for (Object obj : mc.theWorld.playerEntities) {
-            if (!(obj instanceof EntityPlayer)) continue;
-            
-            EntityPlayer player = (EntityPlayer) obj;
-            
-            if (player == mc.thePlayer || TeamUtil.isFriend(player)) {
-                continue;
-            }
-
-            if (player.isDead || player.getHealth() <= 0) {
-                continue;
-            }
-
-            double dist = mc.thePlayer.getDistanceToEntity(player);
-            if (dist < nearestDist && dist <= maxRange.getValue()) {
-                nearest = player;
-                nearestDist = dist;
-            }
-        }
-
-        return nearest;
-    }
-
     /**
-     * Tracks a player's server-side position with smooth interpolation
+     * Add distance to history
      */
-    private static class TrackedPlayer {
-        // Server position (from packets)
-        double serverX, serverY, serverZ;
+    private void addToDistanceHistory(double distance) {
+        distanceHistory[distanceHistoryIndex] = distance;
+        distanceHistoryIndex = (distanceHistoryIndex + 1) % distanceHistory.length;
+    }
+    
+    /**
+     * Get smoothed distance
+     */
+    private double getSmoothedDistance() {
+        double sum = 0;
+        int count = 0;
+        for (double d : distanceHistory) {
+            if (d > 0) {
+                sum += d;
+                count++;
+            }
+        }
+        return count > 0 ? sum / count : 0;
+    }
+    
+    /**
+     * Transition to holding state
+     */
+    private void transitionToHolding() {
+        state = BacktrackState.HOLDING;
+        holdTicks = 0;
+    }
+    
+    /**
+     * Transition to releasing state
+     */
+    private void transitionToRelease() {
+        state = BacktrackState.RELEASING;
+        safeReleaseQueue();
+    }
+    
+    /**
+     * Transition to idle state
+     */
+    private void transitionToIdle() {
+        state = BacktrackState.IDLE;
+        backtrackedPos = null;
+        holdTicks = 0;
+        safeReleaseQueue();
+    }
+    
+    /**
+     * Calculate distance to bounding box
+     */
+    private double getDistanceToBox(AxisAlignedBB box) {
+        double centerX = (box.minX + box.maxX) / 2.0;
+        double centerY = (box.minY + box.maxY) / 2.0;
+        double centerZ = (box.minZ + box.maxZ) / 2.0;
         
-        // Smoothed render position
-        double smoothX, smoothY, smoothZ;
+        double dx = mc.thePlayer.posX - centerX;
+        double dy = mc.thePlayer.posY - centerY;
+        double dz = mc.thePlayer.posZ - centerZ;
         
-        // Tracking metadata
-        final long startTrackTime;
-        long lastUpdateTime;
-        
-        TrackedPlayer(double x, double y, double z) {
-            this.serverX = x;
-            this.serverY = y;
-            this.serverZ = z;
-            
-            this.smoothX = x;
-            this.smoothY = y;
-            this.smoothZ = z;
-            
-            this.startTrackTime = System.currentTimeMillis();
-            this.lastUpdateTime = this.startTrackTime;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    
+    /**
+     * Safe release queue - GRIM-SAFE controlled release
+     */
+    private void safeReleaseQueue() {
+        DelayedPacket delayed;
+        while ((delayed = inboundQueue.poll()) != null) {
+            processPacketDirect(delayed.getPacket());
+        }
+    }
+    
+    /**
+     * Process packet directly
+     */
+    private void processPacketDirect(Packet<?> packet) {
+        if (mc.thePlayer != null && mc.thePlayer.sendQueue != null) {
+            try {
+                // Re-add to network manager channel to process
+                mc.thePlayer.sendQueue.getNetworkManager().sendPacket(packet);
+            } catch (Exception e) {
+                // Ignore packet processing errors
+            }
+        }
+    }
+    
+    /**
+     * Tick event handler
+     */
+    @EventTarget
+    public void onTick(TickEvent event) {
+        if (event.getType() == EventType.PRE) {
+            tickCheck();
+        }
+    }
+    
+    /**
+     * Handle inbound packets
+     */
+    @EventTarget
+    public void onPacket(PacketEvent event) {
+        if (!isEnabled() || mc.thePlayer == null) {
+            return;
         }
         
-        void updatePosition(double x, double y, double z) {
-            this.serverX = x;
-            this.serverY = y;
-            this.serverZ = z;
-            this.lastUpdateTime = System.currentTimeMillis();
-        }
-        
-        Vec3 getSmoothedPosition() {
-            // Ultra-smooth interpolation for buttery rendering
-            double dx = serverX - smoothX;
-            double dy = serverY - smoothY;
-            double dz = serverZ - smoothZ;
-            double distSq = dx * dx + dy * dy + dz * dz;
+        if (event.getType() == EventType.RECEIVE) { // Inbound packet
+            Packet<?> packet = event.getPacket();
             
-            // Only smooth if position changed (anti-flicker)
-            if (distSq > 0.0004) { // 0.02 blocks squared
-                // Adaptive smoothing based on distance
-                double distance = Math.sqrt(distSq);
-                double smoothFactor;
-                
-                if (distance < 0.1) {
-                    smoothFactor = 0.08; // Ultra-smooth for tiny movements
-                } else if (distance < 0.5) {
-                    smoothFactor = 0.12; // Smooth for small movements
-                } else if (distance < 2.0) {
-                    smoothFactor = 0.18; // Balanced for medium movements
-                } else {
-                    smoothFactor = 0.25; // Faster for large movements
+            // GRIM-SAFE: Only queue entity movement packets when holding
+            if (state == BacktrackState.HOLDING && isEntityUpdatePacket(packet)) {
+                // Safety: don't overflow queue
+                if (inboundQueue.size() < maxQueueSize.getValue()) {
+                    event.setCancelled(true);
+                    inboundQueue.add(new DelayedPacket(packet));
                 }
-                
-                // Cubic easing for silk-smooth transitions
-                double t = smoothFactor;
-                double eased;
-                if (t < 0.5) {
-                    eased = 4.0 * t * t * t;
-                } else {
-                    double f = 2.0 * t - 2.0;
-                    eased = 0.5 * f * f * f + 1.0;
-                }
-                
-                smoothX += dx * eased;
-                smoothY += dy * eased;
-                smoothZ += dz * eased;
             }
             
-            return new Vec3(smoothX, smoothY, smoothZ);
+            // GRIM-SAFE: Stop backtrack on position correction
+            if (packet instanceof S08PacketPlayerPosLook) {
+                if (state != BacktrackState.IDLE) {
+                    transitionToIdle();
+                }
+            }
+        }
+    }
+    
+    /**
+     * Check if packet updates entity positions (GRIM-SAFE)
+     */
+    private boolean isEntityUpdatePacket(Packet<?> packet) {
+        // Only hold actual position update packets
+        // DON'T hold status/animation packets - they don't affect position
+        return packet instanceof S14PacketEntity ||
+               packet instanceof S18PacketEntityTeleport;
+    }
+    
+    // TODO: Add render event when needed for visualization
+    // Rendering is handled by other modules for now
+    
+    /**
+     * Get backtracked position for prediction system
+     */
+    public AxisAlignedBB getBacktrackedPosition() {
+        return backtrackedPos;
+    }
+    
+    /**
+     * Check if currently backtracking
+     */
+    public boolean isBacktracking() {
+        return state == BacktrackState.HOLDING;
+    }
+    
+    public String[] getHUDInfo() {
+        if (!isEnabled()) {
+            return new String[]{};
+        }
+        
+        switch (state) {
+            case HOLDING:
+                return new String[]{"BT [" + holdTicks + "/" + maxHoldTicks.getValue() + "]"};
+            case RELEASING:
+                return new String[]{"REL [" + inboundQueue.size() + "q]"};
+            case IDLE:
+            default:
+                return new String[]{"READY"};
         }
     }
 }
