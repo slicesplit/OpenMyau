@@ -128,6 +128,11 @@ public class KillAura extends Module {
     public final ModeProperty debugLog;
 
     private long getAttackDelay() {
+        // COMBO MODE: 20 CPS across 4 targets = 5 CPS per target = 200ms per target
+        if (this.mode.getValue() == 3) {
+            return 50L; // 50ms = 20 total attacks per second distributed across 4 targets
+        }
+        
         // MULTI MODE: Fast switching between targets
         if (this.mode.getValue() == 2) {
             return 50L; // 50ms = 20 attacks per second max
@@ -177,8 +182,8 @@ public class KillAura extends Module {
             
             if (this.isPlayerBlocking() && this.autoBlock.getValue() != 1) {
                 return false;
-            } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2 && this.autoBlock.getValue() != 9) {
-                return false; // GRIM mode bypasses attack delay for speed
+            } else if (this.attackDelayMS > 0L && this.mode.getValue() != 2 && this.mode.getValue() != 3 && this.autoBlock.getValue() != 9) {
+                return false; // COMBO mode and GRIM mode bypass attack delay for speed
             } else {
                 // GRIM BYPASS: Enhanced reach calculation for precision
                 double targetDistance = RotationUtil.distanceToEntity(this.target.getEntity());
@@ -220,7 +225,8 @@ public class KillAura extends Module {
                     }
                 }
                 
-                if (this.mode.getValue() == 2) {
+                if (this.mode.getValue() == 2 || this.mode.getValue() == 3) {
+                    // MULTI/COMBO MODE: 20 CPS rate limiting
                     if (currentTime - lastSecondReset > 1000) {
                         attacksThisSecond = 0;
                         lastSecondReset = currentTime;
@@ -535,7 +541,7 @@ public class KillAura extends Module {
     public KillAura() {
         super("KillAura", false);
         this.lastTickProcessed = 0;
-        this.mode = new ModeProperty("mode", 0, new String[]{"SINGLE", "SWITCH", "MULTI"});
+        this.mode = new ModeProperty("mode", 0, new String[]{"SINGLE", "SWITCH", "MULTI", "COMBO"});
         this.sort = new ModeProperty("sort", 0, new String[]{"DISTANCE", "HEALTH", "HURT_TIME", "FOV"});
         this.autoBlock = new ModeProperty(
                 "auto-block", 2, new String[]{"NONE", "VANILLA", "SPOOF", "HYPIXEL", "BLINK", "INTERACT", "SWAP", "LEGIT", "FAKE", "GRIM"}
@@ -551,8 +557,8 @@ public class KillAura extends Module {
         this.fov = new IntProperty("fov", 360, 30, 360);
         this.minCPS = new IntProperty("min-aps", 14, 1, 20);
         this.maxCPS = new IntProperty("max-aps", 14, 1, 20);
-        // HYPER SWITCH: God delay for 4x 20cps - 15ms = 66.6 switches/sec perfect for 4 targets @ 20cps each
-        this.switchDelay = new IntProperty("switch-delay", 15, 0, 1000);
+        // BRUTAL SWITCH: 8ms = 125 switches/sec - distribute attacks across targets FAST
+        this.switchDelay = new IntProperty("switch-delay", 8, 0, 1000);
         this.rotations = new ModeProperty("rotations", 2, new String[]{"NONE", "LEGIT", "SILENT", "LOCK_VIEW"});
         this.moveFix = new ModeProperty("move-fix", 1, new String[]{"NONE", "SILENT", "STRICT"});
         this.smoothing = new PercentProperty("smoothing", 0);
@@ -1051,9 +1057,29 @@ public class KillAura extends Module {
                                     this.target = multiTargets.get(0);
                                 }
                             } else {
-                                // HYPER SWITCH MODE: God-tier switching for 4x 20cps combo
+                                // BRUTAL SWITCH MODE: Ultra-aggressive multi-target devastation
                                 if (this.mode.getValue() == 1) {
                                     long currentTime = System.currentTimeMillis();
+                                    
+                                    // BRUTAL PRIORITY: Sort targets by health (lowest first) for faster kills
+                                    targets.sort((e1, e2) -> {
+                                        float h1 = e1.getHealth() / e1.getMaxHealth();
+                                        float h2 = e2.getHealth() / e2.getMaxHealth();
+                                        return Float.compare(h1, h2); // Lowest health first
+                                    });
+                                    
+                                    // INSTANT SWITCH ON DEATH: If current target is dead/invalid, switch NOW
+                                    boolean targetDead = this.target != null && 
+                                        (this.target.getEntity().isDead || this.target.getEntity().getHealth() <= 0.0f);
+                                    
+                                    if (targetDead && targets.size() > 1) {
+                                        this.switchTick++;
+                                        if (this.switchTick >= targets.size()) {
+                                            this.switchTick = 0;
+                                        }
+                                        lastSwitchTime = currentTime; // Reset timer
+                                        targetComboCount.clear(); // Clear combos on death
+                                    }
                                     
                                     // BACKTRACK INTEGRATION: Check if backtrack modules are enabled
                                     Module oldBacktrack = Myau.moduleManager.modules.get(OldBacktrack.class);
@@ -1062,22 +1088,22 @@ public class KillAura extends Module {
                                                              (newBacktrack != null && newBacktrack.isEnabled());
                                     
                                     // Calculate optimal switch delay based on conditions
-                                    int baseSwitchDelay = this.switchDelay.getValue(); // Default 15ms for 66.6 switches/sec
+                                    int baseSwitchDelay = this.switchDelay.getValue(); // Default 8ms for 125 switches/sec
                                     
-                                    // BACKTRACK BOOST: If backtrack is active, reduce delay for even faster switches
+                                    // BACKTRACK BOOST: If backtrack is active, go EVEN FASTER
                                     if (backtrackActive) {
-                                        baseSwitchDelay = Math.max(10, baseSwitchDelay - 5); // Min 10ms = 100 switches/sec
+                                        baseSwitchDelay = Math.max(6, baseSwitchDelay - 2); // Min 6ms = 166 switches/sec
                                     }
                                     
-                                    // GRIM SAFETY: Slightly increase delay if using GRIM autoblock for zero flags
+                                    // GRIM SAFETY: Maintain safe delay with GRIM mode
                                     if (this.autoBlock.getValue() == 9) {
-                                        baseSwitchDelay = Math.max(baseSwitchDelay, 12); // Min 12ms for safety
+                                        baseSwitchDelay = Math.max(baseSwitchDelay, 10); // Min 10ms for Grim safety
                                     }
                                     
                                     // Check if enough time has passed since last switch
                                     boolean canSwitch = (currentTime - lastSwitchTime) >= baseSwitchDelay;
                                     
-                                    // INTELLIGENT SWITCHING: Only switch if hit registered OR in cooldown
+                                    // BRUTAL SWITCHING: Switch immediately after hit with minimal delay
                                     if (this.hitRegistered || switchCooldown) {
                                         this.hitRegistered = false;
                                         
@@ -1091,16 +1117,16 @@ public class KillAura extends Module {
                                             this.switchTick++;
                                             lastSwitchTime = currentTime;
                                             
-                                            // COMBO TRACKING: Track hits per target for intelligent distribution
+                                            // BRUTAL COMBO: Track hits per target for FAST distribution
                                             if (this.target != null) {
                                                 int entityId = this.target.getEntity().getEntityId();
                                                 int comboHits = targetComboCount.getOrDefault(entityId, 0);
                                                 targetComboCount.put(entityId, comboHits + 1);
                                                 
-                                                // ANTI-FLAG: After 3-4 hits on same target, force brief cooldown
-                                                if (comboHits >= 3 && targets.size() > 1) {
+                                                // BRUTAL: Only 2 hits per target before switching (was 3-4)
+                                                if (comboHits >= 2 && targets.size() > 1) {
                                                     switchCooldown = true;
-                                                    switchCooldownEnd = currentTime + 25; // 25ms cooldown = natural look
+                                                    switchCooldownEnd = currentTime + 15; // 15ms cooldown (was 25ms)
                                                     targetComboCount.put(entityId, 0); // Reset combo
                                                 }
                                             }
@@ -1122,6 +1148,64 @@ public class KillAura extends Module {
                                         int targetId = this.target.getEntity().getEntityId();
                                         targetLastAttack.put(targetId, currentTime);
                                     }
+                                } else if (this.mode.getValue() == 3) {
+                                    // ═══════════════════════════════════════════════════════════════
+                                    // COMBO MODE: 20 CPS GOD MODE - Perfect 4-target combo distribution
+                                    // ═══════════════════════════════════════════════════════════════
+                                    // MECHANICS:
+                                    // • 20 total attacks per second (50ms between attacks)
+                                    // • Distributed across 4 targets = 5 CPS per target
+                                    // • Perfect round-robin rotation: T1→T2→T3→T4→T1...
+                                    // • Each target gets hit once per cycle (200ms per cycle)
+                                    // • Prioritizes low-health targets for faster kills
+                                    // • Instantly switches when targets die
+                                    // • GRIM SAFE: 2.92 block max reach, natural timing
+                                    // ═══════════════════════════════════════════════════════════════
+                                    
+                                    long currentTime = System.currentTimeMillis();
+                                    
+                                    // Limit to 4 targets max for perfect 20 CPS distribution
+                                    int maxComboTargets = Math.min(4, targets.size());
+                                    
+                                    // BRUTAL PRIORITY: Sort by health % (lowest first) for faster kills
+                                    targets.sort((e1, e2) -> {
+                                        float h1 = e1.getHealth() / e1.getMaxHealth();
+                                        float h2 = e2.getHealth() / e2.getMaxHealth();
+                                        return Float.compare(h1, h2); // Lowest health first
+                                    });
+                                    
+                                    // INSTANT SWITCH ON DEATH: Skip dead targets immediately
+                                    boolean targetDead = this.target != null && 
+                                        (this.target.getEntity().isDead || this.target.getEntity().getHealth() <= 0.0f);
+                                    
+                                    if (targetDead) {
+                                        // Force immediate switch to next alive target
+                                        this.switchTick++;
+                                        lastSwitchTime = currentTime;
+                                    }
+                                    
+                                    // PERFECT ROTATION: Cycle through all 4 targets after each hit
+                                    if (this.hitRegistered) {
+                                        this.hitRegistered = false;
+                                        this.switchTick++;
+                                        lastSwitchTime = currentTime;
+                                        
+                                        // Track hits per target for stats/debugging
+                                        if (this.target != null) {
+                                            int entityId = this.target.getEntity().getEntityId();
+                                            int hits = targetHitCount.getOrDefault(entityId, 0);
+                                            targetHitCount.put(entityId, hits + 1);
+                                        }
+                                    }
+                                    
+                                    // Wrap around to target 0 after hitting all 4
+                                    if (this.switchTick >= maxComboTargets) {
+                                        this.switchTick = 0;
+                                    }
+                                    
+                                    // Select current target from the 4-target pool
+                                    this.target = new AttackData(targets.get(this.switchTick));
+                                    
                                 } else {
                                     // SINGLE MODE: No switching
                                     if (this.mode.getValue() == 0 || this.switchTick >= targets.size()) {
