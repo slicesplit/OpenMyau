@@ -60,7 +60,7 @@ public class KillAura extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     private static final DecimalFormat df = new DecimalFormat("+0.0;-0.0", new DecimalFormatSymbols(Locale.US));
     private final TimerUtil timer = new TimerUtil();
-    private AttackData target = null;
+    public AttackData target = null;
     private int switchTick = 0;
     private boolean hitRegistered = false;
     private boolean blockingState = false;

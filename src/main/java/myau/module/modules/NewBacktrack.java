@@ -10,7 +10,7 @@ import myau.module.Module;
 import myau.module.modules.KillAura;
 import myau.property.properties.*;
 import myau.Myau;
-import myau.management.UnifiedPredictionSystem;
+// Removed unused import: UnifiedPredictionSystem
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.server.*;

@@ -71,6 +71,9 @@ public class AntiFireball extends Module {
     
     // FORCE OVERRIDE: Work even while BedNuker/Scaffold/KillAura/Backtrack active
     public final BooleanProperty forceOverride = new BooleanProperty("force-override", true);
+    
+    // STOP MOVEMENT: Stop player movement when deflecting fireballs
+    public final BooleanProperty stopMovement = new BooleanProperty("stop-movement", false);
 
     // HYPER-ENHANCED: 100% accurate targeting with trajectory analysis
     private boolean isValidTarget(EntityFireball entityFireball) {
@@ -251,6 +254,12 @@ public class AntiFireball extends Module {
                         && !ItemUtil.hasHoldItem()) {
                     event.setRotation(rotations[0], rotations[1], 0);
                     event.setPervRotation(this.moveFix.getValue() != 0 ? rotations[0] : mc.thePlayer.rotationYaw, 0);
+                }
+                
+                // STOP MOVEMENT: Stop player movement when deflecting (if enabled)
+                if (this.stopMovement.getValue()) {
+                    mc.thePlayer.motionX = 0.0;
+                    mc.thePlayer.motionZ = 0.0;
                 }
                 
                 if (!Myau.playerStateManager.attacking && !Myau.playerStateManager.digging && !Myau.playerStateManager.placing) {

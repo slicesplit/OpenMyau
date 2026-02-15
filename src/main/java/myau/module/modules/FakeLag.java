@@ -10,7 +10,7 @@ import myau.module.Module;
 import myau.module.modules.KillAura;
 import myau.property.properties.*;
 import myau.Myau;
-import myau.management.UnifiedPredictionSystem;
+// Removed unused import: UnifiedPredictionSystem
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.client.*;
@@ -43,17 +43,6 @@ public class FakeLag extends Module {
     public FakeLag() {
         super("FakeLag", false);
     }
-    
-    // GRIM-OPTIMIZED DEFAULT VALUES
-    private final IntProperty maxSpoofTicks = new IntProperty("max-spoof-ticks", 3, 1, 10); // GRIM: 3 ticks = 150ms max lag
-    private final IntProperty cooldownTicks = new IntProperty("cooldown-ticks", 15, 5, 40); // GRIM: 15 ticks = 750ms between lags
-    private final FloatProperty activationDistance = new FloatProperty("activation-distance", 4.5F, 3.0F, 8.0F); // GRIM: 4.5 blocks optimal
-    private final BooleanProperty onlyWhenApproaching = new BooleanProperty("only-when-approaching", true); // GRIM: Smart activation
-    
-    // Additional properties that may exist
-    private final FloatProperty distance = new FloatProperty("distance", 4.5F, 3.0F, 8.0F);
-    private final FloatProperty minDistance = new FloatProperty("min-distance", 2.5F, 1.0F, 5.0F); // GRIM: Don't activate too close
-    private final BooleanProperty onlyWhenMoving = new BooleanProperty("only-when-moving", true);
     
     // State machine for clean logic
     private enum FakeLagState {
@@ -234,9 +223,9 @@ public class FakeLag extends Module {
                         // Fast release: 3 packets per tick
                         int packetsToRelease = Math.min(3, packetQueue.size());
                         for (int i = 0; i < packetsToRelease; i++) {
-                            Packet<?> packet = packetQueue.poll();
-                            if (packet != null) {
-                                mc.thePlayer.sendQueue.addToSendQueue(packet);
+                            DelayedPacket delayedPacket = packetQueue.poll();
+                            if (delayedPacket != null) {
+                                mc.thePlayer.sendQueue.addToSendQueue(delayedPacket.getPacket());
                             }
                         }
                     }
