@@ -1282,7 +1282,7 @@ public class OldBacktrack extends Module {
      */
     private void renderManualModePositions(float partialTicks) {
         try {
-            // Render boxes at player positions (which are set to backtrack positions when active)
+            // Render boxes at BACKTRACK positions (behind walking players)
             for (Entity entity : mc.theWorld.loadedEntityList) {
                 if (!(entity instanceof EntityPlayer)) {
                     continue;
@@ -1299,18 +1299,24 @@ public class OldBacktrack extends Module {
                 }
                 
                 // Check if this player has backtrack history
-                if (!entityPositions.containsKey(player.getEntityId())) {
+                LinkedList<PositionData> positions = entityPositions.get(player.getEntityId());
+                if (positions == null || positions.isEmpty()) {
                     continue;
                 }
 
-                // BACKTRACK TARGET: Client entity position
-                // When backtrack is triggered, applyBacktrackPosition() moves the entity
-                // So rendering the entity's current position shows the backtrack target
-                double renderX = player.lastTickPosX + (player.posX - player.lastTickPosX) * partialTicks;
-                double renderY = player.lastTickPosY + (player.posY - player.lastTickPosY) * partialTicks;
-                double renderZ = player.lastTickPosZ + (player.posZ - player.lastTickPosZ) * partialTicks;
+                // Get the BEST backtrack position (behind the player when moving)
+                PositionData backtrackPos = selectBestPosition(positions, player);
+                if (backtrackPos == null) {
+                    continue;
+                }
                 
-                // Render box at current position (backtrack target when active)
+                // BACKTRACK TARGET: Render box at the BACKTRACKED position (behind the player)
+                // This shows where we will attack - at their previous position
+                double renderX = backtrackPos.x;
+                double renderY = backtrackPos.y;
+                double renderZ = backtrackPos.z;
+                
+                // Render box at backtrack position (behind walking player)
                 Color c = new Color(color.getValue());
                 Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
                 Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);
@@ -1331,7 +1337,7 @@ public class OldBacktrack extends Module {
         }
         
         try {
-            // Render boxes at the FROZEN CLIENT POSITIONS (where backtrack attacks)
+            // Render boxes at the SERVER-SIDE BACKTRACK POSITIONS (behind walking players)
             for (Entity entity : mc.theWorld.loadedEntityList) {
                 if (!(entity instanceof EntityPlayer)) {
                     continue;
@@ -1347,13 +1353,20 @@ public class OldBacktrack extends Module {
                     continue;
                 }
 
-                // BACKTRACK TARGET: Client entity position (frozen due to delayed packets)
-                // This is the position we attack - where you SEE them on your screen
-                double renderX = player.lastTickPosX + (player.posX - player.lastTickPosX) * partialTicks;
-                double renderY = player.lastTickPosY + (player.posY - player.lastTickPosY) * partialTicks;
-                double renderZ = player.lastTickPosZ + (player.posZ - player.lastTickPosZ) * partialTicks;
+                // Get the server-side backtrack position (behind the player)
+                PositionData serverPos = serverPositions.get(player.getEntityId());
+                if (serverPos == null) {
+                    continue;
+                }
                 
-                // Render box at the FROZEN position (backtrack attack target)
+                // BACKTRACK TARGET: Render at server position (behind the player due to lag)
+                // When we lag packets, the server still sees the player at this OLD position
+                // This is BEHIND the player when they're moving forward
+                double renderX = serverPos.x;
+                double renderY = serverPos.y;
+                double renderZ = serverPos.z;
+                
+                // Render box at the SERVER backtrack position (behind walking player)
                 Color c = new Color(color.getValue());
                 Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
                 Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);

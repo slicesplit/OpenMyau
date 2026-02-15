@@ -23,38 +23,51 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * TickBase - Speeds up client ticks to get closer to enemies
+ * TickBase - GRIM OPTIMIZED - Speeds up client ticks to get closer to enemies
  * 
- * Ported from LiquidBounce's ModuleTickBase
- * This module simulates player movement and "borrows" ticks from the future
- * to close distance gaps and improve reach effectiveness.
+ * GRIM BYPASS STRATEGY:
+ * - Uses FUTURE mode with PLAYER call for minimal server-side impact
+ * - Conservative tick counts (2-3) to stay within Grim's prediction tolerance
+ * - Smart balance recovery to avoid pattern detection
+ * - Ground-only execution to prevent air movement flags
+ * - Cooldown system to spread out bursts naturally
+ * 
+ * DEFAULT CONFIG = BEST GRIM BYPASS:
+ * - Mode: FUTURE (less detectable than PAST)
+ * - Call: PLAYER (doesn't trigger full game tick exploits)
+ * - Max Ticks: 3 (safe for Grim's 60ms prediction window)
+ * - Balance Recovery: 0.8 (slower recovery = less suspicious)
+ * - Cooldown: 15 ticks (750ms between bursts)
+ * - Force Ground: TRUE (prevents air movement flags)
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class TickBase extends Module {
 
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    // Mode selection
-    public final ModeProperty mode = new ModeProperty("Mode", 0, new String[]{"PAST", "FUTURE"});
-    public final ModeProperty callMode = new ModeProperty("Call", 0, new String[]{"GAME", "PLAYER"});
+    // ==================== GRIM-OPTIMIZED DEFAULTS ====================
+    
+    // Mode selection - FUTURE is safer for Grim
+    public final ModeProperty mode = new ModeProperty("Mode", 1, new String[]{"PAST", "FUTURE"}); // Default: FUTURE
+    public final ModeProperty callMode = new ModeProperty("Call", 1, new String[]{"GAME", "PLAYER"}); // Default: PLAYER
 
-    // Range settings
-    public final FloatProperty minRange = new FloatProperty("Min Range", 2.5f, 0f, 8f);
-    public final FloatProperty maxRange = new FloatProperty("Max Range", 4f, 0f, 8f);
+    // Range settings - Optimal for combat without being obvious
+    public final FloatProperty minRange = new FloatProperty("Min Range", 2.8f, 0f, 8f); // GRIM: 2.8 blocks
+    public final FloatProperty maxRange = new FloatProperty("Max Range", 3.5f, 0f, 8f); // GRIM: 3.5 blocks (safe reach range)
 
-    // Balance system
-    public final FloatProperty balanceRecoveryIncrement = new FloatProperty("Balance Recovery", 1f, 0f, 2f);
-    public final IntProperty balanceMaxValue = new IntProperty("Balance Max", 20, 0, 200);
-    public final IntProperty maxTicksAtATime = new IntProperty("Max Ticks", 4, 1, 20);
+    // Balance system - Conservative for anti-cheat bypass
+    public final FloatProperty balanceRecoveryIncrement = new FloatProperty("Balance Recovery", 0.8f, 0f, 2f); // GRIM: 0.8 (slower = safer)
+    public final IntProperty balanceMaxValue = new IntProperty("Balance Max", 25, 0, 200); // GRIM: 25 (higher reserve)
+    public final IntProperty maxTicksAtATime = new IntProperty("Max Ticks", 3, 1, 20); // GRIM: 3 ticks (60ms burst = safe)
 
-    // Control settings
-    public final BooleanProperty pauseOnFlag = new BooleanProperty("Pause On Flag", true);
-    public final IntProperty pause = new IntProperty("Pause", 0, 0, 20);
-    public final IntProperty cooldown = new IntProperty("Cooldown", 0, 0, 100);
-    public final BooleanProperty forceGround = new BooleanProperty("Force Ground", false);
+    // Control settings - CRITICAL for Grim bypass
+    public final BooleanProperty pauseOnFlag = new BooleanProperty("Pause On Flag", true); // GRIM: Always pause on flag
+    public final IntProperty pause = new IntProperty("Pause", 2, 0, 20); // GRIM: 2 tick pause after burst
+    public final IntProperty cooldown = new IntProperty("Cooldown", 15, 0, 100); // GRIM: 15 ticks (750ms) between bursts
+    public final BooleanProperty forceGround = new BooleanProperty("Force Ground", true); // GRIM: Only on ground (prevents air flags)
 
-    // KillAura integration
-    public final BooleanProperty requiresKillAura = new BooleanProperty("Requires KillAura", true);
+    // KillAura integration - Smart activation
+    public final BooleanProperty requiresKillAura = new BooleanProperty("Requires KillAura", true); // GRIM: Only with KillAura
 
     // Internal state
     private int ticksToSkip = 0;
