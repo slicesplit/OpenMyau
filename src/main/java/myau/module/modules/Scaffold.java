@@ -575,6 +575,21 @@ public class Scaffold extends Module {
                             this.place(blockData.blockPos(), blockData.facing(), hitVec);
                         }
                     }
+                } else if (this.keepY.getValue() == 3 && this.stage > 0 && !mc.thePlayer.onGround) {
+                    // TELLY Keep-Y mode - Same logic as EXTRA but waits for rotationTick
+                    int nextBlockY = MathHelper.floor_double(mc.thePlayer.posY + mc.thePlayer.motionY);
+                    if (nextBlockY <= this.startY && mc.thePlayer.posY > (double) (this.startY + 1)) {
+                        this.shouldKeepY = true;
+                        
+                        // Wait for rotations to complete before placing (Grim-safe)
+                        if (this.rotationTick <= 0) {
+                            blockData = this.getBlockData();
+                            if (blockData != null) {
+                                hitVec = BlockUtil.getHitVec(blockData.blockPos(), blockData.facing(), this.yaw, this.pitch);
+                                this.place(blockData.blockPos(), blockData.facing(), hitVec);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -708,6 +723,50 @@ public class Scaffold extends Module {
                             default:
                                 this.towerTick = 0;
                                 this.towerDelay = 0;
+                                return;
+                        }
+                    case 3: // TELLY mode - Grim-aware tower with proper timing
+                        switch (this.towerTick) {
+                            case 0:
+                                if (mc.thePlayer.onGround) {
+                                    this.towerTick = 1;
+                                    mc.thePlayer.motionY = -0.0784000015258789;
+                                }
+                                return;
+                            case 1:
+                                if (yState == 0 && PlayerUtil.isAirBelow()) {
+                                    this.startY = MathHelper.floor_double(mc.thePlayer.posY);
+                                    
+                                    // Wait one extra tick to ensure block placement on Grim
+                                    if (this.rotationTick <= 0) {
+                                        this.towerTick = 2;
+                                        mc.thePlayer.motionY = 0.42F;
+                                        
+                                        if (MoveUtil.isForwardPressed()) {
+                                            MoveUtil.setSpeed(MoveUtil.getSpeed(), MoveUtil.getMoveYaw());
+                                        } else {
+                                            MoveUtil.setSpeed(0.0);
+                                            event.setForward(0.0F);
+                                            event.setStrafe(0.0F);
+                                        }
+                                    }
+                                    return;
+                                } else {
+                                    this.towerTick = 0;
+                                    return;
+                                }
+                            case 2:
+                                // Grim-safe motion reduction - prevents rubberband
+                                this.towerTick = 3;
+                                mc.thePlayer.motionY = 0.75 - mc.thePlayer.posY % 1.0;
+                                return;
+                            case 3:
+                                this.towerTick = 1;
+                                // Snap to exact Y position to prevent Grim prediction errors
+                                mc.thePlayer.motionY = 1.0 - mc.thePlayer.posY % 1.0;
+                                return;
+                            default:
+                                this.towerTick = 0;
                                 return;
                         }
                     default:

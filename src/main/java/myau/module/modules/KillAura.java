@@ -93,6 +93,9 @@ public class KillAura extends Module {
     private final Map<Integer, Integer> targetComboCount = new ConcurrentHashMap<>();
     private boolean switchCooldown = false;
     private long switchCooldownEnd = 0L;
+    
+    // GOD-TIER COMBO PREDICTION ENGINE: Handles 4 players simultaneously
+    private final ComboPredictionEngine comboPrediction = new ComboPredictionEngine();
     public final ModeProperty mode;
     public final ModeProperty sort;
     public final ModeProperty autoBlock;
@@ -894,7 +897,46 @@ public class KillAura extends Module {
                 }
                 boolean attacked = false;
                 
-                if (this.mode.getValue() == 2 && !multiTargets.isEmpty()) {
+                // ═══════════════════════════════════════════════════════════════════════════
+                // COMBO MODE (3): GOD-TIER 4-PLAYER PREDICTION SYSTEM
+                // ═══════════════════════════════════════════════════════════════════════════
+                if (this.mode.getValue() == 3 && !multiTargets.isEmpty()) {
+                    // Update combo prediction engine with current targets
+                    comboPrediction.updateTargets(multiTargets);
+                    
+                    // Get next target from rotation
+                    ComboTarget comboTarget = comboPrediction.getNextTarget();
+                    
+                    if (comboTarget != null && comboTarget.isValid()) {
+                        // Get predicted rotations for this target
+                        float[] predictedRots = comboTarget.getPredictedRotations(event.getYaw(), event.getPitch());
+                        
+                        // Set rotations if enabled
+                        if (this.rotations.getValue() == 2 || this.rotations.getValue() == 3) {
+                            event.setRotation(predictedRots[0], predictedRots[1], 1);
+                            if (this.rotations.getValue() == 3) {
+                                Myau.rotationManager.setRotation(predictedRots[0], predictedRots[1], 1, true);
+                                event.setPervRotation(predictedRots[0], 1);
+                            }
+                        }
+                        
+                        // Temporarily set this as the attack target
+                        AttackData originalTarget = this.target;
+                        this.target = comboTarget.getAttackData();
+                        
+                        // Perform the attack with predicted rotations
+                        if (this.performAttack(predictedRots[0], predictedRots[1])) {
+                            attacked = true;
+                        }
+                        
+                        // Restore original target
+                        this.target = originalTarget;
+                    }
+                }
+                // ═══════════════════════════════════════════════════════════════════════════
+                // MULTI MODE (2): Attack all targets in range
+                // ═══════════════════════════════════════════════════════════════════════════
+                else if (this.mode.getValue() == 2 && !multiTargets.isEmpty()) {
                     for (int i = 0; i < multiTargets.size(); i++) {
                         AttackData multiTarget = multiTargets.get(i);
                         
@@ -1427,6 +1469,308 @@ public class KillAura extends Module {
     @Override
     public String[] getSuffix() {
         return new String[]{CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, this.mode.getModeString())};
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // GOD-TIER COMBO PREDICTION ENGINE - Handles 4 Players Simultaneously
+    // ═══════════════════════════════════════════════════════════════════════════════
+    
+    public static class ComboPredictionEngine {
+        private static final int MAX_COMBO_TARGETS = 4;
+        private static final long ATTACK_INTERVAL = 50L; // 50ms = 20 total CPS
+        private static final double MAX_PREDICTION_DISTANCE = 3.5;
+        
+        private final ComboTarget[] comboTargets = new ComboTarget[MAX_COMBO_TARGETS];
+        private int currentTargetIndex = 0;
+        private long lastAttackTime = 0L;
+        private long lastCycleTime = 0L;
+        
+        public ComboPredictionEngine() {
+            for (int i = 0; i < MAX_COMBO_TARGETS; i++) {
+                comboTargets[i] = new ComboTarget();
+            }
+        }
+        
+        /**
+         * Updates all combo targets with current entity list
+         */
+        public void updateTargets(ArrayList<AttackData> targets) {
+            // Reset all slots first
+            for (int i = 0; i < MAX_COMBO_TARGETS; i++) {
+                comboTargets[i].reset();
+            }
+            
+            // Fill up to 4 targets
+            int count = Math.min(targets.size(), MAX_COMBO_TARGETS);
+            for (int i = 0; i < count; i++) {
+                comboTargets[i].setTarget(targets.get(i));
+                comboTargets[i].updatePrediction();
+            }
+        }
+        
+        /**
+         * Gets the next target to attack in the rotation
+         */
+        public ComboTarget getNextTarget() {
+            long currentTime = System.currentTimeMillis();
+            
+            // Check if enough time has passed since last attack
+            if (currentTime - lastAttackTime < ATTACK_INTERVAL) {
+                return null;
+            }
+            
+            // Find next valid target in rotation
+            int attempts = 0;
+            while (attempts < MAX_COMBO_TARGETS) {
+                currentTargetIndex = (currentTargetIndex + 1) % MAX_COMBO_TARGETS;
+                ComboTarget target = comboTargets[currentTargetIndex];
+                
+                if (target.isValid() && target.canAttack(currentTime)) {
+                    lastAttackTime = currentTime;
+                    target.recordAttack(currentTime);
+                    return target;
+                }
+                
+                attempts++;
+            }
+            
+            return null;
+        }
+        
+        /**
+         * Gets all valid combo targets
+         */
+        public ArrayList<ComboTarget> getAllValidTargets() {
+            ArrayList<ComboTarget> valid = new ArrayList<>();
+            for (ComboTarget target : comboTargets) {
+                if (target.isValid()) {
+                    valid.add(target);
+                }
+            }
+            return valid;
+        }
+        
+        /**
+         * Gets the best target based on priority scoring
+         */
+        public ComboTarget getBestTarget() {
+            ComboTarget best = null;
+            double bestScore = -1.0;
+            
+            for (ComboTarget target : comboTargets) {
+                if (target.isValid()) {
+                    double score = target.getPriorityScore();
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = target;
+                    }
+                }
+            }
+            
+            return best;
+        }
+        
+        /**
+         * Checks if we can attack any target right now
+         */
+        public boolean canAttackAny() {
+            long currentTime = System.currentTimeMillis();
+            if (currentTime - lastAttackTime < ATTACK_INTERVAL) {
+                return false;
+            }
+            
+            for (ComboTarget target : comboTargets) {
+                if (target.isValid() && target.canAttack(currentTime)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    
+    /**
+     * Represents a single target in the 4-player combo system
+     */
+    public static class ComboTarget {
+        private AttackData attackData;
+        private Vec3 predictedPosition;
+        private long lastAttackTime;
+        private int comboCount;
+        private double distanceToPlayer;
+        private boolean valid;
+        
+        // Movement prediction
+        private Vec3 lastPosition;
+        private Vec3 velocity;
+        private long lastUpdateTime;
+        
+        public ComboTarget() {
+            reset();
+        }
+        
+        public void reset() {
+            this.attackData = null;
+            this.predictedPosition = null;
+            this.lastAttackTime = 0L;
+            this.comboCount = 0;
+            this.distanceToPlayer = Double.MAX_VALUE;
+            this.valid = false;
+            this.lastPosition = null;
+            this.velocity = new Vec3(0, 0, 0);
+            this.lastUpdateTime = 0L;
+        }
+        
+        public void setTarget(AttackData data) {
+            this.attackData = data;
+            this.valid = true;
+            this.distanceToPlayer = mc.thePlayer.getDistanceToEntity(data.getEntity());
+            
+            // Initialize position tracking
+            this.lastPosition = new Vec3(data.getX(), data.getY(), data.getZ());
+            this.lastUpdateTime = System.currentTimeMillis();
+        }
+        
+        /**
+         * Updates movement prediction based on entity velocity
+         */
+        public void updatePrediction() {
+            if (!valid || attackData == null) return;
+            
+            EntityLivingBase entity = attackData.getEntity();
+            long currentTime = System.currentTimeMillis();
+            
+            // Calculate velocity from position change
+            Vec3 currentPos = new Vec3(entity.posX, entity.posY, entity.posZ);
+            if (lastPosition != null && lastUpdateTime > 0) {
+                double timeDelta = (currentTime - lastUpdateTime) / 1000.0; // Convert to seconds
+                if (timeDelta > 0) {
+                    double dx = (currentPos.xCoord - lastPosition.xCoord) / timeDelta;
+                    double dy = (currentPos.yCoord - lastPosition.yCoord) / timeDelta;
+                    double dz = (currentPos.zCoord - lastPosition.zCoord) / timeDelta;
+                    this.velocity = new Vec3(dx, dy, dz);
+                }
+            }
+            
+            // Predict position 50ms ahead (one attack cycle)
+            double predictionTime = 0.05; // 50ms in seconds
+            double predX = entity.posX + (entity.motionX * predictionTime);
+            double predY = entity.posY + (entity.motionY * predictionTime);
+            double predZ = entity.posZ + (entity.motionZ * predictionTime);
+            
+            this.predictedPosition = new Vec3(predX, predY, predZ);
+            this.lastPosition = currentPos;
+            this.lastUpdateTime = currentTime;
+            this.distanceToPlayer = mc.thePlayer.getDistanceToEntity(entity);
+        }
+        
+        /**
+         * Checks if this target can be attacked right now
+         */
+        public boolean canAttack(long currentTime) {
+            if (!valid || attackData == null) return false;
+            
+            // Entity must be alive and loaded
+            EntityLivingBase entity = attackData.getEntity();
+            if (entity.isDead || entity.deathTime > 0) {
+                valid = false;
+                return false;
+            }
+            
+            // Must be in range
+            if (distanceToPlayer > 3.0) {
+                return false;
+            }
+            
+            // Minimum 50ms between attacks on same target (prevents spam)
+            return (currentTime - lastAttackTime) >= 50L;
+        }
+        
+        /**
+         * Records an attack on this target
+         */
+        public void recordAttack(long time) {
+            this.lastAttackTime = time;
+            this.comboCount++;
+        }
+        
+        /**
+         * Gets priority score for target selection
+         * Higher score = higher priority
+         */
+        public double getPriorityScore() {
+            if (!valid || attackData == null) return -1.0;
+            
+            EntityLivingBase entity = attackData.getEntity();
+            double score = 100.0;
+            
+            // Closer targets = higher priority
+            score -= distanceToPlayer * 10.0;
+            
+            // Lower health = higher priority
+            float healthPercent = entity.getHealth() / entity.getMaxHealth();
+            score += (1.0 - healthPercent) * 30.0;
+            
+            // Targets not in combat get lower priority
+            if (entity.hurtTime == 0) {
+                score += 20.0; // Fresh targets are good
+            } else {
+                score += 5.0; // Already damaged, finish them
+            }
+            
+            // Boost targets with fewer combo hits (distribute damage)
+            score += (10.0 - Math.min(comboCount, 10)) * 2.0;
+            
+            return score;
+        }
+        
+        /**
+         * Gets the predicted position for this target
+         */
+        public Vec3 getPredictedPosition() {
+            return predictedPosition != null ? predictedPosition : 
+                   new Vec3(attackData.getX(), attackData.getY(), attackData.getZ());
+        }
+        
+        /**
+         * Gets rotations to the predicted position
+         */
+        public float[] getPredictedRotations(float currentYaw, float currentPitch) {
+            if (!valid || attackData == null) return new float[]{currentYaw, currentPitch};
+            
+            Vec3 predicted = getPredictedPosition();
+            Vec3 playerEyes = mc.thePlayer.getPositionEyes(1.0F);
+            
+            double deltaX = predicted.xCoord - playerEyes.xCoord;
+            double deltaY = predicted.yCoord - playerEyes.yCoord;
+            double deltaZ = predicted.zCoord - playerEyes.zCoord;
+            
+            double dist = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
+            
+            float yaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
+            float pitch = (float) -(Math.atan2(deltaY, dist) * 180.0 / Math.PI);
+            
+            return new float[]{yaw, pitch};
+        }
+        
+        public AttackData getAttackData() {
+            return attackData;
+        }
+        
+        public EntityLivingBase getEntity() {
+            return attackData != null ? attackData.getEntity() : null;
+        }
+        
+        public boolean isValid() {
+            return valid && attackData != null;
+        }
+        
+        public int getComboCount() {
+            return comboCount;
+        }
+        
+        public double getDistance() {
+            return distanceToPlayer;
+        }
     }
 
     public static class AttackData {

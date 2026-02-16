@@ -84,35 +84,31 @@ public class OldBacktrack extends Module {
     // We calculate reach dynamically based on actual ping
 
     // Mode Selection
+    // ==================== CORE SETTINGS ====================
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"Manual", "Lag Based"});
+    public final IntProperty ticks = new IntProperty("ticks", 10, 1, 20); // Keep it simple, 1-20 ticks
+    public final IntProperty latency = new IntProperty("latency", 150, 50, 500); // Realistic latency simulation
     
-    // Manual Mode Settings
-    public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true, () -> mode.getModeString().equals("Manual"));
-    // UPDATED: Increased max ticks to 100 (5000ms = 100 ticks of history)
-    public final IntProperty ticks = new IntProperty("ticks", 15, 1, 100, () -> mode.getModeString().equals("Manual"));
-    
-    // Lag Based Mode Settings
-    public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true, () -> mode.getModeString().equals("Lag Based"));
-    // LAGRANGE: Latency can be much higher (up to 2000ms) since we already have 1000ms base
-    public final IntProperty latency = new IntProperty("latency", 200, 50, 2000, () -> mode.getModeString().equals("Lag Based"));
-    
-    // Shared Settings - Vape V4 Style Light Blue
-    public final ColorProperty color = new ColorProperty("color", 0x87CEEB); // Sky blue / light blue
-    
-    // ==================== INTELLIGENT PREDICTION SYSTEM ====================
-    // Predicts the BEST time to backtrack without killing ourselves
+    // ==================== GOD PREDICTION ENGINE ====================
+    public final BooleanProperty predictionEngine = new BooleanProperty("prediction-engine", true);
+    public final BooleanProperty doubleHit = new BooleanProperty("double-hit", true);
+    public final BooleanProperty comboPredict = new BooleanProperty("combo-predict", true);
     public final BooleanProperty smartPrediction = new BooleanProperty("smart-prediction", true);
-    public final BooleanProperty smoothBacktrack = new BooleanProperty("smooth-backtrack", true);
     public final BooleanProperty safetyChecks = new BooleanProperty("safety-checks", true);
+    public final BooleanProperty intelligentMode = new BooleanProperty("intelligent-mode", true);
+    public final IntProperty intelligenceLevel = new IntProperty("intelligence-level", 3, 1, 5);
+    public final BooleanProperty smoothBacktrack = new BooleanProperty("smooth-backtrack", true);
     
-    // Cooldown Settings (for undetected behavior)
+    // ==================== COOLDOWN SYSTEM ====================
     public final BooleanProperty cooldownEnabled = new BooleanProperty("cooldown-enabled", true);
-    public final IntProperty cooldownHits = new IntProperty("cooldown-hits", 3, 1, 10, () -> this.cooldownEnabled.getValue());
-    public final IntProperty cooldownDelay = new IntProperty("cooldown-delay", 500, 100, 2000, () -> this.cooldownEnabled.getValue());
+    public final IntProperty cooldownHits = new IntProperty("cooldown-hits", 3, 1, 10);
+    public final IntProperty cooldownDelay = new IntProperty("cooldown-delay", 1000, 100, 5000);
     
-    // Intelligent AI System
-    public final BooleanProperty intelligentMode = new BooleanProperty("intelligent", false);
-    public final IntProperty intelligenceLevel = new IntProperty("intelligence-level", 7, 1, 10, () -> this.intelligentMode.getValue());
+    // Visualization
+    public final BooleanProperty renderBoxes = new BooleanProperty("render-boxes", true);
+    public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true);
+    public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true);
+    public final ColorProperty color = new ColorProperty("color", 0x87CEEB);
 
     // Data Storage
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();

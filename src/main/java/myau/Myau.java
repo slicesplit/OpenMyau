@@ -133,7 +133,7 @@ public class Myau {
             AntiObbyTrap.class, AntiObfuscate.class, AntiVoid.class, AutoAnduril.class,
             AutoClicker.class, AutoHeal.class, AutoTool.class, BedESP.class,
             BedNuker.class, BedTracker.class, Blink.class, Chams.class,
-            ChestESP.class, ChestStealer.class, Eagle.class, ESP.class,
+            ChatLimitRemove.class, ChestESP.class, ChestStealer.class, Eagle.class, ESP.class,
             FakeLag.class, FastPlace.class, Freecam.class, Freeze.class,
             Fly.class, FovFix.class, FullBright.class, GhostHand.class,
             GuiModule.class, WTap.class, HUD.class, MoreKB.class,

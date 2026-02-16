@@ -15,25 +15,28 @@ import org.lwjgl.input.Keyboard;
 /**
  * RemoteShop - AliExpress style shop caching
  * 
- * Simple logic:
- * 1. Open a shop GUI (Bedwars, SkyWars, etc.)
- * 2. Press HOME → GUI closes CLIENT-SIDE (server thinks it's still open)
- * 3. Press HOME again → GUI reopens instantly from cache
- * 4. Buy stuff normally - server never knew you "closed" it
- * 5. Repeat infinitely
+ * FIXED LOGIC:
+ * - Shop GUI opens normally → Gets cached automatically
+ * - Press E or ESC → Hides GUI CLIENT-SIDE (server still has it open!)
+ * - Press HOME → Reopens the cached shop from anywhere
+ * - Buy items normally → Server thinks GUI was open the whole time
+ * - Works with InvMove, doesn't break chest/block placement
  * 
- * Perfect for quick shopping without the GUI blocking your view!
+ * Controls:
+ * HOME = Open cached shop menu
+ * E/ESC = Hide shop (client-side only, doesn't close server-side)
  */
 @ModuleInfo(category = ModuleCategory.MISC)
 public class RemoteShop extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
     
-    // Cache the last non-inventory GUI
-    private GuiScreen cachedGui = null;
-    private boolean isHidden = false;
+    // Cached shop GUI (server thinks this is still open)
+    private GuiScreen cachedShop = null;
     
-    // Toggle key
+    // Key state tracking
     private boolean wasHomePressed = false;
+    private boolean wasEPressed = false;
+    private boolean wasEscPressed = false;
     
     public RemoteShop() {
         super("RemoteShop", false);
@@ -42,20 +45,16 @@ public class RemoteShop extends Module {
     @Override
     public void onEnabled() {
         super.onEnabled();
-        cachedGui = null;
-        isHidden = false;
+        cachedShop = null;
         wasHomePressed = false;
+        wasEPressed = false;
+        wasEscPressed = false;
     }
     
     @Override
     public void onDisabled() {
         super.onDisabled();
-        // Restore GUI if it was hidden
-        if (isHidden && cachedGui != null) {
-            mc.displayGuiScreen(cachedGui);
-        }
-        cachedGui = null;
-        isHidden = false;
+        cachedShop = null;
     }
     
     @EventTarget
@@ -63,50 +62,79 @@ public class RemoteShop extends Module {
         if (event.getType() != EventType.PRE) return;
         if (mc.thePlayer == null || mc.theWorld == null) return;
         
-        // Cache any non-inventory GUI that opens
-        if (mc.currentScreen != null && !(mc.currentScreen instanceof GuiInventory)) {
-            // This is a shop/chest GUI - cache it!
-            if (cachedGui == null || mc.currentScreen != cachedGui) {
-                cachedGui = mc.currentScreen;
-                isHidden = false;
-            }
-        }
-        
-        // HOME key toggle logic
-        boolean homePressed = Keyboard.isKeyDown(Keyboard.KEY_HOME);
-        
-        if (homePressed && !wasHomePressed) {
-            // HOME key just pressed - toggle!
+        // STEP 1: Cache shop GUIs when they open (but not normal chests)
+        if (mc.currentScreen != null && mc.currentScreen instanceof GuiChest) {
+            GuiChest chest = (GuiChest) mc.currentScreen;
             
-            if (cachedGui == null) {
-                // No cached GUI
-                return;
-            }
-            
-            if (isHidden) {
-                // GUI is hidden - reopen it!
-                mc.displayGuiScreen(cachedGui);
-                isHidden = false;
-            } else {
-                // GUI is open - hide it CLIENT-SIDE!
-                if (mc.currentScreen == cachedGui) {
-                    mc.displayGuiScreen(null);
-                    isHidden = true;
-                    // Server still thinks GUI is open - you can still buy stuff!
+            // Use reflection to access lowerChestInventory (private field)
+            try {
+                java.lang.reflect.Field inventoryField = GuiChest.class.getDeclaredField("lowerChestInventory");
+                inventoryField.setAccessible(true);
+                net.minecraft.inventory.IInventory inventory = (net.minecraft.inventory.IInventory) inventoryField.get(chest);
+                
+                if (inventory != null) {
+                    String title = inventory.getDisplayName().getUnformattedText().toLowerCase();
+                    
+                    // Only cache if it looks like a shop (not a regular chest)
+                    if (isShopGUI(title)) {
+                        cachedShop = mc.currentScreen;
+                    }
                 }
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                // Silently ignore reflection errors
             }
         }
         
+        // STEP 2: E key - hide current shop GUI (client-side close)
+        boolean ePressed = Keyboard.isKeyDown(Keyboard.KEY_E);
+        if (ePressed && !wasEPressed) {
+            if (mc.currentScreen != null && mc.currentScreen == cachedShop) {
+                // Hide the shop CLIENT-SIDE (server still has it open!)
+                mc.displayGuiScreen(null);
+            }
+        }
+        wasEPressed = ePressed;
+        
+        // STEP 3: ESC key - same as E, hide shop
+        boolean escPressed = Keyboard.isKeyDown(Keyboard.KEY_ESCAPE);
+        if (escPressed && !wasEscPressed) {
+            if (mc.currentScreen != null && mc.currentScreen == cachedShop) {
+                // Hide the shop CLIENT-SIDE
+                mc.displayGuiScreen(null);
+            }
+        }
+        wasEscPressed = escPressed;
+        
+        // STEP 4: HOME key - reopen cached shop
+        boolean homePressed = Keyboard.isKeyDown(Keyboard.KEY_HOME);
+        if (homePressed && !wasHomePressed) {
+            if (cachedShop != null) {
+                // Reopen the cached shop (server never closed it!)
+                mc.displayGuiScreen(cachedShop);
+            }
+        }
         wasHomePressed = homePressed;
+    }
+    
+    /**
+     * Check if a chest GUI title indicates it's a shop (not a normal chest)
+     */
+    private boolean isShopGUI(String title) {
+        // Common shop identifiers
+        return title.contains("shop") || 
+               title.contains("store") || 
+               title.contains("buy") || 
+               title.contains("upgrade") ||
+               title.contains("quick") ||  // Quick Buy in Bedwars
+               title.contains("item");      // Item Shop
     }
     
     @Override
     public String[] getSuffix() {
-        if (cachedGui != null) {
-            String status = isHidden ? "Hidden" : "Shown";
-            String guiType = cachedGui instanceof GuiChest ? "Shop" : "GUI";
-            return new String[]{status + " [" + guiType + "]"};
+        if (cachedShop != null) {
+            boolean showing = (mc.currentScreen == cachedShop);
+            return new String[]{showing ? "Shown" : "Cached"};
         }
-        return new String[]{"No Cache"};
+        return new String[]{"No Shop"};
     }
 }
