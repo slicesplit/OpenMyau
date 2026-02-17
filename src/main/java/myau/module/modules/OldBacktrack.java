@@ -7,11 +7,8 @@ import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
 import myau.management.TransactionManager;
-import myau.management.GrimPredictionEngine;
 import myau.module.Module;
 import myau.property.properties.*;
-import myau.mixin.IAccessorRenderManager;
-import myau.util.RenderBoxUtil;
 import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
@@ -23,9 +20,7 @@ import net.minecraft.network.play.server.S32PacketConfirmTransaction;
 import net.minecraft.util.AxisAlignedBB;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.Vec3;
-import org.lwjgl.opengl.GL11;
 
-import java.awt.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -52,7 +47,6 @@ public class OldBacktrack extends Module {
     // These values replicate Rise 6 and Vape V4's undetectable backtrack
     
     // GRIM EXACT CONSTANTS - Copied directly from GrimAC source code
-    private static final double GRIM_MAX_REACH = 3.0; // Entity interaction range
     private static final double GRIM_REACH_THRESHOLD = 0.0005; // From Reach.java config default
     private static final double GRIM_HITBOX_EXPANSION_1_8 = 0.1; // 1.7-1.8 clients get 0.1 extra hitbox
     private static final double GRIM_MOVEMENT_THRESHOLD = 0.03; // Movement uncertainty (0.03 blocks)
@@ -62,16 +56,10 @@ public class OldBacktrack extends Module {
     
     // Grim's ReachInterpolationData.java constants
     private static final double INTERPOLATION_EXPANSION_X = 0.03125; // Non-relative teleport expansion X/Z
-    private static final double INTERPOLATION_EXPANSION_Y = 0.015625; // Non-relative teleport expansion Y
     private static final int LIVING_ENTITY_INTERPOLATION_STEPS = 3; // Living entities = 3 interpolation steps
-    
-    // RISE/VAPE BYPASS: Ultra-conservative reach limit for 0% ban rate
-    // Rise 6 uses 3.05, Vape V4 uses 3.08 - we use 3.06 for balance
-    private static final double RISE_VAPE_SAFE_REACH = 3.06; // Ultra-safe reach limit
     
     // RISE/VAPE BYPASS: Randomization to prevent pattern detection
     private static final double POSITION_JITTER = 0.001; // Random ±1mm jitter per update
-    private static final double TIMING_VARIANCE = 0.95; // 95-105% timing variance
     
     // RISE/VAPE BYPASS: Intelligent cooldown system
     private static final int MIN_BACKTRACK_INTERVAL_MS = 250; // Minimum 250ms between backtracks
@@ -83,32 +71,15 @@ public class OldBacktrack extends Module {
     
     // We calculate reach dynamically based on actual ping
 
-    // Mode Selection
-    // ==================== CORE SETTINGS ====================
+    // ==================== SETTINGS ====================
     public final ModeProperty mode = new ModeProperty("mode", 0, new String[]{"Manual", "Lag Based"});
-    public final IntProperty ticks = new IntProperty("ticks", 10, 1, 20); // Keep it simple, 1-20 ticks
-    public final IntProperty latency = new IntProperty("latency", 150, 50, 500); // Realistic latency simulation
+    public final IntProperty ticks = new IntProperty("ticks", 10, 1, 100);
+    public final IntProperty delay = new IntProperty("delay", 150, 50, 5000);
     
-    // ==================== GOD PREDICTION ENGINE ====================
-    public final BooleanProperty predictionEngine = new BooleanProperty("prediction-engine", true);
-    public final BooleanProperty doubleHit = new BooleanProperty("double-hit", true);
-    public final BooleanProperty comboPredict = new BooleanProperty("combo-predict", true);
-    public final BooleanProperty smartPrediction = new BooleanProperty("smart-prediction", true);
-    public final BooleanProperty safetyChecks = new BooleanProperty("safety-checks", true);
-    public final BooleanProperty intelligentMode = new BooleanProperty("intelligent-mode", true);
-    public final IntProperty intelligenceLevel = new IntProperty("intelligence-level", 3, 1, 5);
-    public final BooleanProperty smoothBacktrack = new BooleanProperty("smooth-backtrack", true);
-    
-    // ==================== COOLDOWN SYSTEM ====================
-    public final BooleanProperty cooldownEnabled = new BooleanProperty("cooldown-enabled", true);
-    public final IntProperty cooldownHits = new IntProperty("cooldown-hits", 3, 1, 10);
-    public final IntProperty cooldownDelay = new IntProperty("cooldown-delay", 1000, 100, 5000);
-    
-    // Visualization
-    public final BooleanProperty renderBoxes = new BooleanProperty("render-boxes", true);
-    public final BooleanProperty renderPreviousTicks = new BooleanProperty("render-previous-ticks", true);
-    public final BooleanProperty renderServerPos = new BooleanProperty("render-server-pos", true);
-    public final ColorProperty color = new ColorProperty("color", 0x87CEEB);
+    // Feature flags - core bypass features always enabled
+    private static final boolean SMART_PREDICTION = true;
+    private static final boolean SAFETY_CHECKS = true;
+    private static final boolean SMOOTH_BACKTRACK = true;
 
     // Data Storage
     private final Map<Integer, LinkedList<PositionData>> entityPositions = new ConcurrentHashMap<>();
@@ -116,6 +87,9 @@ public class OldBacktrack extends Module {
     private final Queue<PacketData> delayedPackets = new LinkedList<>();
     private boolean isLagging = false;
     private long lagStartTime = 0L;
+    
+    // Cached mode string for optimization (avoid repeated string allocations)
+    private String cachedModeString = "Manual";
     
     // Cooldown tracking
     private final Map<Integer, Integer> backtrackHitCount = new ConcurrentHashMap<>();
@@ -183,12 +157,12 @@ public class OldBacktrack extends Module {
             return null;
         }
         
-        if (mode.getModeString().equals("Manual")) {
+        if (cachedModeString.equals("Manual")) {
             LinkedList<PositionData> positions = entityPositions.get(target.getEntityId());
             if (positions != null && !positions.isEmpty()) {
                 return selectBestPosition(positions, target);
             }
-        } else if (mode.getModeString().equals("Lag Based")) {
+        } else if (cachedModeString.equals("Lag Based")) {
             return serverPositions.get(target.getEntityId());
         }
         
@@ -204,11 +178,11 @@ public class OldBacktrack extends Module {
         }
         
         // Apply all prediction and safety checks
-        if (smartPrediction.getValue() && !isPredictedSafeToBacktrack(target)) {
+        if (SMART_PREDICTION && !isPredictedSafeToBacktrack(target)) {
             return false;
         }
         
-        if (safetyChecks.getValue() && !isSafeFromSelfDamage(target)) {
+        if (SAFETY_CHECKS && !isSafeFromSelfDamage(target)) {
             return false;
         }
         
@@ -221,8 +195,11 @@ public class OldBacktrack extends Module {
             return;
         }
         
+        // Update cached mode string for performance
+        cachedModeString = mode.getModeString();
+        
         // SMART PREDICTION: Track player health for safety checks
-        if (safetyChecks.getValue() && mc.thePlayer != null) {
+        if (SAFETY_CHECKS) {
             double currentHealth = mc.thePlayer.getHealth();
             if (currentHealth < lastHealthValue) {
                 lastDamageReceivedTime = System.currentTimeMillis();
@@ -253,7 +230,7 @@ public class OldBacktrack extends Module {
         lastWorldName = currentWorldName;
 
         // Manual Mode: Track position history
-        if (mode.getModeString().equals("Manual")) {
+        if (cachedModeString.equals("Manual")) {
             for (EntityPlayer player : mc.theWorld.playerEntities) {
                 if (player == mc.thePlayer || player.isDead) {
                     continue;
@@ -281,7 +258,7 @@ public class OldBacktrack extends Module {
         }
         
         // Lag Based Mode: Process delayed packets and clean old data
-        if (mode.getModeString().equals("Lag Based")) {
+        if (cachedModeString.equals("Lag Based")) {
             processDelayedPackets();
             
             // OPTIMIZATION: Clean old server positions to prevent memory leak and render lag
@@ -298,6 +275,9 @@ public class OldBacktrack extends Module {
             lastBacktrackTime.entrySet().removeIf(entry -> 
                 mc.theWorld.getEntityByID(entry.getKey()) == null ||
                 currentTime - entry.getValue() > 5000 // Remove entries older than 5 seconds
+            );
+            consecutiveBacktracks.entrySet().removeIf(entry ->
+                mc.theWorld.getEntityByID(entry.getKey()) == null
             );
             
             // AI: Clean old target profiles
@@ -348,7 +328,7 @@ public class OldBacktrack extends Module {
                 
                 if (entityId != -1) {
                     // Get current stored position
-                    PositionData current = mode.getModeString().equals("Manual") 
+                    PositionData current = cachedModeString.equals("Manual") 
                         ? (entityPositions.containsKey(entityId) && !entityPositions.get(entityId).isEmpty() 
                             ? entityPositions.get(entityId).getFirst() : null)
                         : serverPositions.get(entityId);
@@ -368,7 +348,7 @@ public class OldBacktrack extends Module {
             // Process the position update if we got one
             if (serverPos != null && entityId != -1) {
                 // MANUAL MODE: Store server position in history
-                if (mode.getModeString().equals("Manual")) {
+                if (cachedModeString.equals("Manual")) {
                     LinkedList<PositionData> positions = entityPositions.computeIfAbsent(entityId, k -> new LinkedList<>());
                     positions.addFirst(serverPos);
                     
@@ -379,7 +359,7 @@ public class OldBacktrack extends Module {
                 }
                 
                 // LAG BASED MODE: Store current server position
-                if (mode.getModeString().equals("Lag Based")) {
+                if (cachedModeString.equals("Lag Based")) {
                     serverPositions.put(entityId, serverPos);
                     
                     // Delay packets when lagging
@@ -416,12 +396,12 @@ public class OldBacktrack extends Module {
             }
             
             // SMART PREDICTION: Check if it's safe to backtrack right now
-            if (smartPrediction.getValue() && !isPredictedSafeToBacktrack(target)) {
+            if (SMART_PREDICTION && !isPredictedSafeToBacktrack(target)) {
                 return; // Prediction says it's not safe
             }
             
             // SAFETY CHECKS: Prevent backtrack if we're in danger
-            if (safetyChecks.getValue() && !isSafeFromSelfDamage(target)) {
+            if (SAFETY_CHECKS && !isSafeFromSelfDamage(target)) {
                 return; // Too risky, would get us killed
             }
             
@@ -437,7 +417,7 @@ public class OldBacktrack extends Module {
             }
             
             
-            if (mode.getModeString().equals("Manual")) {
+            if (cachedModeString.equals("Manual")) {
                 // Manual Mode: Apply backtrack position
                 LinkedList<PositionData> positions = entityPositions.get(target.getEntityId());
                 
@@ -455,21 +435,21 @@ public class OldBacktrack extends Module {
                         PositionData jitteredPos = applyPositionJitter(bestPos);
                         
                         // SMOOTH BACKTRACK: Apply position smoothly if enabled
-                        PositionData finalPos = smoothBacktrack.getValue() ? 
+                        PositionData finalPos = SMOOTH_BACKTRACK ? 
                             applySmoothBacktrack(target, jitteredPos) : jitteredPos;
                         
                         // Apply backtrack position CLIENT-SIDE
                         applyBacktrackPosition(target, finalPos);
                         
                         
-                        // RISE/VAPE: Increment consecutive counter
-                        int consecutive = consecutiveBacktracks.getOrDefault(target.getEntityId(), 0);
-                        consecutiveBacktracks.put(target.getEntityId(), consecutive + 1);
+                        // RISE/VAPE: Increment consecutive counter and update timing
+                        int entityId = target.getEntityId();
+                        int consecutive = consecutiveBacktracks.getOrDefault(entityId, 0);
+                        consecutiveBacktracks.put(entityId, consecutive + 1);
+                        lastBacktrackTime.put(entityId, System.currentTimeMillis());
                         
                         // AI: Record successful backtrack
-                        if (intelligentMode.getValue()) {
-                            recordBacktrackAttempt(target, true);
-                        }
+                        recordBacktrackAttempt(target, true);
                         
                         // CRITICAL: Restore position IMMEDIATELY after attack (same tick)
                         // This prevents Grim's Simulation check from detecting offset
@@ -490,7 +470,7 @@ public class OldBacktrack extends Module {
                         });
                     }
                 }
-            } else if (mode.getModeString().equals("Lag Based")) {
+            } else if (cachedModeString.equals("Lag Based")) {
                 // Lag Based Mode: Start lagging to create advantage
                 double distance = mc.thePlayer.getDistanceToEntity(target);
                 
@@ -505,11 +485,11 @@ public class OldBacktrack extends Module {
                     if (isLaggedPositionSafe(target)) {
                         startLagging();
                         
+                        // Update backtrack timing
+                        lastBacktrackTime.put(target.getEntityId(), System.currentTimeMillis());
                         
                         // AI: Record successful backtrack
-                        if (intelligentMode.getValue()) {
-                            recordBacktrackAttempt(target, true);
-                        }
+                        recordBacktrackAttempt(target, true);
                     }
                 }
             }
@@ -561,72 +541,6 @@ public class OldBacktrack extends Module {
         return true; // Safe to backtrack
     }
     
-    /**
-     * Check if target is in cooldown period
-     */
-    private boolean isInCooldown(EntityPlayer target) {
-        if (!cooldownEnabled.getValue()) {
-            return false;
-        }
-        
-        int entityId = target.getEntityId();
-        Integer hitCount = backtrackHitCount.get(entityId);
-        Long lastTime = lastBacktrackTime.get(entityId);
-        
-        if (hitCount != null && hitCount >= cooldownHits.getValue()) {
-            if (lastTime != null) {
-                long timeSince = System.currentTimeMillis() - lastTime;
-                if (timeSince < cooldownDelay.getValue()) {
-                    return true; // Still in cooldown
-                } else {
-                    // Cooldown expired, reset
-                    backtrackHitCount.put(entityId, 0);
-                }
-            }
-        }
-        
-        return false;
-    }
-    
-    /**
-     * Intelligent backtrack decision using AI
-     */
-    private boolean shouldBacktrackIntelligently(EntityPlayer target) {
-        if (!intelligentMode.getValue()) {
-            return true; // Always allow if intelligent mode is off
-        }
-        
-        int entityId = target.getEntityId();
-        AITargetProfile profile = targetProfiles.computeIfAbsent(entityId, k -> new AITargetProfile());
-        profile.update(target);
-        
-        // Check success rate
-        if (profile.successRate < 0.3) {
-            return false; // Too risky
-        }
-        
-        // Check if we've flagged recently
-        long timeSinceFlag = System.currentTimeMillis() - lastFlagTime;
-        if (timeSinceFlag < 5000) {
-            return false; // Wait after potential flag
-        }
-        
-        // Intelligent level affects thresholds
-        int level = intelligenceLevel.getValue();
-        double requiredSuccessRate = 0.5 - (level * 0.03); // Higher level = lower requirement
-        
-        return profile.successRate >= requiredSuccessRate;
-    }
-    
-    /**
-     * Increment backtrack hit counter for cooldown system
-     */
-    private void incrementBacktrackHit(EntityPlayer target) {
-        int entityId = target.getEntityId();
-        int currentCount = backtrackHitCount.getOrDefault(entityId, 0);
-        backtrackHitCount.put(entityId, currentCount + 1);
-        lastBacktrackTime.put(entityId, System.currentTimeMillis());
-    }
     
     /**
      * Record backtrack attempt for AI learning
@@ -644,136 +558,6 @@ public class OldBacktrack extends Module {
             }
         }
     }
-
-    @EventTarget
-    public void onRender3D(Render3DEvent event) {
-        if (!this.isEnabled() || mc.thePlayer == null || mc.theWorld == null) {
-            return;
-        }
-
-        // Update positions every render frame for smooth rendering
-        updateAllPlayerPositions();
-
-        if (mode.getModeString().equals("Manual") && renderPreviousTicks.getValue()) {
-            renderManualModePositions(event.getPartialTicks());
-        } else if (mode.getModeString().equals("Lag Based") && renderServerPos.getValue()) {
-            renderLagBasedPositions(event.getPartialTicks());
-        }
-    }
-    
-    /**
-     * Update positions for ALL players in real-time every render frame
-     * This ensures boxes are ALWAYS rendered consistently for all players
-     * Handles dynamic player registration and unregistration
-     */
-    private void updateAllPlayerPositions() {
-        try {
-            if (mc.theWorld == null || mc.theWorld.playerEntities == null) {
-                return;
-            }
-            
-            long currentTime = System.currentTimeMillis();
-        
-        // Track currently active player IDs
-        Set<Integer> activePlayerIds = new HashSet<>();
-        
-        // REGISTRATION: Add/update all active players
-        for (EntityPlayer player : mc.theWorld.playerEntities) {
-            if (player == null || player == mc.thePlayer || player.isDead) {
-                continue;
-            }
-            
-            // Skip teammates
-            if (TeamUtil.isFriend(player)) {
-                continue;
-            }
-            
-            int entityId = player.getEntityId();
-            activePlayerIds.add(entityId);
-            
-            // Manual Mode: Position tracking now done via packets (onPacket method)
-            // This ensures we track TRUE server-side positions, not client interpolation
-            if (mode.getModeString().equals("Manual")) {
-                // Just ensure the list exists - packet handler will populate it
-                entityPositions.computeIfAbsent(entityId, k -> new LinkedList<>());
-            }
-            
-            // Lag Based Mode: Server positions are ONLY updated from packets (line 262)
-            // This ensures we show the TRUE server-side position, not client interpolation
-            // Initialize for new players if needed
-            if (mode.getModeString().equals("Lag Based")) {
-                PositionData currentServerPos = serverPositions.get(entityId);
-                
-                // NEW PLAYER REGISTRATION: Initialize with current position
-                // Will be updated by packet data as soon as server sends position
-                if (currentServerPos == null) {
-                    serverPositions.put(entityId, new PositionData(
-                        player.posX, player.posY, player.posZ,
-                        currentTime
-                    ));
-                }
-                // NOTE: Don't update from client position - only packet data (line 262) should update this
-                // This ensures the box shows where the server thinks the player is (lagging behind client view)
-            }
-        }
-        
-            // UNREGISTRATION: Clean up players that left/died
-            unregisterInactivePlayers(activePlayerIds);
-        } catch (Exception e) {
-            // Silently catch any errors to prevent blocking sound/render threads
-        }
-    }
-    
-    /**
-     * Unregister players that are no longer active (left server, died, changed teams)
-     * This prevents memory leaks and ensures clean state
-     */
-    private void unregisterInactivePlayers(Set<Integer> activePlayerIds) {
-        try {
-            // Remove from position tracking
-            entityPositions.keySet().removeIf(id -> {
-                if (!activePlayerIds.contains(id)) {
-                    // PLAYER UNREGISTERED - clean up all related data
-                    cleanupPlayerData(id);
-                    return true;
-                }
-                return false;
-            });
-            
-            serverPositions.keySet().removeIf(id -> {
-                if (!activePlayerIds.contains(id)) {
-                    // PLAYER UNREGISTERED - clean up all related data
-                    cleanupPlayerData(id);
-                    return true;
-                }
-                return false;
-            });
-        } catch (Exception e) {
-            // Silently catch concurrent modification exceptions
-        }
-    }
-    
-    /**
-     * Clean up all data associated with a player
-     * Called when player leaves/dies
-     */
-    private void cleanupPlayerData(int entityId) {
-        // Remove cooldown data
-        backtrackHitCount.remove(entityId);
-        lastBacktrackTime.remove(entityId);
-        
-        // RISE/VAPE: Clean anti-pattern tracking
-        consecutiveBacktracks.remove(entityId);
-        
-        // Remove AI profile
-        targetProfiles.remove(entityId);
-        
-        // Clear from both tracking maps (in case called from one)
-        entityPositions.remove(entityId);
-        serverPositions.remove(entityId);
-    }
-
-    // ==================== Manual Mode Methods ====================
 
     private PositionData selectBestPosition(LinkedList<PositionData> positions, EntityPlayer target) {
         if (positions.isEmpty()) {
@@ -843,14 +627,14 @@ public class OldBacktrack extends Module {
             
             // Total hitboxExpansion = 0.0005 + 0.1 + 0.03 = 0.1305
             
-            if (mode.getModeString().equals("Lag Based") && isLagging) {
+            if (cachedModeString.equals("Lag Based") && isLagging) {
                 // LAG-BASED MODE: Aggressive expansion for high latency with enhanced bypass
                 // Increased multiplier from 0.03 to 0.04 for better hitbox coverage
-                hitboxExpansion += (latency.getValue() / 100.0) * 0.04;
+                hitboxExpansion += (delay.getValue() / 100.0) * 0.04;
                 
                 // Cap expansion at 0.95 for ultra-high latency (increased from 0.8)
                 hitboxExpansion = Math.min(0.95, hitboxExpansion);
-            } else if (mode.getModeString().equals("Manual")) {
+            } else if (cachedModeString.equals("Manual")) {
                 // MANUAL MODE: Expansion based on ACTUAL POSITION AGE (timestamp-based)
                 // Calculate how old this position is in milliseconds
                 long positionAge = System.currentTimeMillis() - pos.timestamp;
@@ -913,40 +697,6 @@ public class OldBacktrack extends Module {
         };
     }
     
-    /**
-     * Get min reach to box - helper for simplified calculations
-     * Uses Grim's exact VectorUtils.cutBoxToVector and distance calculation
-     */
-    private double getMinReachToBox(EntityPlayer player, double targetX, double targetY, double targetZ, double width, double height) {
-        double lowest = Double.MAX_VALUE;
-        
-        double[] possibleEyeHeights = getPossibleEyeHeights(player);
-        for (double eyes : possibleEyeHeights) {
-            // Create target hitbox
-            double halfWidth = width / 2.0;
-            double minX = targetX - halfWidth;
-            double maxX = targetX + halfWidth;
-            double minY = targetY;
-            double maxY = targetY + height;
-            double minZ = targetZ - halfWidth;
-            double maxZ = targetZ + halfWidth;
-            
-            // VectorUtils.cutBoxToVector - find closest point
-            double closestX = MathHelper.clamp_double(player.posX, minX, maxX);
-            double closestY = MathHelper.clamp_double(player.posY + eyes, minY, maxY);
-            double closestZ = MathHelper.clamp_double(player.posZ, minZ, maxZ);
-            
-            // Calculate distance
-            double dx = player.posX - closestX;
-            double dy = (player.posY + eyes) - closestY;
-            double dz = player.posZ - closestZ;
-            double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            
-            lowest = Math.min(lowest, distance);
-        }
-        
-        return lowest;
-    }
     
     /**
      * PACKET SAFETY VALIDATOR
@@ -993,7 +743,7 @@ public class OldBacktrack extends Module {
      * Adapts to prediction engine capabilities
      */
     private int getMaxSafeTicksForCurrentSettings() {
-        if (mode.getModeString().equals("Manual")) {
+        if (cachedModeString.equals("Manual")) {
             // Manual mode: Based on ticks setting
             // But cap at safe limits to prevent flags
             int configuredTicks = ticks.getValue();
@@ -1016,7 +766,7 @@ public class OldBacktrack extends Module {
             return Math.min(configuredTicks, maxSafe);
         } else {
             // Lag-based mode: Based on latency setting
-            int latencyTicks = latency.getValue() / 50;
+            int latencyTicks = delay.getValue() / 50;
             
             // Cap at 40 ticks (2000ms) for safety
             return Math.min(latencyTicks, 40);
@@ -1042,10 +792,10 @@ public class OldBacktrack extends Module {
         }
         
         // Add artificial latency/tick delay to ping calculation
-        if (mode.getModeString().equals("Lag Based") && isLagging) {
+        if (cachedModeString.equals("Lag Based") && isLagging) {
             // LAG-BASED MODE: Add the artificial latency we're introducing
-            ping += latency.getValue();
-        } else if (mode.getModeString().equals("Manual")) {
+            ping += delay.getValue();
+        } else if (cachedModeString.equals("Manual")) {
             // MANUAL MODE: Calculate ACTUAL position age from timestamp
             // This is the actual time that has passed since this position was recorded
             long positionAge = System.currentTimeMillis() - pos.timestamp;
@@ -1063,7 +813,7 @@ public class OldBacktrack extends Module {
         uncertainty += 0.03; // Movement threshold
         
         // Add velocity-based expansion
-        if (mode.getModeString().equals("Lag Based") && isLagging) {
+        if (cachedModeString.equals("Lag Based") && isLagging) {
             // LAG-BASED MODE: Aggressive velocity compensation for high latency
             double targetVelocity = Math.sqrt(
                 target.motionX * target.motionX + 
@@ -1072,12 +822,12 @@ public class OldBacktrack extends Module {
             );
             
             // At 2000ms with velocity 0.2: 0.2 * 40 = 8.0 blocks compensation
-            double velocityCompensation = targetVelocity * (latency.getValue() / 50.0);
+            double velocityCompensation = targetVelocity * (delay.getValue() / 50.0);
             uncertainty += velocityCompensation;
             
             // ADDITIONAL: Add extra margin for lag spikes (0.1 per 500ms)
-            uncertainty += (latency.getValue() / 500.0) * 0.1;
-        } else if (mode.getModeString().equals("Manual")) {
+            uncertainty += (delay.getValue() / 500.0) * 0.1;
+        } else if (cachedModeString.equals("Manual")) {
             // MANUAL MODE: Velocity compensation based on ACTUAL position age
             double targetVelocity = Math.sqrt(
                 target.motionX * target.motionX + 
@@ -1272,118 +1022,6 @@ public class OldBacktrack extends Module {
         target.prevPosZ = pos.z;
     }
 
-    /**
-     * SERVER-SIDE POSITION RENDERING - Shows where the player actually is on the server
-     * Renders a simple box at the player's past server position (backtrack snapshot)
-     */
-    private void renderManualModePositions(float partialTicks) {
-        try {
-            // Render boxes at BACKTRACK positions (behind walking players)
-            for (Entity entity : mc.theWorld.loadedEntityList) {
-                if (!(entity instanceof EntityPlayer)) {
-                    continue;
-                }
-                
-                EntityPlayer player = (EntityPlayer) entity;
-                
-                if (player == mc.thePlayer || player.isDead) {
-                    continue;
-                }
-                
-                if (TeamUtil.isFriend(player)) {
-                    continue;
-                }
-                
-                // Check if this player has backtrack history
-                LinkedList<PositionData> positions = entityPositions.get(player.getEntityId());
-                if (positions == null || positions.isEmpty()) {
-                    continue;
-                }
-
-                // Get the BEST backtrack position (behind the player when moving)
-                PositionData backtrackPos = selectBestPosition(positions, player);
-                if (backtrackPos == null) {
-                    continue;
-                }
-                
-                // BACKTRACK TARGET: Render box at the BACKTRACKED position (behind the player)
-                // This shows where we will attack - at their previous position
-                double renderX = backtrackPos.x;
-                double renderY = backtrackPos.y;
-                double renderZ = backtrackPos.z;
-                
-                // Render box at backtrack position (behind walking player)
-                Color c = new Color(color.getValue());
-                Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
-                Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);
-                RenderBoxUtil.renderPlayerBox(renderX, renderY, renderZ, fillColor, outlineColor);
-            }
-        } catch (Exception e) {
-            // Prevent render errors
-        }
-    }
-    
-    /**
-     * BACKTRACK TARGET RENDERING - Shows the server-side backtrack position
-     * Renders a box at the actual position where backtrack will attack
-     */
-    private void renderLagBasedPositions(float partialTicks) {
-        if (!isLagging) {
-            return; // Only render when actively lagging
-        }
-        
-        try {
-            // Render boxes at the SERVER-SIDE BACKTRACK POSITIONS (behind walking players)
-            for (Entity entity : mc.theWorld.loadedEntityList) {
-                if (!(entity instanceof EntityPlayer)) {
-                    continue;
-                }
-                
-                EntityPlayer player = (EntityPlayer) entity;
-                
-                if (player == mc.thePlayer || player.isDead) {
-                    continue;
-                }
-                
-                if (TeamUtil.isFriend(player)) {
-                    continue;
-                }
-
-                // Get the server-side backtrack position (behind the player)
-                PositionData serverPos = serverPositions.get(player.getEntityId());
-                if (serverPos == null) {
-                    continue;
-                }
-                
-                // BACKTRACK TARGET: Render at server position (behind the player due to lag)
-                // When we lag packets, the server still sees the player at this OLD position
-                // This is BEHIND the player when they're moving forward
-                double renderX = serverPos.x;
-                double renderY = serverPos.y;
-                double renderZ = serverPos.z;
-                
-                // Render box at the SERVER backtrack position (behind walking player)
-                Color c = new Color(color.getValue());
-                Color fillColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 100);
-                Color outlineColor = new Color(c.getRed(), c.getGreen(), c.getBlue(), 180);
-                RenderBoxUtil.renderPlayerBox(renderX, renderY, renderZ, fillColor, outlineColor);
-            }
-        } catch (Exception e) {
-            // Prevent render errors
-        }
-    }
-    
-    /**
-     * Get smoothly interpolated position using GrimPredictionEngine
-     * Ensures boxes never teleport or disappear - always smooth transitions
-     */
-    private PositionData getSmoothInterpolatedPosition(int entityId, PositionData targetPos, EntityPlayer player, float partialTicks, float deltaTime) {
-        // Simple interpolation for smooth rendering
-        double x = player.prevPosX + (player.posX - player.prevPosX) * partialTicks;
-        double y = player.prevPosY + (player.posY - player.prevPosY) * partialTicks;
-        double z = player.prevPosZ + (player.posZ - player.prevPosZ) * partialTicks;
-        return new PositionData(x, y, z, System.currentTimeMillis());
-    }
     
     // ==================== Lag Based Mode Methods ====================
     
@@ -1399,7 +1037,7 @@ public class OldBacktrack extends Module {
      * Check if the target position will be safe AFTER the lag period
      */
     private boolean isLaggedPositionSafe(EntityPlayer target) {
-        double lagSeconds = latency.getValue() / 1000.0;
+        double lagSeconds = delay.getValue() / 1000.0;
         double predictedX = target.posX + (target.motionX * lagSeconds * 20);
         double predictedY = target.posY + (target.motionY * lagSeconds * 20);
         double predictedZ = target.posZ + (target.motionZ * lagSeconds * 20);
@@ -1423,7 +1061,7 @@ public class OldBacktrack extends Module {
         long lagDuration = currentTime - lagStartTime;
         
         // Normal release when latency duration reached
-        if (lagDuration >= latency.getValue()) {
+        if (lagDuration >= delay.getValue()) {
             releaseAllPackets();
             isLagging = false;
         }

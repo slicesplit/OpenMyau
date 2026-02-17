@@ -2,305 +2,505 @@ package myau.module.modules;
 
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
-
-import com.google.common.base.CaseFormat;
-import myau.Myau;
-import myau.enums.DelayModules;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
 import myau.management.TransactionManager;
-import myau.management.GrimPredictionEngine;
-import myau.mixin.IAccessorEntity;
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
 import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
 import myau.property.properties.PercentProperty;
-import myau.util.ChatUtil;
-import myau.util.MoveUtil;
-import net.minecraft.util.Vec3;
 import net.minecraft.client.Minecraft;
-import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityLivingBase;
+import net.minecraft.network.Packet;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
-import net.minecraft.network.play.server.S19PacketEntityStatus;
 import net.minecraft.network.play.server.S27PacketExplosion;
-import net.minecraft.potion.Potion;
+import net.minecraft.network.play.server.S32PacketConfirmTransaction;
+import net.minecraft.network.play.client.C0FPacketConfirmTransaction;
+import net.minecraft.util.MathHelper;
 
+import java.util.Deque;
+import java.util.LinkedList;
+
+/**
+ * PRODUCTION-GRADE VELOCITY MODULE
+ * 
+ * Implements state-of-the-art knockback reduction with multiple bypass modes:
+ * - Normal Mode: Direct velocity modification with kite mechanics
+ * - Lag Mode: Transaction reordering attack (Split-Brain desync)
+ * 
+ * Based on the Vape/Rise velocity bypass architecture with Grim AC bypass.
+ */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class Velocity extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
-
-    private int chanceCounter = 0;
-    private int delayChanceCounter = 0;
-    private boolean pendingExplosion = false;
-    private boolean allowNext = true;
-    private boolean jumpFlag = false;
-    private boolean reverseFlag = false;
-    private boolean delayActive = false;
-
-    private boolean shouldJump = false;
-    private int jumpCooldown = 0;
     
-    // GRIM mode state
+    // ==================== GRIM AC CONSTANTS ====================
+    private static final int GRIM_MAX_TRANSACTION_TIME = 100; // 100ms = 2 ticks
+    private static final double VELOCITY_EPSILON = 0.003; // Grim's velocity epsilon
+    
+    // ==================== UI-EXPOSED SETTINGS ====================
+    
+    // Mode Selection
+    public final ModeProperty mode = new ModeProperty("Mode", 0, new String[]{"Normal", "Lag"});
+    
+    // Normal Mode Settings
+    public final PercentProperty horizontal = new PercentProperty("Horizontal", 0, 
+        () -> mode.getValue() == 0);
+    public final PercentProperty vertical = new PercentProperty("Vertical", 0, 
+        () -> mode.getValue() == 0);
+    public final IntProperty ticks = new IntProperty("Ticks", 0, 0, 10, 
+        () -> mode.getValue() == 0);
+    
+    // Kite Mode Settings
+    public final BooleanProperty kiteMode = new BooleanProperty("Kite Mode", false, 
+        () -> mode.getValue() == 0);
+    public final PercentProperty kiteHorizontal = new PercentProperty("Kite Horizontal", 200, 
+        () -> mode.getValue() == 0 && kiteMode.getValue());
+    public final PercentProperty kiteVertical = new PercentProperty("Kite Vertical", 100, 
+        () -> mode.getValue() == 0 && kiteMode.getValue());
+    public final BooleanProperty alwaysKite = new BooleanProperty("Always Kite", false, 
+        () -> mode.getValue() == 0 && kiteMode.getValue());
+    
+    // Lag Mode Settings
+    public final IntProperty airDelay = new IntProperty("Air Delay", 300, 50, 1000, 
+        () -> mode.getValue() == 1);
+    public final IntProperty groundDelay = new IntProperty("Ground Delay", 250, 50, 1000, 
+        () -> mode.getValue() == 1);
+    
+    // Universal Settings
+    public final PercentProperty chance = new PercentProperty("Chance", 100);
+    public final BooleanProperty onlyWhenTargeting = new BooleanProperty("Only When Targeting", false);
+    public final BooleanProperty waterCheck = new BooleanProperty("Water Check", true);
+    
+    // ==================== INTERNAL STATE ====================
+    
+    // Mode string cache for performance
+    private String cachedMode = "Normal";
+    
+    // Normal mode state
+    private int velocityTicks = 0;
+    private double storedMotionX = 0.0;
+    private double storedMotionY = 0.0;
+    private double storedMotionZ = 0.0;
+    private EntityLivingBase lastAttacker = null;
+    
+    // Lag mode state machine
+    private final Deque<DelayedPacket> packetQueue = new LinkedList<>();
     private final TransactionManager transactionManager = TransactionManager.getInstance();
-    private Vec3 grimPendingVelocity = null;
-    private int grimApplyTick = 0;
-
-    // ==================== BRUTAL LEGIT DEFAULT SETTINGS ====================
+    private boolean isInGhostPhase = false; // Split-brain state
+    private long ghostPhaseStartTime = 0L;
+    private int pendingTransactionId = -1;
+    private double pendingVelocityX = 0.0;
+    private double pendingVelocityY = 0.0;
+    private double pendingVelocityZ = 0.0;
     
-    // Mode - DEFAULT: LEGIT_TEST (most legit-looking)
-    public final ModeProperty mode = new ModeProperty("mode", 4, new String[]{"VANILLA", "JUMP", "DELAY", "REVERSE", "LEGIT_TEST", "GRIM"});
+    // Chance system
+    private int chanceRoll = 0;
     
-    // Delay Mode Settings
-    public final IntProperty delayTicks = new IntProperty("delay-ticks", 2, 1, 20, () -> this.mode.getValue() == 2);
-    public final PercentProperty delayChance = new PercentProperty("delay-chance", 100, () -> this.mode.getValue() == 2);
-    
-    // Activation Chance - DEFAULT: 100% (always active)
-    public final PercentProperty chance = new PercentProperty("chance", 100);
-    
-    // BRUTAL DEFAULTS: Reduce velocity significantly
-    // Horizontal - DEFAULT: 25% (take only 25% horizontal KB)
-    public final PercentProperty horizontal = new PercentProperty("horizontal", 25);
-    
-    // Vertical - DEFAULT: 85% (take 85% vertical KB - looks legit)
-    public final PercentProperty vertical = new PercentProperty("vertical", 85);
-    
-    // Explosion Reduction - DEFAULT: High reduction
-    public final PercentProperty explosionHorizontal = new PercentProperty("explosions-horizontal", 40);
-    public final PercentProperty explosionVertical = new PercentProperty("explosions-vertical", 70);
-    
-    // Fake Check - DEFAULT: ON (safety)
-    public final BooleanProperty fakeCheck = new BooleanProperty("fake-check", true);
-    
-    // Debug Log - DEFAULT: OFF
-    public final BooleanProperty debugLog = new BooleanProperty("debug-log", false);
-
-    private boolean isInLiquidOrWeb() {
-        return mc.thePlayer.isInWater() || mc.thePlayer.isInLava() || ((IAccessorEntity) mc.thePlayer).getIsInWeb();
-    }
-
-    private boolean canDelay() {
-        KillAura killAura = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
-        return mc.thePlayer.onGround && (!killAura.isEnabled() || !killAura.shouldAutoBlock());
-    }
-
     public Velocity() {
         super("Velocity", false);
     }
-
-    @EventTarget
-    public void onKnockback(KnockbackEvent event) {
-        if (!this.isEnabled() || event.isCancelled()) {
-            this.pendingExplosion = false;
-            this.allowNext = true;
-        } else if (!this.allowNext || !(Boolean) this.fakeCheck.getValue()) {
-            this.allowNext = true;
-            if (this.pendingExplosion) {
-                this.pendingExplosion = false;
-                if (this.explosionHorizontal.getValue() > 0) {
-                    event.setX(event.getX() * (double) this.explosionHorizontal.getValue() / 100.0);
-                    event.setZ(event.getZ() * (double) this.explosionHorizontal.getValue() / 100.0);
-                } else {
-                    event.setX(mc.thePlayer.motionX);
-                    event.setZ(mc.thePlayer.motionZ);
-                }
-                if (this.explosionVertical.getValue() > 0) {
-                    event.setY(event.getY() * (double) this.explosionVertical.getValue() / 100.0);
-                } else {
-                    event.setY(mc.thePlayer.motionY);
-                }
-            } else {
-                this.chanceCounter = this.chanceCounter % 100 + this.chance.getValue();
-                if (this.chanceCounter >= 100) {
-                    this.jumpFlag = (this.mode.getValue() == 1 || this.mode.getValue() == 2) && event.getY() > 0.0;
-                    this.delayActive = this.mode.getValue() == 3;
-                    if (this.horizontal.getValue() > 0) {
-                        event.setX(event.getX() * (double) this.horizontal.getValue() / 100.0);
-                        event.setZ(event.getZ() * (double) this.horizontal.getValue() / 100.0);
-                    } else {
-                        event.setX(mc.thePlayer.motionX);
-                        event.setZ(mc.thePlayer.motionZ);
-                    }
-                    if (this.vertical.getValue() > 0) {
-                        event.setY(event.getY() * (double) this.vertical.getValue() / 100.0);
-                    } else {
-                        event.setY(mc.thePlayer.motionY);
-                    }
-                }
-            }
-        }
+    
+    @Override
+    public void onEnabled() {
+        velocityTicks = 0;
+        storedMotionX = 0.0;
+        storedMotionY = 0.0;
+        storedMotionZ = 0.0;
+        lastAttacker = null;
+        packetQueue.clear();
+        isInGhostPhase = false;
+        ghostPhaseStartTime = 0L;
+        pendingTransactionId = -1;
+        chanceRoll = 0;
     }
-
-    @EventTarget
-    public void onUpdate(UpdateEvent event) {
-        if (event.getType() == EventType.POST) {
-            if (this.reverseFlag
-                    && (
-                    this.canDelay()
-                            || this.isInLiquidOrWeb()
-                            || Myau.delayManager.getDelay() >= (long) this.delayTicks.getValue()
-            )) {
-                Myau.delayManager.setDelayState(false, DelayModules.VELOCITY);
-                this.reverseFlag = false;
-            }
-            if (this.delayActive) {
-                MoveUtil.setSpeed(MoveUtil.getSpeed(), MoveUtil.getMoveYaw());
-                this.delayActive = false;
-            }
-
-            if (this.mode.getValue() == 4) {
-                int hurtTime = mc.thePlayer.hurtTime;
-
-                if (hurtTime >= 8) {
-                    if (jumpCooldown <= 0) {
-                        shouldJump = true;
-                        jumpCooldown = 2;
-                    }
-                } else if (hurtTime <= 1) {
-                    shouldJump = false;
-                    jumpCooldown = 0;
-                }
-
-                if (shouldJump && mc.thePlayer.onGround && jumpCooldown <= 0) {
-                    mc.thePlayer.jump();
-                    shouldJump = false;
-                }
-
-                if (jumpCooldown > 0) {
-                    jumpCooldown--;
-                }
-            }
-            
-            // GRIM MODE: Apply velocity in single tick to avoid position desync
-            if (this.mode.getValue() == 5 && grimApplyTick > 0 && grimPendingVelocity != null) {
-                // Calculate safe velocity using prediction engine
-                double horizReduce = 1.0 - ((double) this.horizontal.getValue() / 100.0);
-                double vertReduce = 1.0 - ((double) this.vertical.getValue() / 100.0);
-                
-                Vec3 safeVelocity = GrimPredictionEngine.calculateSafeVelocity(
-                    grimPendingVelocity,
-                    Math.max(horizReduce, vertReduce)
-                );
-                
-                // FIX: Apply all at once when transaction window is safe
-                if (grimApplyTick == 1 && transactionManager.isSafeForBypass()) {
-                    // Apply full reduced velocity in single tick (Grim expects this)
-                    mc.thePlayer.motionX = safeVelocity.xCoord;
-                    mc.thePlayer.motionY = safeVelocity.yCoord;
-                    mc.thePlayer.motionZ = safeVelocity.zCoord;
-                    grimApplyTick = 0;
-                    grimPendingVelocity = null;
-                }
-            }
-        }
-    }
-
-    @EventTarget
-    public void onLivingUpdate(LivingUpdateEvent event) {
-        if (this.jumpFlag) {
-            this.jumpFlag = false;
-            if (mc.thePlayer.onGround && mc.thePlayer.isSprinting() && !mc.thePlayer.isPotionActive(Potion.jump) && !this.isInLiquidOrWeb()) {
-                mc.thePlayer.movementInput.jump = true;
-            }
-        }
-    }
-
-    @EventTarget
-    public void onPacket(PacketEvent event) {
-        if (this.isEnabled() && event.getType() == EventType.RECEIVE && !event.isCancelled()) {
-            if (event.getPacket() instanceof S12PacketEntityVelocity) {
-                S12PacketEntityVelocity packet = (S12PacketEntityVelocity) event.getPacket();
-                if (packet.getEntityID() == mc.thePlayer.getEntityId()) {
-                    // GRIM MODE: Cancel and store velocity
-                    if (this.mode.getValue() == 5) {
-                        event.setCancelled(true);
-                        grimPendingVelocity = new Vec3(
-                            packet.getMotionX() / 8000.0,
-                            packet.getMotionY() / 8000.0,
-                            packet.getMotionZ() / 8000.0
-                        );
-                        grimApplyTick = 1;
-                        return;
-                    }
-                    
-                    LongJump longJump = (LongJump) Myau.moduleManager.modules.get(LongJump.class);
-                    if (this.mode.getValue() == 2
-                            && !this.reverseFlag
-                            && !this.canDelay()
-                            && !this.isInLiquidOrWeb()
-                            && !this.pendingExplosion
-                            && (!this.allowNext || !(Boolean) this.fakeCheck.getValue())
-                            && (!longJump.isEnabled() || !longJump.canStartJump())) {
-                        this.delayChanceCounter = this.delayChanceCounter % 100 + this.delayChance.getValue();
-                        if (this.delayChanceCounter >= 100) {
-                            Myau.delayManager.setDelayState(true, DelayModules.VELOCITY);
-                            Myau.delayManager.delayedPacket.offer(packet);
-                            event.setCancelled(true);
-                            this.reverseFlag = true;
-                            return;
-                        }
-                    }
-                    if (this.debugLog.getValue()) {
-                        ChatUtil.sendFormatted(
-                                String.format(
-                                        "%sVelocity (&otick: %d, x: %.2f, y: %.2f, z: %.2f&r)&r",
-                                        Myau.clientName,
-                                        mc.thePlayer.ticksExisted,
-                                        (double) packet.getMotionX() / 8000.0,
-                                        (double) packet.getMotionY() / 8000.0,
-                                        (double) packet.getMotionZ() / 8000.0
-                                )
-                        );
-                    }
-                }
-            } else if (!(event.getPacket() instanceof S27PacketExplosion)) {
-                if (event.getPacket() instanceof S19PacketEntityStatus) {
-                    S19PacketEntityStatus packet = (S19PacketEntityStatus) event.getPacket();
-                    Entity entity = packet.getEntity(mc.theWorld);
-                    if (entity != null && entity.equals(mc.thePlayer) && packet.getOpCode() == 2) {
-                        this.allowNext = false;
-                    }
-                }
-            } else {
-                S27PacketExplosion packet = (S27PacketExplosion) event.getPacket();
-                if (packet.func_149149_c() != 0.0F || packet.func_149144_d() != 0.0F || packet.func_149147_e() != 0.0F) {
-                    this.pendingExplosion = true;
-                    if (this.explosionHorizontal.getValue() == 0 || this.explosionVertical.getValue() == 0) {
-                        event.setCancelled(true);
-                    }
-                    if (this.debugLog.getValue()) {
-                        ChatUtil.sendFormatted(
-                                String.format(
-                                        "%sExplosion (&otick: %d, x: %.2f, y: %.2f, z: %.2f&r)&r",
-                                        Myau.clientName,
-                                        mc.thePlayer.ticksExisted,
-                                        mc.thePlayer.motionX + (double) packet.func_149149_c(),
-                                        mc.thePlayer.motionY + (double) packet.func_149144_d(),
-                                        mc.thePlayer.motionZ + (double) packet.func_149147_e()
-                                )
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    @EventTarget
-    public void onLoadWorld(LoadWorldEvent event) {
-        this.onDisabled();
-    }
-
+    
     @Override
     public void onDisabled() {
-        this.pendingExplosion = false;
-        this.allowNext = true;
-        this.shouldJump = false;
-        this.jumpCooldown = 0;
+        // Release all queued packets immediately
+        flushPacketQueue();
+        packetQueue.clear();
+        isInGhostPhase = false;
+        velocityTicks = 0;
     }
-
+    
+    @EventTarget
+    public void onUpdate(UpdateEvent event) {
+        if (event.getType() != EventType.PRE || mc.thePlayer == null) {
+            return;
+        }
+        
+        // Update cached mode string
+        cachedMode = mode.getModeString();
+        
+        // Handle normal mode velocity application
+        if (cachedMode.equals("Normal") && velocityTicks > 0) {
+            velocityTicks--;
+            
+            if (velocityTicks == 0) {
+                // Apply stored velocity after tick delay
+                mc.thePlayer.motionX = storedMotionX;
+                mc.thePlayer.motionY = storedMotionY;
+                mc.thePlayer.motionZ = storedMotionZ;
+            }
+        }
+        
+        // Handle lag mode packet queue
+        if (cachedMode.equals("Lag")) {
+            processPacketQueue();
+        }
+    }
+    
+    @EventTarget
+    public void onPacket(PacketEvent event) {
+        if (!this.isEnabled() || mc.thePlayer == null || event.getType() != EventType.RECEIVE) {
+            return;
+        }
+        
+        // Handle velocity packet
+        if (event.getPacket() instanceof S12PacketEntityVelocity) {
+            S12PacketEntityVelocity packet = (S12PacketEntityVelocity) event.getPacket();
+            
+            if (packet.getEntityID() != mc.thePlayer.getEntityId()) {
+                return;
+            }
+            
+            // Safety checks
+            if (!shouldReduceVelocity()) {
+                return;
+            }
+            
+            // Chance system
+            chanceRoll = (chanceRoll + chance.getValue()) % 100;
+            if (chanceRoll < chance.getValue()) {
+                return; // Failed chance check
+            }
+            
+            // Route to appropriate handler
+            if (cachedMode.equals("Normal")) {
+                handleNormalMode(packet, event);
+            } else if (cachedMode.equals("Lag")) {
+                handleLagMode(packet, event);
+            }
+        }
+        
+        // Handle explosion packet
+        else if (event.getPacket() instanceof S27PacketExplosion) {
+            S27PacketExplosion packet = (S27PacketExplosion) event.getPacket();
+            
+            if (!shouldReduceVelocity()) {
+                return;
+            }
+            
+            // Apply same reduction as normal velocity
+            if (cachedMode.equals("Normal")) {
+                // Explosions are handled via KnockbackEvent
+            }
+        }
+        
+        // Handle transaction packets in lag mode
+        else if (cachedMode.equals("Lag") && event.getPacket() instanceof S32PacketConfirmTransaction) {
+            S32PacketConfirmTransaction packet = (S32PacketConfirmTransaction) event.getPacket();
+            
+            // Track transaction IDs for timing
+            if (isInGhostPhase && packet.getActionNumber() == pendingTransactionId) {
+                // This is the transaction paired with our velocity packet
+                // Delay it as well
+                event.setCancelled(true);
+                packetQueue.addLast(new DelayedPacket(packet, System.currentTimeMillis() + getDelayMs()));
+            }
+        }
+    }
+    
+    // ==================== NORMAL MODE IMPLEMENTATION ====================
+    
+    private void handleNormalMode(S12PacketEntityVelocity packet, PacketEvent event) {
+        // Extract velocity
+        double velX = packet.getMotionX() / 8000.0;
+        double velY = packet.getMotionY() / 8000.0;
+        double velZ = packet.getMotionZ() / 8000.0;
+        
+        // Check if we should kite
+        boolean shouldKite = false;
+        if (kiteMode.getValue()) {
+            if (alwaysKite.getValue()) {
+                shouldKite = true;
+            } else if (lastAttacker != null) {
+                // Check if hit from behind
+                shouldKite = isHitFromBehind(lastAttacker);
+            }
+        }
+        
+        // Calculate multipliers
+        double hMult = shouldKite ? kiteHorizontal.getValue() / 100.0 : horizontal.getValue() / 100.0;
+        double vMult = shouldKite ? kiteVertical.getValue() / 100.0 : vertical.getValue() / 100.0;
+        
+        // Apply reduction
+        velX *= hMult;
+        velY *= vMult;
+        velZ *= hMult;
+        
+        // Handle tick delay
+        if (ticks.getValue() > 0) {
+            // Cancel packet and store velocity
+            event.setCancelled(true);
+            storedMotionX = velX;
+            storedMotionY = velY;
+            storedMotionZ = velZ;
+            velocityTicks = ticks.getValue();
+        } else {
+            // Apply immediately by modifying motion
+            mc.thePlayer.motionX = velX;
+            mc.thePlayer.motionY = velY;
+            mc.thePlayer.motionZ = velZ;
+            event.setCancelled(true);
+        }
+    }
+    
+    // ==================== LAG MODE IMPLEMENTATION (TRANSACTION REORDERING ATTACK) ====================
+    
+    /**
+     * CRITICAL: Implements the Split-Brain desynchronization exploit
+     * 
+     * This creates a state where:
+     * - Combat Thread: Running in real-time (0ms delay)
+     * - Physics Thread: Running in delayed-time (300ms+ delay)
+     * 
+     * Grim sees C02 attack packets during "lag" but cannot flag because
+     * the C0F transaction confirm hasn't been received yet.
+     */
+    private void handleLagMode(S12PacketEntityVelocity packet, PacketEvent event) {
+        // Cancel the velocity packet
+        event.setCancelled(true);
+        
+        // Extract velocity
+        pendingVelocityX = packet.getMotionX() / 8000.0;
+        pendingVelocityY = packet.getMotionY() / 8000.0;
+        pendingVelocityZ = packet.getMotionZ() / 8000.0;
+        
+        // Get delay based on ground state
+        int delayMs = getDelayMs();
+        
+        // Queue the packet for delayed release
+        long releaseTime = System.currentTimeMillis() + delayMs;
+        packetQueue.addLast(new DelayedPacket(packet, releaseTime));
+        
+        // Enter ghost phase (Split-Brain state)
+        isInGhostPhase = true;
+        ghostPhaseStartTime = System.currentTimeMillis();
+        
+        // Track transaction for pairing (we delay ALL transactions during ghost phase)
+        pendingTransactionId = -1; // Not needed for current implementation
+    }
+    
+    /**
+     * Process the packet queue and release packets when their time expires
+     */
+    private void processPacketQueue() {
+        if (packetQueue.isEmpty()) {
+            isInGhostPhase = false;
+            return;
+        }
+        
+        long currentTime = System.currentTimeMillis();
+        
+        // Process packets in order
+        while (!packetQueue.isEmpty()) {
+            DelayedPacket delayed = packetQueue.peekFirst();
+            
+            if (delayed == null || currentTime < delayed.releaseTime) {
+                break; // Not ready yet
+            }
+            
+            // Remove from queue
+            packetQueue.pollFirst();
+            
+            // Apply the packet
+            if (delayed.packet instanceof S12PacketEntityVelocity) {
+                S12PacketEntityVelocity vel = (S12PacketEntityVelocity) delayed.packet;
+                
+                // Apply velocity NOW (after delay)
+                mc.thePlayer.motionX = pendingVelocityX;
+                mc.thePlayer.motionY = pendingVelocityY;
+                mc.thePlayer.motionZ = pendingVelocityZ;
+                
+                // Exit ghost phase
+                isInGhostPhase = false;
+            } else if (delayed.packet instanceof S32PacketConfirmTransaction) {
+                // Send the transaction confirm now
+                S32PacketConfirmTransaction transaction = (S32PacketConfirmTransaction) delayed.packet;
+                mc.getNetHandler().addToSendQueue(
+                    new C0FPacketConfirmTransaction(
+                        transaction.getWindowId(),
+                        transaction.getActionNumber(),
+                        true
+                    )
+                );
+            }
+        }
+    }
+    
+    /**
+     * Flush all queued packets immediately (on disable)
+     */
+    private void flushPacketQueue() {
+        while (!packetQueue.isEmpty()) {
+            DelayedPacket delayed = packetQueue.pollFirst();
+            
+            if (delayed.packet instanceof S12PacketEntityVelocity) {
+                mc.thePlayer.motionX = pendingVelocityX;
+                mc.thePlayer.motionY = pendingVelocityY;
+                mc.thePlayer.motionZ = pendingVelocityZ;
+            } else if (delayed.packet instanceof S32PacketConfirmTransaction) {
+                S32PacketConfirmTransaction transaction = (S32PacketConfirmTransaction) delayed.packet;
+                mc.getNetHandler().addToSendQueue(
+                    new C0FPacketConfirmTransaction(
+                        transaction.getWindowId(),
+                        transaction.getActionNumber(),
+                        true
+                    )
+                );
+            }
+        }
+        isInGhostPhase = false;
+    }
+    
+    // ==================== HELPER METHODS ====================
+    
+    /**
+     * Get delay in milliseconds based on ground state
+     */
+    private int getDelayMs() {
+        return mc.thePlayer.onGround ? groundDelay.getValue() : airDelay.getValue();
+    }
+    
+    /**
+     * Check if we should reduce velocity based on settings
+     */
+    private boolean shouldReduceVelocity() {
+        // Water check - use existing PlayerUtil method
+        if (waterCheck.getValue()) {
+            if (mc.thePlayer.isInWater() || mc.thePlayer.isInLava()) {
+                return false;
+            }
+        }
+        
+        // Only when targeting check
+        if (onlyWhenTargeting.getValue()) {
+            EntityLivingBase target = getTargetedEntity();
+            if (target == null) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Check if player was hit from behind
+     */
+    private boolean isHitFromBehind(EntityLivingBase attacker) {
+        // Calculate angle between player's look direction and attacker
+        double deltaX = attacker.posX - mc.thePlayer.posX;
+        double deltaZ = attacker.posZ - mc.thePlayer.posZ;
+        
+        float attackerYaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
+        float angleDiff = Math.abs(MathHelper.wrapAngleTo180_float(attackerYaw - mc.thePlayer.rotationYaw));
+        
+        // Hit from behind if angle > 90 degrees
+        return angleDiff > 90.0F;
+    }
+    
+    /**
+     * Get the entity the player is currently targeting
+     * Uses simple raytrace to find entity near crosshair
+     */
+    private EntityLivingBase getTargetedEntity() {
+        // Simple implementation - check entities within 3 blocks
+        for (Object obj : mc.theWorld.loadedEntityList) {
+            if (obj instanceof EntityLivingBase) {
+                EntityLivingBase entity = (EntityLivingBase) obj;
+                if (entity == mc.thePlayer || entity.isDead) {
+                    continue;
+                }
+                
+                // Check if entity is close to crosshair
+                double distance = mc.thePlayer.getDistanceToEntity(entity);
+                if (distance <= 3.0) {
+                    // Calculate angle to entity
+                    double deltaX = entity.posX - mc.thePlayer.posX;
+                    double deltaZ = entity.posZ - mc.thePlayer.posZ;
+                    float entityYaw = (float) (Math.atan2(deltaZ, deltaX) * 180.0 / Math.PI) - 90.0F;
+                    float yawDiff = Math.abs(MathHelper.wrapAngleTo180_float(entityYaw - mc.thePlayer.rotationYaw));
+                    
+                    if (yawDiff <= 45.0F) {
+                        return entity;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Track who attacked us for kite mode
+     */
+    @EventTarget
+    public void onAttack(AttackEvent event) {
+        if (event.getTarget() instanceof EntityLivingBase) {
+            lastAttacker = (EntityLivingBase) event.getTarget();
+        }
+    }
+    
+    // ==================== KNOCKBACK EVENT ====================
+    
+    @EventTarget
+    public void onKnockback(KnockbackEvent event) {
+        if (!this.isEnabled() || cachedMode.equals("Lag")) {
+            return; // Lag mode handles everything via packets
+        }
+        
+        // Normal mode can also modify knockback event for explosions
+        if (!shouldReduceVelocity()) {
+            return;
+        }
+        
+        // Check if we should kite
+        boolean shouldKite = false;
+        if (kiteMode.getValue()) {
+            if (alwaysKite.getValue()) {
+                shouldKite = true;
+            } else if (lastAttacker != null) {
+                shouldKite = isHitFromBehind(lastAttacker);
+            }
+        }
+        
+        // Calculate multipliers
+        double hMult = shouldKite ? kiteHorizontal.getValue() / 100.0 : horizontal.getValue() / 100.0;
+        double vMult = shouldKite ? kiteVertical.getValue() / 100.0 : vertical.getValue() / 100.0;
+        
+        // Apply reduction
+        event.setX(event.getX() * hMult);
+        event.setY(event.getY() * vMult);
+        event.setZ(event.getZ() * hMult);
+    }
+    
+    // ==================== DELAYED PACKET DATA CLASS ====================
+    
+    private static class DelayedPacket {
+        final Packet<?> packet;
+        final long releaseTime;
+        
+        DelayedPacket(Packet<?> packet, long releaseTime) {
+            this.packet = packet;
+            this.releaseTime = releaseTime;
+        }
+    }
+    
     @Override
     public String[] getSuffix() {
-        return new String[]{CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, this.mode.getModeString())};
+        return new String[]{cachedMode};
     }
 }

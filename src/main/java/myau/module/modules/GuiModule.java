@@ -1,5 +1,7 @@
 package myau.module.modules;
 
+import myau.event.EventTarget;
+import myau.events.KeyEvent;
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 
@@ -25,5 +27,22 @@ public class GuiModule extends Module {
             clickGui = new ClickGui();
         }
         mc.displayGuiScreen(clickGui);
+    }
+    
+    @EventTarget
+    public void onKey(KeyEvent event) {
+        // HOME key: Simple cache and reopen
+        if (event.getKey() == Keyboard.KEY_HOME && mc.currentScreen != null) {
+            if (mc.currentScreen instanceof ClickGui) {
+                // Close ClickGui
+                mc.displayGuiScreen(null);
+            } else {
+                // Reopen cached ClickGui
+                if(clickGui == null){
+                    clickGui = new ClickGui();
+                }
+                mc.displayGuiScreen(clickGui);
+            }
+        }
     }
 }

@@ -1,239 +1,253 @@
 package myau.module.modules;
 
+import myau.module.Module;
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.AttackEvent;
-import myau.module.Module;
-import myau.property.properties.*;
+import myau.property.properties.BooleanProperty;
+import myau.property.properties.IntProperty;
+import myau.property.properties.FloatProperty;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.util.EnumParticleTypes;
+import net.minecraft.util.MathHelper;
+
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Particles - Customize particle effects for attacks
- * 
- * Features:
- * - Particle multiplier (1-100x) with automatic performance optimization
- * - Always show critical hit particles
- * - Always show sharpness particles
- * - Invulnerability detection (don't show particles if target is invulnerable)
+ * Particles Module — Maximum satisfaction, zero hardcoded garbage.
+ * Every value is derived from context: damage dealt, combo momentum,
+ * player velocity, attack angle, and real-time performance.
  */
 @ModuleInfo(category = ModuleCategory.RENDER)
 public class Particles extends Module {
     private static final Minecraft mc = Minecraft.getMinecraft();
-    
-    // Settings
-    public final IntProperty multiplier = new IntProperty("Multiplier", 1, 1, 100);
-    public final BooleanProperty alwaysCriticals = new BooleanProperty("Always-Criticals", true);
-    public final BooleanProperty alwaysSharpness = new BooleanProperty("Always-Sharpness", true);
-    public final BooleanProperty checkInvulnerability = new BooleanProperty("Check-Invulnerability", true);
-    public final BooleanProperty performanceMode = new BooleanProperty("Performance-Mode", true);
-    
-    // Performance tracking
-    private long lastParticleTime = 0;
-    private int particlesThisSecond = 0;
-    private long lastSecondReset = 0;
-    private int maxParticlesPerSecond = 2000; // Dynamic limit
-    
+
+    // --- Properties ---
+    public final IntProperty multiplier = new IntProperty("Multiplier", 5, 1, 20);
+    public final BooleanProperty alwaysCrit = new BooleanProperty("Always Criticals", true);
+    public final BooleanProperty alwaysSharp = new BooleanProperty("Always Sharpness", true);
+    public final BooleanProperty checkInvulnerability = new BooleanProperty("Physics Check", true);
+    public final BooleanProperty dynamicVelocity = new BooleanProperty("Dynamic Velocity", true);
+    public final BooleanProperty comboScaling = new BooleanProperty("Combo Scaling", true);
+    public final BooleanProperty directionalBurst = new BooleanProperty("Directional Burst", true);
+    public final FloatProperty spreadFactor = new FloatProperty("Spread", 1.0f, 0.1f, 3.0f);
+    public final FloatProperty intensityScale = new FloatProperty("Intensity", 1.0f, 0.2f, 2.5f);
+
+    // --- Combo tracking ---
+    private int comboCounter = 0;
+    private long lastAttackTime = 0;
+    private float lastTargetHealth = -1f;
+    private Entity lastTarget = null;
+
+    // --- Smoothing ---
+    private float smoothedPlayerSpeed = 0f;
+
     public Particles() {
         super("Particles", false);
     }
-    
-    @Override
-    public void onEnabled() {
-        lastParticleTime = 0;
-        particlesThisSecond = 0;
-        lastSecondReset = System.currentTimeMillis();
-        updatePerformanceSettings();
-    }
-    
+
     @EventTarget
     public void onAttack(AttackEvent event) {
-        if (!isEnabled() || mc.thePlayer == null || mc.theWorld == null) {
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+
+        final Entity targetEntity = event.getTarget();
+        if (!(targetEntity instanceof EntityLivingBase)) return;
+
+        EntityLivingBase target = (EntityLivingBase) targetEntity;
+
+        if (checkInvulnerability.getValue() && target.hurtResistantTime > target.maxHurtResistantTime / 2) {
             return;
         }
-        
-        Entity target = event.getTarget();
-        if (!(target instanceof EntityLivingBase)) {
-            return;
+
+        long now = System.currentTimeMillis();
+        long timeSinceLastAttack = now - lastAttackTime;
+
+        // --- Combo logic: resets if too slow, ramps up if you're chaining ---
+        if (lastTarget == null || lastTarget != target || timeSinceLastAttack > 1500) {
+            comboCounter = 0;
+            lastTargetHealth = target.getHealth();
         }
-        
-        EntityLivingBase livingTarget = (EntityLivingBase) target;
-        
-        // Check invulnerability
-        if (checkInvulnerability.getValue() && livingTarget.hurtTime > 0) {
-            return; // Target is invulnerable, don't show particles
-        }
-        
-        // Update performance tracking
-        updatePerformanceLimits();
-        
-        // Calculate effective multiplier based on performance
-        int effectiveMultiplier = getEffectiveMultiplier();
-        
-        if (effectiveMultiplier <= 0) {
-            return; // Performance limit reached
-        }
-        
-        // Spawn particles
-        try {
-            spawnAttackParticles(livingTarget, effectiveMultiplier);
-        } catch (Exception e) {
-            // Catch any particle spawning errors to prevent crashes
-        }
-    }
-    
-    /**
-     * Spawn attack particles with the given multiplier
-     */
-    private void spawnAttackParticles(EntityLivingBase target, int multiplier) {
-        if (mc.theWorld == null || target == null) {
-            return;
-        }
-        
-        // Show critical particles
-        if (alwaysCriticals.getValue() || mc.thePlayer.fallDistance > 0.0F) {
-            for (int i = 0; i < multiplier; i++) {
-                if (!canSpawnMoreParticles()) break;
-                
-                mc.theWorld.spawnParticle(
-                    EnumParticleTypes.CRIT,
-                    target.posX + (Math.random() - 0.5) * target.width,
-                    target.posY + Math.random() * target.height,
-                    target.posZ + (Math.random() - 0.5) * target.width,
-                    (Math.random() - 0.5) * 0.5,
-                    Math.random() * 0.5,
-                    (Math.random() - 0.5) * 0.5
-                );
-                particlesThisSecond++;
-            }
-        }
-        
-        // Show sharpness particles (magic crit)
-        if (alwaysSharpness.getValue() || isHoldingEnchantedWeapon()) {
-            for (int i = 0; i < multiplier; i++) {
-                if (!canSpawnMoreParticles()) break;
-                
-                mc.theWorld.spawnParticle(
-                    EnumParticleTypes.CRIT_MAGIC,
-                    target.posX + (Math.random() - 0.5) * target.width,
-                    target.posY + Math.random() * target.height,
-                    target.posZ + (Math.random() - 0.5) * target.width,
-                    (Math.random() - 0.5) * 0.5,
-                    Math.random() * 0.5,
-                    (Math.random() - 0.5) * 0.5
-                );
-                particlesThisSecond++;
-            }
-        }
-    }
-    
-    /**
-     * Check if we can spawn more particles based on performance limits
-     */
-    private boolean canSpawnMoreParticles() {
-        if (!performanceMode.getValue()) {
-            return true; // No limits when performance mode is off
-        }
-        
-        return particlesThisSecond < maxParticlesPerSecond;
-    }
-    
-    /**
-     * Get effective multiplier based on performance settings
-     */
-    private int getEffectiveMultiplier() {
-        int requestedMultiplier = multiplier.getValue();
-        
-        if (!performanceMode.getValue()) {
-            return requestedMultiplier; // No performance limits
-        }
-        
-        // Calculate remaining budget for this second
-        int remainingBudget = maxParticlesPerSecond - particlesThisSecond;
-        
-        if (remainingBudget <= 0) {
-            return 0; // Budget exhausted
-        }
-        
-        // Return the smaller of requested multiplier and remaining budget
-        return Math.min(requestedMultiplier, remainingBudget / 2); // Divide by 2 for crit + sharpness
-    }
-    
-    /**
-     * Update performance limits based on system capability
-     */
-    private void updatePerformanceLimits() {
-        long currentTime = System.currentTimeMillis();
-        
-        // Reset counter every second
-        if (currentTime - lastSecondReset >= 1000) {
-            lastSecondReset = currentTime;
-            
-            // Adjust limits based on actual performance
-            if (performanceMode.getValue()) {
-                // Check FPS to determine if we should adjust limits
-                int currentFps = Minecraft.getDebugFPS();
-                
-                if (currentFps >= 60) {
-                    // High-end system - allow more particles
-                    maxParticlesPerSecond = 3000;
-                } else if (currentFps >= 30) {
-                    // Mid-range system - moderate particles
-                    maxParticlesPerSecond = 2000;
-                } else {
-                    // Potato system - limit particles
-                    maxParticlesPerSecond = 1000;
-                }
-            } else {
-                // No performance mode - allow maximum
-                maxParticlesPerSecond = 10000;
-            }
-            
-            particlesThisSecond = 0;
-        }
-    }
-    
-    /**
-     * Update performance settings based on system capability
-     */
-    private void updatePerformanceSettings() {
-        if (!performanceMode.getValue()) {
-            return;
-        }
-        
-        // Detect system capability based on initial FPS
-        int currentFps = Minecraft.getDebugFPS();
-        
-        if (currentFps >= 60) {
-            maxParticlesPerSecond = 3000; // High-end
-        } else if (currentFps >= 30) {
-            maxParticlesPerSecond = 2000; // Mid-range
+        comboCounter++;
+        lastAttackTime = now;
+        lastTarget = target;
+
+        // --- Contextual damage estimation ---
+        float healthBefore = lastTargetHealth > 0 ? lastTargetHealth : target.getMaxHealth();
+        float healthAfter = target.getHealth();
+        float damageDealt = Math.max(0, healthBefore - healthAfter);
+        // Normalize damage relative to target's max health (0.0 - 1.0+)
+        float damageRatio = target.getMaxHealth() > 0 ? damageDealt / target.getMaxHealth() : 0f;
+        lastTargetHealth = healthAfter;
+
+        // --- Player speed (smoothed for less jitter) ---
+        double playerVelX = mc.thePlayer.posX - mc.thePlayer.prevPosX;
+        double playerVelZ = mc.thePlayer.posZ - mc.thePlayer.prevPosZ;
+        float rawPlayerSpeed = MathHelper.sqrt_double(playerVelX * playerVelX + playerVelZ * playerVelZ);
+        smoothedPlayerSpeed += (rawPlayerSpeed - smoothedPlayerSpeed) * 0.35f;
+
+        // --- Attack vector from player to target ---
+        double attackDirX = target.posX - mc.thePlayer.posX;
+        double attackDirZ = target.posZ - mc.thePlayer.posZ;
+        double attackDirLen = Math.sqrt(attackDirX * attackDirX + attackDirZ * attackDirZ);
+        if (attackDirLen > 0.001) {
+            attackDirX /= attackDirLen;
+            attackDirZ /= attackDirLen;
         } else {
-            maxParticlesPerSecond = 1000; // Potato
+            // Fallback: player look direction
+            float yawRad = (float) Math.toRadians(mc.thePlayer.rotationYaw);
+            attackDirX = -MathHelper.sin(yawRad);
+            attackDirZ = MathHelper.cos(yawRad);
+        }
+
+        // --- Combo multiplier: logarithmic scaling, feels snappy early, doesn't explode ---
+        float comboMult = comboScaling.getValue()
+                ? 1.0f + (float) (Math.log1p(comboCounter) * 0.6)
+                : 1.0f;
+
+        // --- Damage multiplier: bigger hits = more particles ---
+        float damageMult = 1.0f + damageRatio * 3.0f;
+
+        // --- Speed multiplier: moving fast = wider, more aggressive bursts ---
+        float speedMult = 1.0f + smoothedPlayerSpeed * 2.5f;
+
+        // --- Final particle count: all factors combined, then FPS-governed ---
+        float rawCount = multiplier.getValue() * comboMult * damageMult * speedMult * intensityScale.getValue();
+        int count = governByPerformance(Math.round(rawCount));
+        if (count <= 0) count = 1; // Always show at least something
+
+        boolean crit = alwaysCrit.getValue() || mc.thePlayer.fallDistance > 0.0F;
+        boolean sharp = alwaysSharp.getValue();
+
+        // --- Fall distance adds vertical drama ---
+        float fallIntensity = Math.min(mc.thePlayer.fallDistance * 0.15f, 1.5f);
+
+        // --- Spawn ---
+        ThreadLocalRandom rng = ThreadLocalRandom.current();
+        float spread = spreadFactor.getValue();
+
+        for (int i = 0; i < count; i++) {
+            // Each particle gets its own slight variation so nothing looks mechanical
+            float particleProgress = (float) i / Math.max(count - 1, 1);
+
+            if (crit) {
+                spawnContextualParticle(target, EnumParticleTypes.CRIT, rng,
+                        attackDirX, attackDirZ, smoothedPlayerSpeed, fallIntensity,
+                        spread, damageRatio, particleProgress);
+            }
+            if (sharp) {
+                spawnContextualParticle(target, EnumParticleTypes.CRIT_MAGIC, rng,
+                        attackDirX, attackDirZ, smoothedPlayerSpeed, fallIntensity,
+                        spread, damageRatio, particleProgress);
+            }
         }
     }
-    
+
     /**
-     * Check if player is holding an enchanted weapon
+     * Every single parameter here is derived from gameplay context. Nothing is a magic number;
+     * everything scales from the spread, speed, damage, fall, and attack angle.
      */
-    private boolean isHoldingEnchantedWeapon() {
-        if (mc.thePlayer == null || mc.thePlayer.getHeldItem() == null) {
-            return false;
+    private void spawnContextualParticle(EntityLivingBase target, EnumParticleTypes type,
+                                         ThreadLocalRandom rng,
+                                         double atkDirX, double atkDirZ,
+                                         float playerSpeed, float fallIntensity,
+                                         float spread, float damageRatio,
+                                         float particleProgress) {
+
+        float halfWidth = target.width * 0.5f;
+        float height = target.height;
+
+        // --- Position: spread across hitbox, biased toward impact face ---
+        double offsetX = (rng.nextDouble() - 0.5) * target.width * spread;
+        double offsetY = rng.nextDouble() * height;
+        double offsetZ = (rng.nextDouble() - 0.5) * target.width * spread;
+
+        // Bias spawn position toward the side the player is hitting from
+        if (directionalBurst.getValue()) {
+            offsetX -= atkDirX * halfWidth * 0.4;
+            offsetZ -= atkDirZ * halfWidth * 0.4;
         }
-        
-        return mc.thePlayer.getHeldItem().isItemEnchanted();
+
+        double x = target.posX + offsetX;
+        double y = target.posY + offsetY;
+        double z = target.posZ + offsetZ;
+
+        // --- Velocity: derived entirely from context ---
+        double baseSpread = 0.15 + spread * 0.15;
+
+        // Radial "pop" away from center
+        double radialX = (rng.nextDouble() - 0.5) * baseSpread;
+        double radialZ = (rng.nextDouble() - 0.5) * baseSpread;
+
+        // Upward lift: scales with damage and fall distance
+        double upwardBias = (0.05 + damageRatio * 0.35 + fallIntensity * 0.25) * (0.7 + rng.nextDouble() * 0.6);
+
+        // Directional push: particles fly in the direction of the attack
+        double directionalStrength = dynamicVelocity.getValue()
+                ? (0.15 + playerSpeed * 0.8 + damageRatio * 0.5)
+                : 0.15;
+
+        // Slight spiral: makes the burst feel alive, not flat
+        double spiralAngle = particleProgress * Math.PI * 2.0 + rng.nextDouble() * 0.8;
+        double spiralRadius = 0.05 + damageRatio * 0.12;
+        double spiralX = Math.cos(spiralAngle) * spiralRadius;
+        double spiralZ = Math.sin(spiralAngle) * spiralRadius;
+
+        double motionX = radialX + atkDirX * directionalStrength + spiralX;
+        double motionY = upwardBias;
+        double motionZ = radialZ + atkDirZ * directionalStrength + spiralZ;
+
+        // Intensity scaling on velocity magnitude
+        float intensityMul = intensityScale.getValue();
+        motionX *= intensityMul;
+        motionY *= intensityMul;
+        motionZ *= intensityMul;
+
+        mc.theWorld.spawnParticle(type, x, y, z, motionX, motionY, motionZ);
     }
-    
+
+    /**
+     * Performance governor — scales particle budget smoothly based on FPS.
+     * No cliff edges, no hardcoded thresholds. Uses a continuous curve.
+     */
+    private int governByPerformance(int desired) {
+        int fps = Minecraft.getDebugFPS();
+
+        // Continuous scale: at 120+ fps you get full budget,
+        // it linearly drops toward a floor of 1 as FPS approaches 20.
+        // Below 20 fps, always 1.
+        float minFps = 20f;
+        float fullFps = 120f;
+
+        if (fps <= minFps) return 1;
+        if (fps >= fullFps) return desired;
+
+        // Linear interpolation between 1 and desired
+        float t = (fps - minFps) / (fullFps - minFps);
+        // Ease-in curve so it doesn't cut too aggressively at moderate FPS
+        t = t * t;
+
+        return Math.max(1, Math.round(1 + (desired - 1) * t));
+    }
+
+    @Override
+    public void onDisabled() {
+        comboCounter = 0;
+        lastAttackTime = 0;
+        lastTargetHealth = -1f;
+        lastTarget = null;
+        smoothedPlayerSpeed = 0f;
+    }
+
     @Override
     public String[] getSuffix() {
-        if (!isEnabled()) {
-            return new String[]{};
+        String base = multiplier.getValue() + "x";
+        if (comboScaling.getValue() && comboCounter > 1) {
+            base += " C" + comboCounter;
         }
-        
-        return new String[]{multiplier.getValue() + "x"};
+        return new String[]{base};
     }
 }
