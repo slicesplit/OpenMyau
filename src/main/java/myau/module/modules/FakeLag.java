@@ -13,46 +13,46 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.client.*;
+import net.minecraft.network.play.client.C03PacketPlayer.C04PacketPlayerPosition;
 import net.minecraft.network.play.server.*;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
 
 /**
- * FakeLag — Simulates lag by adding a delay to the packets
- * you send to the server.
+ * FakeLag — Simulates network latency by delaying position data
+ * sent to the server.
  *
- * How it works:
- * Outgoing position packets (C03/C04/C05/C06) are held in a buffer
- * instead of being sent immediately. The server and all other players
- * see you at the position of the LAST SENT packet until the buffer
- * is released. When released, the server processes all positions
- * sequentially — movement validation passes because each consecutive
- * position is a valid movement delta.
+ * CRITICAL DESIGN:
+ * We do NOT hold/buffer C03 packets. That causes timer violations
+ * and BadPackets flags on any modern AC (Grim, Polar, Karhu).
+ *
+ * Instead, we use POSITION REPLAY:
+ * - Every tick, the client generates a C03 with current position
+ * - We INTERCEPT it, store the real position in a queue
+ * - We REPLACE the position data with an older position from the queue
+ * - The packet still gets sent at normal 20/sec rate (timer passes)
+ * - But the position data is N ticks old (simulating latency)
+ *
+ * Result: Server sees smooth, physically valid movement at normal
+ * packet rate — just delayed by [Delay] ms. No timer flags, no
+ * packet rate spikes, no BadPackets.
+ *
+ * On opponent screen: You appear to be where you were N ms ago.
+ * Your visual position lags behind your real position.
  *
  * Modes:
  *
- * Latency — Adds a constant delay to your packets. Every packet is
- *   held for exactly [Delay] ms before being sent. If your real ping
- *   is 50ms and delay is 100ms, you effectively play on 150ms.
- *   On opponent screen: you appear to lag naturally, standing still
- *   briefly then teleporting to catch up.
+ * Latency — Constant delay. Position data is always [Delay] ms old.
+ *   You effectively play with [Delay] extra ping. Natural looking.
  *
- * Dynamic — Dynamically adjusts your effective connection speed to
- *   give you advantages in combat. Holds packets longer when you're
- *   approaching an opponent (they see you further away than you are,
- *   so their swings miss), and releases quickly when you're moving
- *   away or strafing (updating your server position to the "far"
- *   point). Also flushes right before you attack so your hit
- *   registers from your real (close) position.
+ * Dynamic — Adjusts delay based on combat. Longer delay when
+ *   approaching (opponent sees you far), shorter when retreating
+ *   or attacking (position catches up quickly for hit registration).
  *
- * Repel — Tunes FakeLag with the goal of keeping your opponent as
- *   far away from you as possible on their screen. Continuously
- *   evaluates whether holding or releasing packets would place your
- *   server position further from the target. Holds when the desync
- *   pushes your visible position away from them, releases when
- *   the desync would pull you closer on their screen.
- *   Opponent always sees you slightly out of reach.
+ * Repel — Maximizes the distance between your server position
+ *   and your opponent. Dynamically picks delay that makes you
+ *   appear as far from the target as possible on their screen.
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class FakeLag extends Module {
@@ -70,20 +70,28 @@ public class FakeLag extends Module {
     public final BooleanProperty teams = new BooleanProperty("Teams", false);
 
     // ──────────────────────────────────────────────
-    //  Internal structures
+    //  Position snapshot — records real position at a point in time
     // ──────────────────────────────────────────────
 
-    private static final class Timed {
-        final Packet<?> packet;
-        final long stamp;
-        final double px, py, pz; // player position when this packet was created
+    private static final class PosSnap {
+        final double x, y, z;
+        final float yaw, pitch;
+        final boolean onGround;
+        final long timestamp;
+        final boolean sneaking;
+        final boolean sprinting;
 
-        Timed(Packet<?> p, long t, double px, double py, double pz) {
-            this.packet = p;
-            this.stamp = t;
-            this.px = px;
-            this.py = py;
-            this.pz = pz;
+        PosSnap(double x, double y, double z, float yaw, float pitch,
+                boolean onGround, long timestamp, boolean sneaking, boolean sprinting) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.yaw = yaw;
+            this.pitch = pitch;
+            this.onGround = onGround;
+            this.timestamp = timestamp;
+            this.sneaking = sneaking;
+            this.sprinting = sprinting;
         }
     }
 
@@ -91,37 +99,29 @@ public class FakeLag extends Module {
     //  State
     // ──────────────────────────────────────────────
 
-    private final Deque<Timed> buffer = new ArrayDeque<>();
-    private boolean releasing;
+    // Position history — ring buffer of real positions
+    private final Deque<PosSnap> posHistory = new ArrayDeque<>();
 
-    // Server position — where opponents see us
-    // Updated only when a C03 with position actually gets sent
-    private double srvX, srvY, srvZ;
-    private boolean srvValid;
+    // The position the server currently thinks we're at
+    private double serverX, serverY, serverZ;
+    private boolean serverPosValid;
 
-    // Safety tracking
+    // Last position we actually sent to server (the delayed one)
+    private double lastSentX, lastSentY, lastSentZ;
+    private boolean lastSentValid;
+
+    // Safety
     private float prevHp;
+    private boolean disabled; // temporarily disable (damage, KB, etc.)
+    private int disabledTicks;
     private int tick;
-    private long lastFlushTime;
 
-    // Stuck detection
-    private double lastPlayerX, lastPlayerY, lastPlayerZ;
-    private int stuckTicks;
-
-    // Dynamic mode — track target distance changes
+    // Target tracking
     private double lastTargetDist;
-    private double prevDesync;
-    private boolean attackPending; // flush on next attack for dynamic
 
-    // Repel mode — track which action maximizes opponent distance
-    private double repelBestServerDist; // best server-to-target distance achieved
-
-    // Hard limits
-    private static final long ABSOLUTE_MAX_HOLD = 500;
-    private static final int MAX_BUFFER_SIZE = 30;
-    private static final double STUCK_THRESHOLD = 0.03;
-    private static final int STUCK_TICK_LIMIT = 15;
-    private static final double MAX_DESYNC_DISTANCE = 6.5;
+    // Limits
+    private static final int MAX_HISTORY = 60; // 3 seconds at 20tps
+    private static final double MAX_DESYNC = 6.0;
 
     public FakeLag() {
         super("FakeLag", false);
@@ -133,383 +133,151 @@ public class FakeLag extends Module {
 
     @Override
     public void onEnabled() {
-        reset();
+        fullReset();
         if (mc.thePlayer != null) {
-            syncPos(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
+            serverX = mc.thePlayer.posX;
+            serverY = mc.thePlayer.posY;
+            serverZ = mc.thePlayer.posZ;
+            serverPosValid = true;
             prevHp = mc.thePlayer.getHealth();
-            lastPlayerX = mc.thePlayer.posX;
-            lastPlayerY = mc.thePlayer.posY;
-            lastPlayerZ = mc.thePlayer.posZ;
         }
-        lastFlushTime = System.currentTimeMillis();
     }
 
     @Override
     public void onDisabled() {
-        flush(true);
-        reset();
+        fullReset();
     }
 
-    private void reset() {
-        buffer.clear();
-        releasing = false;
-        srvValid = false;
+    private void fullReset() {
+        posHistory.clear();
+        serverPosValid = false;
+        lastSentValid = false;
         prevHp = -1;
+        disabled = false;
+        disabledTicks = 0;
         tick = 0;
         lastTargetDist = -1;
-        lastFlushTime = System.currentTimeMillis();
-        stuckTicks = 0;
-        lastPlayerX = lastPlayerY = lastPlayerZ = 0;
-        attackPending = false;
-        prevDesync = 0;
-        repelBestServerDist = 0;
-    }
-
-    private void syncPos(double x, double y, double z) {
-        srvX = x;
-        srvY = y;
-        srvZ = z;
-        srvValid = true;
     }
 
     // ──────────────────────────────────────────────
-    //  Tick handler
+    //  Tick handler — record positions & manage state
     // ──────────────────────────────────────────────
 
     @EventTarget
     public void onUpdate(UpdateEvent event) {
         if (event.getType() != EventType.PRE || mc.thePlayer == null) return;
 
-        // ── Immediate flush: non-negotiable safety ──
+        tick++;
+
+        // ── Record current real position ──
+        posHistory.addLast(new PosSnap(
+                mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ,
+                mc.thePlayer.rotationYaw, mc.thePlayer.rotationPitch,
+                mc.thePlayer.onGround, System.currentTimeMillis(),
+                mc.thePlayer.isSneaking(), mc.thePlayer.isSprinting()));
+
+        // Trim history
+        while (posHistory.size() > MAX_HISTORY) {
+            posHistory.pollFirst();
+        }
+
+        // ── Safety: check if we should temporarily disable ──
         if (mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0
                 || mc.thePlayer.isRiding() || mc.thePlayer.isPlayerSleeping()
                 || mc.getNetHandler() == null) {
-            flush(true);
+            temporaryDisable(20);
             return;
         }
 
         // Void
-        if (mc.thePlayer.posY < 3 || (srvValid && srvY < 3)) {
-            flush(true);
+        if (mc.thePlayer.posY < 3) {
+            temporaryDisable(10);
             return;
         }
 
-        // Liquid / ladder / web — movement physics change, holding
-        // packets causes rubberbanding because server-side position
-        // simulation diverges from client
+        // Liquid / ladder — movement physics differ, delayed positions
+        // create impossible movement sequences
         if (mc.thePlayer.isInWater() || mc.thePlayer.isInLava()
-                || mc.thePlayer.isOnLadder() || mc.thePlayer.isInsideOfMaterial(net.minecraft.block.material.Material.web)) {
-            flush(true);
+                || mc.thePlayer.isOnLadder()) {
+            temporaryDisable(5);
             return;
         }
 
-        // High fall distance — KB/fall damage imminent
+        // High fall
         if (mc.thePlayer.fallDistance > 2.5) {
-            flush(true);
+            temporaryDisable(10);
             return;
         }
 
-        // Damage taken — flush immediately to prevent desynced combat
+        // Damage — disable briefly so combat is responsive
         float hp = mc.thePlayer.getHealth();
         if (prevHp > 0 && hp < prevHp - 0.01f) {
-            flush(true);
+            temporaryDisable(6);
             prevHp = hp;
             return;
         }
         prevHp = hp;
 
-        // Too early after login/respawn
+        // Too early after login
         if (mc.thePlayer.ticksExisted < 40) {
-            flush(true);
+            temporaryDisable(5);
             return;
         }
 
-        long now = System.currentTimeMillis();
-
-        // ── Stuck detection ──
-        // If we're holding packets but the player hasn't moved,
-        // the desync isn't growing and we're just adding latency
-        // for no benefit. Also catches cases where something is
-        // blocking movement (collision, server correction, etc.)
-        double movedX = mc.thePlayer.posX - lastPlayerX;
-        double movedY = mc.thePlayer.posY - lastPlayerY;
-        double movedZ = mc.thePlayer.posZ - lastPlayerZ;
-        double movedDist = Math.sqrt(movedX * movedX + movedY * movedY + movedZ * movedZ);
-
-        if (movedDist < STUCK_THRESHOLD && !buffer.isEmpty()) {
-            stuckTicks++;
-        } else {
-            stuckTicks = 0;
-        }
-        lastPlayerX = mc.thePlayer.posX;
-        lastPlayerY = mc.thePlayer.posY;
-        lastPlayerZ = mc.thePlayer.posZ;
-
-        if (stuckTicks >= STUCK_TICK_LIMIT) {
-            flush(true);
-            stuckTicks = 0;
-            return;
-        }
-
-        // ── Hard absolute time cap ──
-        // No packet should ever be held beyond ABSOLUTE_MAX_HOLD.
-        // This prevents server-side timeout and extreme rubberbanding.
-        if (!buffer.isEmpty()) {
-            Timed oldest = buffer.peekFirst();
-            if (oldest != null && now - oldest.stamp > ABSOLUTE_MAX_HOLD) {
-                flush(false);
+        // Desync too large
+        if (serverPosValid) {
+            double dx = mc.thePlayer.posX - serverX;
+            double dy = mc.thePlayer.posY - serverY;
+            double dz = mc.thePlayer.posZ - serverZ;
+            double desync = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (desync > MAX_DESYNC) {
+                temporaryDisable(5);
                 return;
             }
         }
 
-        // ── Desync distance cap ──
-        // If our real position is too far from server position,
-        // the teleport on flush will be too obvious and may flag
-        if (srvValid && desync() > MAX_DESYNC_DISTANCE) {
-            flush(false);
-            return;
-        }
-
-        // ── Buffer size cap ──
-        if (buffer.size() > MAX_BUFFER_SIZE) {
-            flush(false);
-            return;
-        }
-
-        // ── Near target check ──
+        // Near target check
         if (nearTargetOnly.getValue() && target() == null) {
-            flush(false);
+            temporaryDisable(1);
             return;
         }
 
-        tick++;
-
-        // ── Mode-specific logic ──
-        switch (mode.getValue()) {
-            case 0:
-                handleLatency(now);
-                break;
-            case 1:
-                handleDynamic(now);
-                break;
-            case 2:
-                handleRepel(now);
-                break;
-        }
-
-        // ── Safety net: drain stale packets ──
-        // Even if mode logic doesn't flush, never let packets
-        // sit longer than delay + margin
-        if (!buffer.isEmpty() && now - lastFlushTime > delay.getValue() + 150) {
-            drainStale(now, delay.getValue() + 50);
-        }
-    }
-
-    // ──────────────────────────────────────────────
-    //  LATENCY MODE
-    //
-    //  Simple constant delay. Each packet is held for exactly
-    //  [delay] ms before being sent. This creates a uniform
-    //  lag appearance — you stand still for [delay] ms then
-    //  your position catches up.
-    //
-    //  On opponent screen: natural-looking lag spike pattern.
-    //  Your movement appears in bursts separated by brief freezes.
-    // ──────────────────────────────────────────────
-
-    private void handleLatency(long now) {
-        expire(now, delay.getValue());
-    }
-
-    // ──────────────────────────────────────────────
-    //  DYNAMIC MODE
-    //
-    //  Adjusts delay based on combat context to give advantage:
-    //
-    //  APPROACHING target (distance shrinking):
-    //    Hold packets LONGER → server position stays far back
-    //    → opponent sees you further away → their attacks miss
-    //    → you're actually closer than they think
-    //
-    //  RETREATING from target (distance growing):
-    //    Release packets QUICKLY → server position updates to
-    //    the "far" point → opponent sees you jump away
-    //    → hard for them to follow up
-    //
-    //  STRAFING (distance stable):
-    //    Moderate delay → lateral desync makes you hard to track
-    //
-    //  ATTACKING:
-    //    Flush ALL packets right before the attack packet goes out
-    //    → server position snaps to real position → hit registers
-    //    from correct (close) distance → reach check passes
-    //
-    //  The key insight: by holding when approaching and releasing
-    //  when retreating, the opponent always sees you at the WORST
-    //  position for them — either too far to hit, or already gone.
-    // ──────────────────────────────────────────────
-
-    private void handleDynamic(long now) {
-        EntityPlayer t = target();
-        if (t == null) {
-            // No target — use base delay as fallback
-            expire(now, Math.max(20, delay.getValue() / 2));
-            return;
-        }
-
-        double currentDist = mc.thePlayer.getDistanceToEntity(t);
-        double serverDist = srvValid
-                ? dist(srvX, srvY, srvZ, t.posX, t.posY, t.posZ)
-                : currentDist;
-
-        // How fast are we approaching? Positive = getting closer
-        double approachSpeed = 0;
-        if (lastTargetDist > 0) {
-            approachSpeed = lastTargetDist - currentDist;
-        }
-        lastTargetDist = currentDist;
-
-        // Calculate effective delay based on combat context
-        int effectiveDelay;
-
-        if (approachSpeed > 0.08) {
-            // ── APPROACHING ──
-            // Hold longer to build desync. Opponent sees us further back.
-            // Scale factor: the faster we approach, the longer we hold.
-            // Cap at 1.5x base delay to stay within safety limits.
-            double factor = Math.min(1.5, 1.0 + approachSpeed * 3.0);
-            effectiveDelay = (int) (delay.getValue() * factor);
-
-        } else if (approachSpeed < -0.08) {
-            // ── RETREATING ──
-            // Release quickly to update server pos to "far" point.
-            // Opponent sees us jump away from them.
-            double factor = Math.max(0.2, 0.5 + approachSpeed * 2.0);
-            effectiveDelay = (int) (delay.getValue() * factor);
-
-        } else {
-            // ── STRAFING / STABLE ──
-            // Moderate delay. The lateral movement creates desync
-            // perpendicular to the opponent's aim, making us harder
-            // to track even with moderate delay.
-            effectiveDelay = (int) (delay.getValue() * 0.7);
-        }
-
-        // If server position is already further from target than our
-        // real position → desync is working in our favor → hold longer
-        if (serverDist > currentDist + 0.5 && approachSpeed > -0.05) {
-            effectiveDelay = (int) Math.min(effectiveDelay * 1.3, delay.getValue() * 1.6);
-        }
-
-        // If server position is CLOSER to target than us → bad desync
-        // Release quickly to fix this
-        if (serverDist < currentDist - 0.3) {
-            effectiveDelay = Math.min(effectiveDelay, delay.getValue() / 3);
-        }
-
-        // Clamp
-        effectiveDelay = Math.max(20, Math.min(effectiveDelay, delay.getValue() + 60));
-
-        expire(now, effectiveDelay);
-    }
-
-    // ──────────────────────────────────────────────
-    //  REPEL MODE
-    //
-    //  Goal: maximize distance between our SERVER position
-    //  (what opponent sees) and the opponent at all times.
-    //
-    //  Strategy:
-    //  Every tick, we evaluate two scenarios:
-    //    A) Keep holding — server pos stays frozen at last sent pos
-    //    B) Flush now — server pos updates to current real pos
-    //
-    //  We pick whichever results in our server position being
-    //  FURTHER from the target. This means:
-    //
-    //  - When we're walking toward the target:
-    //    Current pos is closer to target than server pos.
-    //    Holding keeps server pos far → HOLD.
-    //
-    //  - When we've walked past the target / turned around:
-    //    Current pos is further from target than server pos.
-    //    Flushing updates server pos to far point → FLUSH.
-    //
-    //  - When we're circling / strafing:
-    //    Evaluate both options each tick → pick best.
-    //
-    //  The result: opponent always sees us at maximum distance.
-    //  Their melee attacks consistently whiff because our visual
-    //  position is always at the far edge of the desync envelope.
-    //
-    //  Combined with the delay slider controlling how much desync
-    //  can accumulate, this creates a "force field" effect where
-    //  the opponent can never quite reach us on their screen.
-    // ──────────────────────────────────────────────
-
-    private void handleRepel(long now) {
-        EntityPlayer t = target();
-        if (t == null) {
-            // No target — just use base delay
-            expire(now, delay.getValue());
-            return;
-        }
-
-        double targetX = t.posX;
-        double targetY = t.posY;
-        double targetZ = t.posZ;
-
-        // Scenario A: keep holding — server pos stays at srvX/Y/Z
-        double distIfHold = srvValid
-                ? dist(srvX, srvY, srvZ, targetX, targetY, targetZ)
-                : 0;
-
-        // Scenario B: flush now — server pos updates to current real pos
-        double distIfFlush = dist(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ,
-                targetX, targetY, targetZ);
-
-        // Safety: also check desync limit
-        double currentDesync = desync();
-
-        if (!buffer.isEmpty()) {
-            // We have packets to decide about
-
-            if (distIfFlush > distIfHold + 0.15) {
-                // Flushing puts our server position FURTHER from target
-                // → flush to lock in the "far" position
-                flush(false);
-                repelBestServerDist = distIfFlush;
-
-            } else if (currentDesync > delay.getValue() / 50.0 + 1.0) {
-                // Desync is getting large relative to delay setting
-                // Time-based drain to prevent exceeding limits
-                drainStale(now, delay.getValue());
-
-            } else {
-                // Holding keeps us further → keep holding
-                // But still drain packets that are too old
-                drainStale(now, (int) (delay.getValue() * 1.3));
-            }
-
-            // Always drain anything beyond absolute age limit
-            drainStale(now, delay.getValue() + 80);
-
-        } else {
-            // Buffer is empty — nothing to decide
-            // Packets will start accumulating on next C03
-        }
-
-        // Track best distance for debugging/suffix
-        if (srvValid) {
-            double currentServerDist = dist(srvX, srvY, srvZ, targetX, targetY, targetZ);
-            if (currentServerDist > repelBestServerDist) {
-                repelBestServerDist = currentServerDist;
+        // Disabled countdown
+        if (disabledTicks > 0) {
+            disabledTicks--;
+            if (disabledTicks <= 0) {
+                disabled = false;
             }
         }
     }
 
+    private void temporaryDisable(int ticks) {
+        disabled = true;
+        disabledTicks = ticks;
+        // Clear history — stale positions are dangerous after disable
+        posHistory.clear();
+    }
+
     // ──────────────────────────────────────────────
-    //  Packet handler
+    //  Packet handler — CORE LOGIC
+    //
+    //  Instead of buffering packets, we REWRITE them.
+    //  Every C03 that goes out gets its position replaced
+    //  with an older position from our history queue.
+    //
+    //  The packet itself is never held — it goes out at
+    //  normal 20/sec rate. Only the position DATA is delayed.
+    //
+    //  This means:
+    //  - Timer check: PASSES (normal packet rate)
+    //  - BadPackets: PASSES (one packet per tick, proper format)
+    //  - Movement: PASSES (positions are real, just from the past)
+    //  - Transaction: PASSES (we never hold any responses)
+    //  - KeepAlive: PASSES (never touched)
+    //
+    //  The only thing the server notices is that our "ping" appears
+    //  higher — we're always slightly behind where we should be.
+    //  This is indistinguishable from real network latency.
     // ──────────────────────────────────────────────
 
     @EventTarget
@@ -520,156 +288,278 @@ public class FakeLag extends Module {
             handleIncoming(event.getPacket());
             return;
         }
-        if (event.getType() != EventType.SEND || releasing) return;
+
+        if (event.getType() != EventType.SEND) return;
 
         Packet<?> pkt = event.getPacket();
 
-        // ── Never delay critical packets ──
-        // These cause server-side issues if delayed (timeout, desync,
-        // inventory corruption, chat loss, etc.)
-        if (isCritical(pkt)) {
-            passthrough(pkt);
+        // Only modify C03 position packets
+        if (!(pkt instanceof C03PacketPlayer)) return;
+
+        C03PacketPlayer c03 = (C03PacketPlayer) pkt;
+
+        // Only care about packets with position data
+        if (!c03.isMoving()) return;
+
+        // If disabled (safety), let real position through
+        if (disabled || posHistory.isEmpty()) {
+            trackServerPos(c03);
             return;
         }
 
-        // ── Only delay position packets ──
-        if (!isDelayable(pkt)) {
-            passthrough(pkt);
-            return;
-        }
-
-        // ── Near target filter ──
-        if (nearTargetOnly.getValue() && target() == null) {
-            passthrough(pkt);
-            return;
-        }
-
-        // ── Team filter ──
+        // Team check
         if (teams.getValue()) {
             EntityPlayer t = target();
             if (t != null && TeamUtil.isSameTeam(t)) {
-                passthrough(pkt);
+                trackServerPos(c03);
                 return;
             }
         }
 
-        // ── Dynamic mode: flush before attacks ──
-        // When the player attacks, we need to flush all held packets
-        // FIRST so the server knows our real (close) position.
-        // Otherwise the attack would register from the old (far)
-        // server position and fail the reach check.
-        //
-        // The attack packet (C02) is handled separately — it passes
-        // through isCritical/isDelayable and is never delayed.
-        // But we detect the NEXT C03 after an attack in dynamic mode
-        // to ensure positions are synced.
+        // ── Calculate effective delay for this tick ──
+        int effectiveDelay = getEffectiveDelay();
 
-        // ── Pre-check: would this packet exceed desync limit? ──
-        if (pkt instanceof C03PacketPlayer && srvValid) {
-            C03PacketPlayer pp = (C03PacketPlayer) pkt;
-            if (pp.isMoving()) {
-                double dx = pp.getPositionX() - srvX;
-                double dy = pp.getPositionY() - srvY;
-                double dz = pp.getPositionZ() - srvZ;
-                double nextDesync = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                if (nextDesync > MAX_DESYNC_DISTANCE) {
-                    flush(false);
-                    passthrough(pkt);
-                    return;
-                }
-            }
-        }
+        // ── Find the position snapshot from [effectiveDelay] ms ago ──
+        long now = System.currentTimeMillis();
+        long targetTime = now - effectiveDelay;
 
-        // ── Buffer size safety ──
-        if (buffer.size() >= MAX_BUFFER_SIZE) {
-            flush(false);
-            passthrough(pkt);
+        PosSnap delayedSnap = findSnapAtTime(targetTime);
+
+        if (delayedSnap == null) {
+            // No history old enough — let real position through
+            trackServerPos(c03);
             return;
         }
 
-        // ── Buffer the packet ──
+        // ── Validate the delayed position ──
+        // Make sure it won't cause flags
+
+        // Check distance from last sent position — must be physically
+        // possible movement (no teleporting)
+        if (lastSentValid) {
+            double dx = delayedSnap.x - lastSentX;
+            double dy = delayedSnap.y - lastSentY;
+            double dz = delayedSnap.z - lastSentZ;
+            double moveDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+            // Max legit movement per tick: ~0.65 blocks sprinting with speed 2
+            // Allow some margin for edge cases
+            if (moveDist > 0.85) {
+                // Movement too large for one tick — could happen if delay
+                // jumped suddenly. Send intermediate position or just
+                // let real position through this tick.
+                trackServerPos(c03);
+                return;
+            }
+        }
+
+        // Check desync distance — delayed pos shouldn't be too far from real
+        double desyncX = mc.thePlayer.posX - delayedSnap.x;
+        double desyncY = mc.thePlayer.posY - delayedSnap.y;
+        double desyncZ = mc.thePlayer.posZ - delayedSnap.z;
+        double desync = Math.sqrt(desyncX * desyncX + desyncY * desyncY + desyncZ * desyncZ);
+        if (desync > MAX_DESYNC) {
+            trackServerPos(c03);
+            return;
+        }
+
+        // ── Rewrite the packet ──
+        // Cancel original, send modified version with delayed position
         event.setCancelled(true);
-        buffer.addLast(new Timed(pkt, System.currentTimeMillis(),
-                mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ));
+
+        // Determine what type of C03 to send
+        // Must match the original packet's type (pos, pos+look, look, ground)
+        Packet<?> modified;
+        if (c03.getRotating()) {
+            // C06: position + look
+            modified = new C03PacketPlayer.C06PacketPlayerPosLook(
+                    delayedSnap.x, delayedSnap.y,
+                    delayedSnap.z,
+                    c03.getYaw(), c03.getPitch(),
+                    delayedSnap.onGround);
+        } else {
+            // C04: position only
+            modified = new C03PacketPlayer.C04PacketPlayerPosition(
+                    delayedSnap.x, delayedSnap.y,
+                    delayedSnap.z,
+                    delayedSnap.onGround);
+        }
+
+        mc.getNetHandler().addToSendQueue(modified);
+
+        // Track what we actually sent
+        serverX = delayedSnap.x;
+        serverY = delayedSnap.y;
+        serverZ = delayedSnap.z;
+        serverPosValid = true;
+        lastSentX = delayedSnap.x;
+        lastSentY = delayedSnap.y;
+        lastSentZ = delayedSnap.z;
+        lastSentValid = true;
+    }
+
+    /**
+     * Track server position when a real (unmodified) packet goes through.
+     */
+    private void trackServerPos(C03PacketPlayer c03) {
+        if (c03.isMoving()) {
+            serverX = c03.getPositionX();
+            serverY = c03.getPositionY();
+            serverZ = c03.getPositionZ();
+            serverPosValid = true;
+            lastSentX = c03.getPositionX();
+            lastSentY = c03.getPositionY();
+            lastSentZ = c03.getPositionZ();
+            lastSentValid = true;
+        }
     }
 
     // ──────────────────────────────────────────────
-    //  Packet classification
+    //  Delay calculation per mode
+    // ──────────────────────────────────────────────
+
+    private int getEffectiveDelay() {
+        switch (mode.getValue()) {
+            case 1: return getDynamicDelay();
+            case 2: return getRepelDelay();
+            default: return delay.getValue();
+        }
+    }
+
+    /**
+     * DYNAMIC — Adjust delay based on combat situation.
+     *
+     * Approaching target → higher delay (they see us further back)
+     * Retreating → lower delay (position catches up, we appear to jump away)
+     * About to attack → minimal delay (position accurate for reach check)
+     */
+    private int getDynamicDelay() {
+        EntityPlayer t = target();
+        if (t == null) return Math.max(20, delay.getValue() / 2);
+
+        double currentDist = mc.thePlayer.getDistanceToEntity(t);
+        double approachSpeed = 0;
+        if (lastTargetDist > 0) {
+            approachSpeed = lastTargetDist - currentDist; // positive = approaching
+        }
+        lastTargetDist = currentDist;
+
+        int base = delay.getValue();
+        int effective;
+
+        if (approachSpeed > 0.08) {
+            // Approaching — hold longer, they see us further back
+            double factor = Math.min(1.4, 1.0 + approachSpeed * 2.5);
+            effective = (int) (base * factor);
+        } else if (approachSpeed < -0.08) {
+            // Retreating — release faster, position catches up
+            double factor = Math.max(0.25, 0.6 + approachSpeed * 2.0);
+            effective = (int) (base * factor);
+        } else {
+            // Stable / strafing — moderate delay
+            effective = (int) (base * 0.7);
+        }
+
+        // If we're in melee range and likely about to attack,
+        // reduce delay so hit registers from close position
+        if (currentDist < 3.2) {
+            effective = Math.min(effective, base / 2);
+        }
+
+        // If very close, minimal delay
+        if (currentDist < 2.0) {
+            effective = Math.min(effective, 30);
+        }
+
+        return Math.max(20, Math.min(effective, base + 50));
+    }
+
+    /**
+     * REPEL — Pick delay that maximizes server-to-target distance.
+     *
+     * For each candidate delay, check where our server position
+     * would be (the snapshot from that many ms ago) and pick
+     * the delay where that position is furthest from the target.
+     */
+    private int getRepelDelay() {
+        EntityPlayer t = target();
+        if (t == null) return delay.getValue();
+
+        double targetX = t.posX;
+        double targetY = t.posY;
+        double targetZ = t.posZ;
+
+        long now = System.currentTimeMillis();
+        int base = delay.getValue();
+
+        // Test several delay values and pick the one that puts
+        // our server position furthest from the target
+        double bestDist = -1;
+        int bestDelay = base;
+
+        // Test: 40%, 60%, 80%, 100%, 120% of base delay
+        int[] candidates = {
+                (int) (base * 0.4),
+                (int) (base * 0.6),
+                (int) (base * 0.8),
+                base,
+                (int) (base * 1.15)
+        };
+
+        for (int candidate : candidates) {
+            if (candidate < 20) continue;
+
+            PosSnap snap = findSnapAtTime(now - candidate);
+            if (snap == null) continue;
+
+            double dx = snap.x - targetX;
+            double dy = snap.y - targetY;
+            double dz = snap.z - targetZ;
+            double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+            // Also check desync — don't pick a delay that creates
+            // too much desync
+            double desyncX = mc.thePlayer.posX - snap.x;
+            double desyncY = mc.thePlayer.posY - snap.y;
+            double desyncZ = mc.thePlayer.posZ - snap.z;
+            double desync = Math.sqrt(desyncX * desyncX + desyncY * desyncY + desyncZ * desyncZ);
+
+            if (desync > MAX_DESYNC) continue;
+
+            if (dist > bestDist) {
+                bestDist = dist;
+                bestDelay = candidate;
+            }
+        }
+
+        return Math.max(20, Math.min(bestDelay, base + 40));
+    }
+
+    // ──────────────────────────────────────────────
+    //  Position history lookup
     // ──────────────────────────────────────────────
 
     /**
-     * Packets that must NEVER be delayed. Delaying these causes:
-     * - C00 KeepAlive: server timeout → disconnect
-     * - C01 Chat: chat messages arrive late / out of order
-     * - C0D CloseWindow: inventory desync
-     * - C0E ClickWindow: item duplication / desync
-     * - C0F Transaction: Grim/AC transaction tracking breaks
-     * - C16 ClientStatus: respawn fails
-     * - C15 ClientSettings: settings don't apply
-     * - C17 CustomPayload: plugin channel breaks
-     * - C02 UseEntity: attack/interact — must arrive at server
-     *   with correct timing relative to position packets
-     * - C0A Animation: swing must be in sync with attack
-     * - C0B EntityAction: sprint/sneak state must be current
-     * - C08 BlockPlacement: interaction timing matters
-     * - C07 PlayerDigging: block breaking state
-     * - C09 HeldItemChange: held item must be accurate for combat
+     * Find the position snapshot closest to the given timestamp.
+     * If the exact time isn't available, returns the nearest older snap.
+     * Returns null if no suitable snapshot exists.
      */
-    private boolean isCritical(Packet<?> pkt) {
-        return pkt instanceof C00PacketKeepAlive
-                || pkt instanceof C01PacketChatMessage
-                || pkt instanceof C0DPacketCloseWindow
-                || pkt instanceof C0EPacketClickWindow
-                || pkt instanceof C0FPacketConfirmTransaction
-                || pkt instanceof C16PacketClientStatus
-                || pkt instanceof C15PacketClientSettings
-                || pkt instanceof C17PacketCustomPayload
-                || pkt instanceof C14PacketTabComplete
-                || pkt instanceof C19PacketResourcePackStatus
-                || pkt instanceof C02PacketUseEntity
-                || pkt instanceof C0APacketAnimation
-                || pkt instanceof C0BPacketEntityAction
-                || pkt instanceof C08PacketPlayerBlockPlacement
-                || pkt instanceof C07PacketPlayerDigging
-                || pkt instanceof C09PacketHeldItemChange;
-    }
+    private PosSnap findSnapAtTime(long targetTime) {
+        if (posHistory.isEmpty()) return null;
 
-    /**
-     * Only C03PacketPlayer variants with position data are delayable.
-     * Look-only packets (C05) without position don't affect desync
-     * and delaying them causes aim desync without benefit.
-     * Ground-only packets (C03 base) are just flags, no benefit to delay.
-     */
-    private boolean isDelayable(Packet<?> pkt) {
-        if (!(pkt instanceof C03PacketPlayer)) return false;
-        return ((C03PacketPlayer) pkt).isMoving();
-    }
+        // History is ordered oldest → newest (addLast)
+        // We want the most recent snap that is AT or BEFORE targetTime
 
-    /**
-     * Let a packet pass through without buffering, but still
-     * track it for server position updates.
-     */
-    private void passthrough(Packet<?> pkt) {
-        if (pkt instanceof C03PacketPlayer) {
-            C03PacketPlayer pp = (C03PacketPlayer) pkt;
-            if (pp.isMoving()) {
-                syncPos(pp.getPositionX(), pp.getPositionY(), pp.getPositionZ());
+        PosSnap best = null;
+        for (PosSnap snap : posHistory) {
+            if (snap.timestamp <= targetTime) {
+                best = snap; // keep updating — last one before target time wins
+            } else {
+                break; // past target time, stop
             }
         }
-        // Dynamic mode: detect attacks for pre-flush
-        if (pkt instanceof C02PacketUseEntity) {
-            C02PacketUseEntity c02 = (C02PacketUseEntity) pkt;
-            if (c02.getAction() == C02PacketUseEntity.Action.ATTACK) {
-                if (mode.getValue() == 1 && !buffer.isEmpty()) {
-                    // Flush position packets BEFORE attack reaches server
-                    // The TCP stream preserves order: flushed C03s arrive
-                    // before the C02 attack packet that's already in the
-                    // send queue. Server processes positions first, then
-                    // validates the attack from the updated position.
-                    flush(false);
-                }
-            }
-        }
+
+        return best;
     }
 
     // ──────────────────────────────────────────────
@@ -678,27 +568,33 @@ public class FakeLag extends Module {
 
     private void handleIncoming(Packet<?> pkt) {
         // ── Server teleport ──
-        // S08 means the server corrected our position.
-        // All buffered C03 packets are now based on wrong coordinates.
-        // Sending them would cause rubberbanding (server rejects the
-        // positions and teleports us back again, creating a loop).
-        // Solution: discard all buffered packets silently.
+        // Server corrected our position — must sync immediately.
+        // Clear history because old positions are now invalid
+        // relative to the new server-assigned position.
         if (pkt instanceof S08PacketPlayerPosLook) {
             S08PacketPlayerPosLook p = (S08PacketPlayerPosLook) pkt;
-            discardBuffer();
-            syncPos(p.getX(), p.getY(), p.getZ());
+            serverX = p.getX();
+            serverY = p.getY();
+            serverZ = p.getZ();
+            serverPosValid = true;
+            lastSentX = p.getX();
+            lastSentY = p.getY();
+            lastSentZ = p.getZ();
+            lastSentValid = true;
+            posHistory.clear();
+            temporaryDisable(10);
             return;
         }
 
         // ── Knockback ──
-        // Must flush immediately so position packets send before
-        // the client applies velocity. Otherwise server thinks
-        // we're at old position while client has already moved
-        // from KB, causing position mismatch.
+        // Velocity changes our movement trajectory. Old positions
+        // in history are pre-KB and sending them post-KB creates
+        // impossible movement sequences. Must disable briefly.
         if (pkt instanceof S12PacketEntityVelocity) {
             S12PacketEntityVelocity vel = (S12PacketEntityVelocity) pkt;
             if (mc.thePlayer != null && vel.getEntityID() == mc.thePlayer.getEntityId()) {
-                flush(true);
+                posHistory.clear();
+                temporaryDisable(8);
             }
             return;
         }
@@ -707,7 +603,8 @@ public class FakeLag extends Module {
         if (pkt instanceof S27PacketExplosion) {
             S27PacketExplosion exp = (S27PacketExplosion) pkt;
             if (exp.func_149149_c() != 0 || exp.func_149144_d() != 0 || exp.func_149147_e() != 0) {
-                flush(true);
+                posHistory.clear();
+                temporaryDisable(8);
             }
             return;
         }
@@ -716,28 +613,25 @@ public class FakeLag extends Module {
         if (pkt instanceof S07PacketRespawn
                 || pkt instanceof S01PacketJoinGame
                 || pkt instanceof S40PacketDisconnect) {
-            discardBuffer();
-            reset();
+            fullReset();
             return;
         }
 
         // ── Death ──
         if (pkt instanceof S06PacketUpdateHealth) {
             if (((S06PacketUpdateHealth) pkt).getHealth() <= 0) {
-                discardBuffer();
-                reset();
+                fullReset();
             }
             return;
         }
 
-        // ── Entity death status ──
+        // ── Entity death ──
         if (pkt instanceof S19PacketEntityStatus) {
             S19PacketEntityStatus status = (S19PacketEntityStatus) pkt;
             if (status.getOpCode() == 3 && mc.theWorld != null && mc.thePlayer != null) {
                 try {
                     if (status.getEntity(mc.theWorld) == mc.thePlayer) {
-                        discardBuffer();
-                        reset();
+                        fullReset();
                     }
                 } catch (Exception ignored) {}
             }
@@ -745,132 +639,8 @@ public class FakeLag extends Module {
     }
 
     // ──────────────────────────────────────────────
-    //  Buffer operations
-    // ──────────────────────────────────────────────
-
-    /**
-     * Discard all buffered packets without sending them.
-     * Used when server corrects our position (S08) — old movement
-     * packets are based on wrong coordinates and would cause
-     * the server to teleport us back repeatedly.
-     */
-    private void discardBuffer() {
-        buffer.clear();
-        lastFlushTime = System.currentTimeMillis();
-        stuckTicks = 0;
-    }
-
-    /**
-     * Release all packets older than [ms] milliseconds.
-     * This is the core operation for Latency mode.
-     */
-    private void expire(long now, int ms) {
-        if (buffer.isEmpty()) return;
-        releasing = true;
-        try {
-            while (!buffer.isEmpty()) {
-                Timed t = buffer.peekFirst();
-                if (t == null || now - t.stamp < ms) break;
-                buffer.pollFirst();
-                dispatch(t.packet);
-            }
-            if (buffer.isEmpty()) lastFlushTime = now;
-        } finally {
-            releasing = false;
-        }
-    }
-
-    /**
-     * Drain packets older than maxAgeMs — safety net that prevents
-     * packets from sitting in buffer indefinitely regardless of
-     * mode logic decisions.
-     */
-    private void drainStale(long now, int maxAgeMs) {
-        if (buffer.isEmpty()) return;
-        releasing = true;
-        try {
-            while (!buffer.isEmpty()) {
-                Timed t = buffer.peekFirst();
-                if (t == null || now - t.stamp < maxAgeMs) break;
-                buffer.pollFirst();
-                dispatch(t.packet);
-            }
-            if (buffer.isEmpty()) lastFlushTime = now;
-        } finally {
-            releasing = false;
-        }
-    }
-
-    /**
-     * Release all buffered packets.
-     *
-     * @param sendAll true = send everything including stale packets.
-     *                false = skip extremely stale position packets
-     *                (they cause rubberbanding if too old).
-     */
-    private void flush(boolean sendAll) {
-        if (buffer.isEmpty()) {
-            lastFlushTime = System.currentTimeMillis();
-            return;
-        }
-        if (mc.getNetHandler() == null) {
-            buffer.clear();
-            lastFlushTime = System.currentTimeMillis();
-            return;
-        }
-
-        releasing = true;
-        try {
-            long now = System.currentTimeMillis();
-            Timed t;
-            while ((t = buffer.pollFirst()) != null) {
-                if (!sendAll && now - t.stamp > ABSOLUTE_MAX_HOLD + 200) {
-                    // Packet is extremely stale — sending it causes rubberband
-                    // because server already timed out our position.
-                    // Drop C03 silently; send non-C03 (shouldn't be any, but safe)
-                    if (!(t.packet instanceof C03PacketPlayer)) {
-                        dispatch(t.packet);
-                    }
-                } else {
-                    dispatch(t.packet);
-                }
-            }
-        } catch (Exception ignored) {
-            buffer.clear();
-        } finally {
-            releasing = false;
-            lastFlushTime = System.currentTimeMillis();
-            stuckTicks = 0;
-        }
-    }
-
-    /**
-     * Send a single packet to the server and update tracked state.
-     */
-    private void dispatch(Packet<?> pkt) {
-        if (mc.getNetHandler() == null) return;
-        if (pkt instanceof C03PacketPlayer) {
-            C03PacketPlayer pp = (C03PacketPlayer) pkt;
-            if (pp.isMoving()) {
-                syncPos(pp.getPositionX(), pp.getPositionY(), pp.getPositionZ());
-            }
-        }
-        try {
-            mc.getNetHandler().addToSendQueue(pkt);
-        } catch (Exception ignored) {}
-    }
-
-    // ──────────────────────────────────────────────
     //  Utility
     // ──────────────────────────────────────────────
-
-    private double desync() {
-        if (!srvValid || mc.thePlayer == null) return 0;
-        double dx = mc.thePlayer.posX - srvX;
-        double dy = mc.thePlayer.posY - srvY;
-        double dz = mc.thePlayer.posZ - srvZ;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
-    }
 
     private EntityPlayer target() {
         if (mc.theWorld == null || mc.thePlayer == null) return null;
@@ -891,16 +661,6 @@ public class FakeLag extends Module {
             }
         } catch (Exception ignored) {}
         return best;
-    }
-
-    private double distTo(EntityPlayer e) {
-        return mc.thePlayer.getDistanceToEntity(e);
-    }
-
-    private static double dist(double x1, double y1, double z1,
-                                double x2, double y2, double z2) {
-        double dx = x1 - x2, dy = y1 - y2, dz = z1 - z2;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     @Override

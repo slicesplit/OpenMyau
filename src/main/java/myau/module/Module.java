@@ -2,6 +2,7 @@ package myau.module;
 
 import myau.Myau;
 import myau.enums.ModuleCategory;
+import myau.event.EventManager;
 import myau.module.modules.HUD;
 import myau.util.KeyBindUtil;
 
@@ -50,9 +51,11 @@ public abstract class Module {
         if (this.enabled != enabled) {
             this.enabled = enabled;
             if (enabled) {
+                EventManager.register(this);
                 this.onEnabled();
             } else {
                 this.onDisabled();
+                EventManager.unregister(this);
             }
         }
     }

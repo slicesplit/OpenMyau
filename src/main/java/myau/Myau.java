@@ -2,6 +2,7 @@ package myau;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import myau.event.EventManager;
 import me.ksyz.accountmanager.AccountManager;
 import myau.command.CommandManager;
 import myau.command.commands.*;
@@ -183,7 +184,9 @@ public class Myau {
                 }
             }
             propertyManager.properties.put(module.getClass(), properties);
-            EventManager.register(module);
+            if (module.isEnabled()) {
+                EventManager.register(module);
+            }
         }
         Config config = new Config("default", true);
         if (config.file.exists()) {

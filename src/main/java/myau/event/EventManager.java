@@ -1,5 +1,6 @@
 package myau.event;
 
+import myau.module.Module;
 import myau.event.events.Event;
 import myau.event.events.EventStoppable;
 import myau.event.types.Priority;
@@ -238,6 +239,7 @@ public final class EventManager {
      */
     private static void invoke(MethodData data, Event argument) {
         try {
+            if (data.getSource() instanceof Module && !((Module) data.getSource()).isEnabled()) return;
             data.getTarget().invoke(data.getSource(), argument);
         } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
             e.printStackTrace();
