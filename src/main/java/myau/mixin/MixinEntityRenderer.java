@@ -31,21 +31,13 @@ import java.util.List;
 @SideOnly(Side.CLIENT)
 @Mixin(value = {EntityRenderer.class}, priority = 9999)
 public abstract class MixinEntityRenderer {
-    @Unique
-    private Box<Integer> slot = null;
-    @Unique
-    private Box<ItemStack> using = null;
-    @Unique
-    private Box<Integer> useCount = null;
-    @Shadow
-    private Minecraft mc;
-    @Shadow
-    private float thirdPersonDistance;
+    @Unique private Box<Integer> slot = null;
+    @Unique private Box<ItemStack> using = null;
+    @Unique private Box<Integer> useCount = null;
+    @Shadow private Minecraft mc;
+    @Shadow private float thirdPersonDistance;
 
-    @Inject(
-            method = {"updateCameraAndRender"},
-            at = {@At("HEAD")}
-    )
+    @Inject(method = {"updateCameraAndRender"}, at = {@At("HEAD")})
     private void updateCameraAndRender(float float1, long long2, CallbackInfo callbackInfo) {
         if (this.mc.thePlayer != null) {
             Scaffold scaffold = (Scaffold) Myau.moduleManager.modules.get(Scaffold.class);
@@ -66,10 +58,7 @@ public abstract class MixinEntityRenderer {
         }
     }
 
-    @Inject(
-            method = {"updateCameraAndRender"},
-            at = {@At("RETURN")}
-    )
+    @Inject(method = {"updateCameraAndRender"}, at = {@At("RETURN")})
     private void postUpdateCameraAndRender(float float1, long long2, CallbackInfo callbackInfo) {
         if (this.slot != null) {
             this.mc.thePlayer.inventory.currentItem = this.slot.value;
@@ -85,10 +74,7 @@ public abstract class MixinEntityRenderer {
         }
     }
 
-    @Inject(
-            method = {"updateRenderer"},
-            at = {@At("HEAD")}
-    )
+    @Inject(method = {"updateRenderer"}, at = {@At("HEAD")})
     private void updateRenderer(CallbackInfo callbackInfo) {
         Scaffold scaffold = (Scaffold) Myau.moduleManager.modules.get(Scaffold.class);
         if (scaffold.isEnabled() && scaffold.itemSpoof.getValue()) {
@@ -98,13 +84,9 @@ public abstract class MixinEntityRenderer {
                 this.mc.thePlayer.inventory.currentItem = slot;
             }
         }
-
     }
 
-    @Inject(
-            method = {"updateRenderer"},
-            at = {@At("RETURN")}
-    )
+    @Inject(method = {"updateRenderer"}, at = {@At("RETURN")})
     private void postUpdateRenderer(CallbackInfo callbackInfo) {
         if (this.slot != null) {
             this.mc.thePlayer.inventory.currentItem = this.slot.value;
@@ -112,84 +94,45 @@ public abstract class MixinEntityRenderer {
         }
     }
 
-    @Inject(
-            method = {"renderWorldPass"},
-            at = {@At(
-                    value = "FIELD",
-                    target = "Lnet/minecraft/client/renderer/EntityRenderer;renderHand:Z",
-                    shift = At.Shift.BEFORE
-            )}
-    )
+    @Inject(method = {"renderWorldPass"}, at = {@At(value = "FIELD", target = "Lnet/minecraft/client/renderer/EntityRenderer;renderHand:Z", shift = At.Shift.BEFORE)})
     private void renderWorldPass(int integer, float float2, long long3, CallbackInfo callbackInfo) {
         EventManager.call(new Render3DEvent(float2));
     }
 
-    @ModifyConstant(
-            method = {"hurtCameraEffect"},
-            constant = {@Constant(
-                    floatValue = 14.0F,
-                    ordinal = 0
-            )}
-    )
+    @ModifyConstant(method = {"hurtCameraEffect"}, constant = {@Constant(floatValue = 14.0F, ordinal = 0)})
     private float hurtCameraEffect(float float1) {
-        if (Myau.moduleManager == null) {
-            return float1;
-        } else {
-            NoHurtCam noHurtCam = (NoHurtCam) Myau.moduleManager.modules.get(NoHurtCam.class);
-            return noHurtCam.isEnabled() ? float1 * (float) noHurtCam.multiplier.getValue().intValue() / 100.0F : float1;
-        }
+        if (Myau.moduleManager == null) return float1;
+        NoHurtCam noHurtCam = (NoHurtCam) Myau.moduleManager.modules.get(NoHurtCam.class);
+        return noHurtCam.isEnabled() ? float1 * (float) noHurtCam.multiplier.getValue().intValue() / 100.0F : float1;
     }
 
-    @ModifyConstant(
-            method = {"getMouseOver"},
-            constant = {@Constant(
-                    doubleValue = 3.0,
-                    ordinal = 1
-            )}
-    )
+    // ── BackTrack raytrace flag ──
+    @Inject(method = "getMouseOver", at = @At("HEAD"))
+    private void preMouseOver(float pt, CallbackInfo ci) {
+        OldBacktrack.isRaytracing = true;
+    }
+
+    @Inject(method = "getMouseOver", at = @At("RETURN"))
+    private void postMouseOver(float pt, CallbackInfo ci) {
+        OldBacktrack.isRaytracing = false;
+    }
+
+    @ModifyConstant(method = {"getMouseOver"}, constant = {@Constant(doubleValue = 3.0, ordinal = 1)})
     private double getMouseOver(double range) {
         PickEvent event = new PickEvent(range);
         EventManager.call(event);
         return event.getRange();
     }
 
-    @ModifyVariable(
-            method = {"getMouseOver"},
-            at = @At("STORE"),
-            name = {"d0"}
-    )
+    @ModifyVariable(method = {"getMouseOver"}, at = @At("STORE"), name = {"d0"})
     private double storeMouseOver(double range) {
         RaytraceEvent event = new RaytraceEvent(range);
         EventManager.call(event);
         return event.getRange();
     }
 
-    @Inject(
-            method = {"getMouseOver"},
-            at = {@At(
-                    value = "INVOKE",
-                    target = "Ljava/util/List;size()I",
-                    ordinal = 0
-            )},
-            locals = LocalCapture.CAPTURE_FAILSOFT
-    )
-    private void a(
-            float float1,
-            CallbackInfo callbackInfo,
-            Entity entity,
-            double double4,
-            double double5,
-            Vec3 vec36,
-            boolean boolean7,
-            int integer8,
-            Vec3 vec39,
-            Vec3 vec310,
-            Vec3 vec311,
-            float float12,
-            List<Entity> list,
-            double double14,
-            int integer15
-    ) {
+    @Inject(method = {"getMouseOver"}, at = {@At(value = "INVOKE", target = "Ljava/util/List;size()I", ordinal = 0)}, locals = LocalCapture.CAPTURE_FAILSOFT)
+    private void a(float float1, CallbackInfo callbackInfo, Entity entity, double double4, double double5, Vec3 vec36, boolean boolean7, int integer8, Vec3 vec39, Vec3 vec310, Vec3 vec311, float float12, List<Entity> list, double double14, int integer15) {
         if (Myau.moduleManager != null) {
             GhostHand event = (GhostHand) Myau.moduleManager.modules.get(GhostHand.class);
             if (event.isEnabled()) {
@@ -198,85 +141,42 @@ public abstract class MixinEntityRenderer {
         }
     }
 
-    @Redirect(
-            method = {"orientCamera"},
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lnet/minecraft/util/Vec3;distanceTo(Lnet/minecraft/util/Vec3;)D"
-            )
-    )
+    @Redirect(method = {"orientCamera"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/util/Vec3;distanceTo(Lnet/minecraft/util/Vec3;)D"))
     private double v(Vec3 vec31, Vec3 vec32) {
-        if (Myau.moduleManager == null) {
-            return vec31.distanceTo(vec32);
-        } else {
-            return Myau.moduleManager.modules.get(ViewClip.class).isEnabled() ? (double) this.thirdPersonDistance : vec31.distanceTo(vec32);
-        }
+        if (Myau.moduleManager == null) return vec31.distanceTo(vec32);
+        return Myau.moduleManager.modules.get(ViewClip.class).isEnabled() ? (double) this.thirdPersonDistance : vec31.distanceTo(vec32);
     }
 
-    @Redirect(
-            method = {"setupFog"},
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lnet/minecraft/block/Block;getMaterial()Lnet/minecraft/block/material/Material;"
-            )
-    )
+    @Redirect(method = {"setupFog"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/block/Block;getMaterial()Lnet/minecraft/block/material/Material;"))
     private Material x(Block block) {
-        if (Myau.moduleManager == null) {
-            return block.getMaterial();
-        } else {
-            return Myau.moduleManager.modules.get(ViewClip.class).isEnabled() ? Material.air : block.getMaterial();
-        }
+        if (Myau.moduleManager == null) return block.getMaterial();
+        return Myau.moduleManager.modules.get(ViewClip.class).isEnabled() ? Material.air : block.getMaterial();
     }
 
-    @Redirect(
-            method = {"updateFogColor"},
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lnet/minecraft/entity/EntityLivingBase;isPotionActive(Lnet/minecraft/potion/Potion;)Z"
-            )
-    )
+    @Redirect(method = {"updateFogColor"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/entity/EntityLivingBase;isPotionActive(Lnet/minecraft/potion/Potion;)Z"))
     private boolean y(EntityLivingBase entityLivingBase, Potion potion) {
         if (potion == Potion.blindness && Myau.moduleManager != null) {
             AntiDebuff antiDebuff = (AntiDebuff) Myau.moduleManager.modules.get(AntiDebuff.class);
-            if (antiDebuff.isEnabled() && antiDebuff.blindness.getValue()) {
-                return false;
-            }
+            if (antiDebuff.isEnabled() && antiDebuff.blindness.getValue()) return false;
         }
         return ((IAccessorEntityLivingBase) entityLivingBase).getActivePotionsMap().containsKey(potion.id);
     }
 
-    @Redirect(
-            method = {"setupFog"},
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lnet/minecraft/entity/EntityLivingBase;isPotionActive(Lnet/minecraft/potion/Potion;)Z"
-            )
-    )
+    @Redirect(method = {"setupFog"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/entity/EntityLivingBase;isPotionActive(Lnet/minecraft/potion/Potion;)Z"))
     private boolean q(EntityLivingBase entityLivingBase, Potion potion) {
         if (potion == Potion.blindness && Myau.moduleManager != null) {
             AntiDebuff antiDebuff = (AntiDebuff) Myau.moduleManager.modules.get(AntiDebuff.class);
-            if (antiDebuff.isEnabled() && antiDebuff.blindness.getValue()) {
-                return false;
-            }
+            if (antiDebuff.isEnabled() && antiDebuff.blindness.getValue()) return false;
         }
         return ((IAccessorEntityLivingBase) entityLivingBase).getActivePotionsMap().containsKey(potion.id);
     }
 
-    @Redirect(
-            method = {"setupCameraTransform"},
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lnet/minecraft/client/entity/EntityPlayerSP;isPotionActive(Lnet/minecraft/potion/Potion;)Z"
-            )
-    )
+    @Redirect(method = {"setupCameraTransform"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/client/entity/EntityPlayerSP;isPotionActive(Lnet/minecraft/potion/Potion;)Z"))
     private boolean c(EntityPlayerSP entityPlayerSP, Potion potion) {
         if (potion == Potion.confusion && Myau.moduleManager != null) {
             AntiDebuff antiDebuff = (AntiDebuff) Myau.moduleManager.modules.get(AntiDebuff.class);
-            if (antiDebuff.isEnabled() && antiDebuff.nausea.getValue()) {
-                return false;
-            }
+            if (antiDebuff.isEnabled() && antiDebuff.nausea.getValue()) return false;
         }
         return ((IAccessorEntityLivingBase) entityPlayerSP).getActivePotionsMap().containsKey(potion.id);
     }
-
 }

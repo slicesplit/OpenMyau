@@ -364,8 +364,7 @@ public class NewBacktrack extends Module {
                packet instanceof S18PacketEntityTeleport;
     }
     
-    // TODO: Add render event when needed for visualization
-    // Rendering is handled by other modules for now
+    // Rendering is handled by other modules (ESP, TargetHUD, etc.)
     
     /**
      * Get backtracked position for prediction system

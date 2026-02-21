@@ -53,44 +53,23 @@ public class Scaffold extends Module {
             0.90625,
             0.96875
     };
-    // Core state
     private int rotationTick = 0;
     private int lastSlot = -1;
     private int blockCount = -1;
     private float yaw = -180.0F;
     private float pitch = 0.0F;
     private boolean canRotate = false;
-    
-    // Tower state
     private int towerTick = 0;
     private int towerDelay = 0;
-    private boolean towering = false;
-    
-    // KeepY state
     private int stage = 0;
     private int startY = 256;
     private boolean shouldKeepY = false;
+    private boolean towering = false;
     private EnumFacing targetFacing = null;
-    
-    // Clutch state
     private boolean isClutching = false;
     private double clutchStartY = 0.0;
     private int clutchAttempts = 0;
     private long lastClutchTime = 0L;
-    
-    // Cached mode values for performance (updated each tick)
-    private int cachedRotationMode = 2;
-    private int cachedMoveFix = 1;
-    private int cachedSprintMode = 0;
-    private int cachedTowerMode = 0;
-    private int cachedKeepYMode = 0;
-    private boolean cachedMultiplace = true;
-    private boolean cachedSafeWalk = true;
-    private boolean cachedSwing = true;
-    private boolean cachedInfiniteClutch = false;
-    private boolean cachedGrimClutchBypass = true;
-    private boolean cachedBlockCounter = true;
-    private boolean cachedThirdPersonView = true;
     public final ModeProperty rotationMode = new ModeProperty("rotations", 2, new String[]{"NONE", "DEFAULT", "BACKWARDS", "SIDEWAYS"});
     public final ModeProperty moveFix = new ModeProperty("move-fix", 1, new String[]{"NONE", "SILENT"});
     public final ModeProperty sprintMode = new ModeProperty("sprint", 0, new String[]{"NONE", "VANILLA"});
@@ -118,8 +97,8 @@ public class Scaffold extends Module {
         if (this.isTowering()) {
             return false;
         } else {
-            boolean stage = cachedKeepYMode == 1 || cachedKeepYMode == 2;
-            return (!stage || this.stage <= 0) && cachedSprintMode == 0;
+            boolean stage = this.keepY.getValue() == 1 || this.keepY.getValue() == 2;
+            return (!stage || this.stage <= 0) && this.sprintMode.getValue() == 0;
         }
     }
 
@@ -206,7 +185,7 @@ public class Scaffold extends Module {
                 if (mc.playerController.getCurrentGameType() != GameType.CREATIVE) {
                     this.blockCount--;
                 }
-                if (cachedSwing) {
+                if (this.swing.getValue()) {
                     mc.thePlayer.swingItem();
                 } else {
                     PacketUtil.sendPacket(new C0APacketAnimation());
@@ -266,8 +245,8 @@ public class Scaffold extends Module {
 
     private boolean isTowering() {
         if (mc.thePlayer.onGround && MoveUtil.isForwardPressed() && !PlayerUtil.isAirAbove()) {
-            boolean keepY = cachedKeepYMode == 3;
-            boolean tower = cachedTowerMode == 3;
+            boolean keepY = this.keepY.getValue() == 3;
+            boolean tower = this.tower.getValue() == 3;
             return keepY && this.stage > 0 || tower && mc.gameSettings.keyBindJump.isKeyDown();
         } else {
             return false;
@@ -294,7 +273,7 @@ public class Scaffold extends Module {
         double voidDistance = this.clutchVoidDistance.getValue().doubleValue();
         
         if (distanceFallen > voidDistance) {
-            if (cachedGrimClutchBypass) {
+            if (this.grimClutchBypass.getValue()) {
                 if (System.currentTimeMillis() - lastClutchTime < 50) {
                     return;
                 }
@@ -364,27 +343,13 @@ public class Scaffold extends Module {
     @EventTarget(Priority.HIGH)
     public void onUpdate(UpdateEvent event) {
         if (this.isEnabled() && event.getType() == EventType.PRE) {
-            // Cache all mode values once per tick for performance
-            cachedRotationMode = rotationMode.getValue();
-            cachedMoveFix = moveFix.getValue();
-            cachedSprintMode = sprintMode.getValue();
-            cachedTowerMode = tower.getValue();
-            cachedKeepYMode = keepY.getValue();
-            cachedMultiplace = multiplace.getValue();
-            cachedSafeWalk = safeWalk.getValue();
-            cachedSwing = swing.getValue();
-            cachedInfiniteClutch = infiniteClutch.getValue();
-            cachedGrimClutchBypass = grimClutchBypass.getValue();
-            cachedBlockCounter = blockCounter.getValue();
-            cachedThirdPersonView = thirdPersonView.getValue();
-            
             // PRIORITY OVERRIDE: Pause if AntiFireball is actively deflecting
             AntiFireball antiFireball = (AntiFireball) Myau.moduleManager.modules.get(AntiFireball.class);
             if (antiFireball != null && antiFireball.isDeflecting()) {
                 return; // Pause scaffolding while deflecting fireball
             }
             
-            if (cachedInfiniteClutch) {
+            if (this.infiniteClutch.getValue()) {
                 handleInfiniteClutch();
             }
             
@@ -403,9 +368,9 @@ public class Scaffold extends Module {
                     this.stage++;
                 }
                 if (this.stage == 0
-                        && cachedKeepYMode != 0
-                        && (!keepYonPress.getValue() || PlayerUtil.isUsingItem())
-                        && (!disableWhileJumpActive.getValue() || !mc.thePlayer.isPotionActive(Potion.jump))
+                        && this.keepY.getValue() != 0
+                        && (!(Boolean) this.keepYonPress.getValue() || PlayerUtil.isUsingItem())
+                        && (!this.disableWhileJumpActive.getValue() || !mc.thePlayer.isPotionActive(Potion.jump))
                         && !mc.gameSettings.keyBindJump.isKeyDown()) {
                     this.stage = 1;
                 }
@@ -438,7 +403,7 @@ public class Scaffold extends Module {
                         ? yawDiffTo180
                         : RotationUtil.wrapAngleDiff(currentYaw - 135.0F * ((currentYaw + 180.0F) % 90.0F < 45.0F ? 1.0F : -1.0F), event.getYaw());
                 if (!this.canRotate) {
-                    switch (cachedRotationMode) {
+                    switch (this.rotationMode.getValue()) {
                         case 1:
                             if (this.yaw == -180.0F && this.pitch == 0.0F) {
                                 this.yaw = RotationUtil.quantizeAngle(diagonalYaw);
@@ -523,7 +488,7 @@ public class Scaffold extends Module {
                     }
                 }
                 if (this.canRotate && MoveUtil.isForwardPressed() && Math.abs(MathHelper.wrapAngleTo180_float(yawDiffTo180 - this.yaw)) < 90.0F) {
-                    switch (cachedRotationMode) {
+                    switch (this.rotationMode.getValue()) {
                         case 2:
                             this.yaw = RotationUtil.quantizeAngle(yawDiffTo180);
                             break;
@@ -531,7 +496,7 @@ public class Scaffold extends Module {
                             this.yaw = RotationUtil.quantizeAngle(diagonalYaw);
                     }
                 }
-                if (cachedRotationMode != 0) {
+                if (this.rotationMode.getValue() != 0) {
                     float targetYaw = this.yaw;
                     float targetPitch = this.pitch;
                     if (this.towering && (mc.thePlayer.motionY > 0.0 || mc.thePlayer.posY > (double) (this.startY + 1))) {
@@ -551,13 +516,13 @@ public class Scaffold extends Module {
                         this.towering = true;
                     }
                     event.setRotation(targetYaw, targetPitch, 3);
-                    if (cachedMoveFix == 1) {
+                    if (this.moveFix.getValue() == 1) {
                         event.setPervRotation(targetYaw, 3);
                     }
                 }
                 if (blockData != null && hitVec != null && this.rotationTick <= 0) {
                     this.place(blockData.blockPos(), blockData.facing(), hitVec);
-                    if (cachedMultiplace) {
+                    if (this.multiplace.getValue()) {
                         for (int i = 0; i < 3; i++) {
                             blockData = this.getBlockData();
                             if (blockData == null) {
@@ -600,7 +565,7 @@ public class Scaffold extends Module {
                         this.place(belowPlayer, this.targetFacing, hitVec);
                     }
                     this.targetFacing = null;
-                } else if (cachedKeepYMode == 2 && this.stage > 0 && !mc.thePlayer.onGround) {
+                } else if (this.keepY.getValue() == 2 && this.stage > 0 && !mc.thePlayer.onGround) {
                     int nextBlockY = MathHelper.floor_double(mc.thePlayer.posY + mc.thePlayer.motionY);
                     if (nextBlockY <= this.startY && mc.thePlayer.posY > (double) (this.startY + 1)) {
                         this.shouldKeepY = true;
@@ -624,7 +589,7 @@ public class Scaffold extends Module {
                     && mc.gameSettings.keyBindJump.isKeyDown()
                     && ItemUtil.isHoldingBlock()) {
                 int yState = (int) (mc.thePlayer.posY % 1.0 * 100.0);
-                switch (cachedTowerMode) {
+                switch (this.tower.getValue()) {
                     case 1:
                         switch (this.towerTick) {
                             case 0:
@@ -759,7 +724,7 @@ public class Scaffold extends Module {
     @EventTarget
     public void onMoveInput(MoveInputEvent event) {
         if (this.isEnabled()) {
-            if (cachedMoveFix == 1
+            if (this.moveFix.getValue() == 1
                     && RotationState.isActived()
                     && RotationState.getPriority() == 3.0F
                     && MoveUtil.isForwardPressed()) {
@@ -791,7 +756,7 @@ public class Scaffold extends Module {
 
     @EventTarget
     public void onSafeWalk(SafeWalkEvent event) {
-        if (this.isEnabled() && cachedSafeWalk) {
+        if (this.isEnabled() && this.safeWalk.getValue()) {
             if (mc.thePlayer.onGround && mc.thePlayer.motionY <= 0.0 && PlayerUtil.canMove(mc.thePlayer.motionX, mc.thePlayer.motionZ, -1.0)) {
                 event.setSafeWalk(true);
             }
@@ -801,7 +766,7 @@ public class Scaffold extends Module {
     @EventTarget
     public void onRender(Render2DEvent event) {
         if (this.isEnabled()) {
-            if (cachedBlockCounter) {
+            if (this.blockCounter.getValue()) {
                 int count = 0;
                 for (int i = 0; i < 9; i++) {
                     ItemStack stack = mc.thePlayer.inventory.getStackInSlot(i);
@@ -868,8 +833,11 @@ public class Scaffold extends Module {
 
     @Override
     public void onEnabled() {
-        // Initialize state
-        this.lastSlot = (mc.thePlayer != null) ? mc.thePlayer.inventory.currentItem : -1;
+        if (mc.thePlayer != null) {
+            this.lastSlot = mc.thePlayer.inventory.currentItem;
+        } else {
+            this.lastSlot = -1;
+        }
         this.blockCount = -1;
         this.rotationTick = 3;
         this.yaw = -180.0F;
@@ -878,26 +846,9 @@ public class Scaffold extends Module {
         this.towerTick = 0;
         this.towerDelay = 0;
         this.towering = false;
-        this.isClutching = false;
-        this.clutchAttempts = 0;
-        this.clutchStartY = 0.0;
-        
-        // Cache initial mode values
-        cachedRotationMode = rotationMode.getValue();
-        cachedMoveFix = moveFix.getValue();
-        cachedSprintMode = sprintMode.getValue();
-        cachedTowerMode = tower.getValue();
-        cachedKeepYMode = keepY.getValue();
-        cachedMultiplace = multiplace.getValue();
-        cachedSafeWalk = safeWalk.getValue();
-        cachedSwing = swing.getValue();
-        cachedInfiniteClutch = infiniteClutch.getValue();
-        cachedGrimClutchBypass = grimClutchBypass.getValue();
-        cachedBlockCounter = blockCounter.getValue();
-        cachedThirdPersonView = thirdPersonView.getValue();
         
         // Switch to third-person back perspective if enabled
-        if (thirdPersonView.getValue() && mc.gameSettings != null) {
+        if (this.thirdPersonView.getValue() && mc.gameSettings != null) {
             this.originalPerspective = mc.gameSettings.thirdPersonView;
             mc.gameSettings.thirdPersonView = 1; // 1 = third person back
         }
@@ -905,21 +856,14 @@ public class Scaffold extends Module {
 
     @Override
     public void onDisabled() {
-        // Restore slot
         if (mc.thePlayer != null && this.lastSlot != -1) {
             mc.thePlayer.inventory.currentItem = this.lastSlot;
         }
         
         // Restore original perspective
-        if (thirdPersonView.getValue() && mc.gameSettings != null) {
+        if (this.thirdPersonView.getValue() && mc.gameSettings != null) {
             mc.gameSettings.thirdPersonView = this.originalPerspective;
         }
-        
-        // Reset state
-        this.isClutching = false;
-        this.clutchAttempts = 0;
-        this.towerTick = 0;
-        this.towerDelay = 0;
     }
 
     public static class BlockData {

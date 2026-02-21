@@ -19,7 +19,6 @@ public class KnockbackEvent extends EventCancellable {
 
     public void setX(double x) {
         this.x = x;
-        this.setCancelled(true);
     }
 
     public double getY() {
@@ -28,7 +27,6 @@ public class KnockbackEvent extends EventCancellable {
 
     public void setY(double y) {
         this.y = y;
-        this.setCancelled(true);
     }
 
     public double getZ() {
@@ -36,6 +34,12 @@ public class KnockbackEvent extends EventCancellable {
     }
 
     public void setZ(double z) {
+        this.z = z;
+    }
+
+    public void setVelocity(double x, double y, double z) {
+        this.x = x;
+        this.y = y;
         this.z = z;
         this.setCancelled(true);
     }

@@ -1,6 +1,7 @@
 package myau.command;
 
 import myau.Myau;
+import myau.command.commands.*;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
@@ -17,6 +18,29 @@ public class CommandManager {
 
     public CommandManager() {
         this.commands = new ArrayList<>();
+        registerCommands();
+    }
+    
+    private void registerCommands() {
+        register(new BindCommand());
+        register(new ConfigCommand());
+        register(new DenickCommand());
+        register(new FriendCommand());
+        register(new HelpCommand());
+        register(new HideCommand());
+        register(new IgnCommand());
+        register(new ItemCommand());
+        register(new ListCommand());
+        register(new ModuleCommand());
+        register(new PlayerCommand());
+        register(new ShowCommand());
+        register(new TargetCommand());
+        register(new ToggleCommand());
+        register(new VclipCommand());
+    }
+    
+    private void register(Command command) {
+        commands.add(command);
     }
 
     public void handleCommand(String string) {

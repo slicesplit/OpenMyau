@@ -21,16 +21,25 @@ public abstract class MixinFontRenderer {
             argsOnly = true
     )
     private String renderString(String string) {
-        if (Myau.moduleManager == null) {
+        if (Myau.moduleManager == null || Myau.moduleManager.modules == null || Myau.moduleManager.modules.isEmpty()) {
             return string;
-        } else {
+        }
+        
+        try {
             AntiObfuscate antiObfuscate = (AntiObfuscate) Myau.moduleManager.modules.get(AntiObfuscate.class);
-            if (antiObfuscate.isEnabled()) {
+            if (antiObfuscate != null && antiObfuscate.isEnabled()) {
                 string = antiObfuscate.stripObfuscated(string);
             }
+            
             NickHider nickHider = (NickHider) Myau.moduleManager.modules.get(NickHider.class);
-            return nickHider.isEnabled() ? nickHider.replaceNick(string) : string;
+            if (nickHider != null && nickHider.isEnabled()) {
+                string = nickHider.replaceNick(string);
+            }
+        } catch (Exception e) {
+            // Silently ignore during initialization
         }
+        
+        return string;
     }
 
     @ModifyVariable(
@@ -40,16 +49,25 @@ public abstract class MixinFontRenderer {
             argsOnly = true
     )
     private String getStringWidth(String string) {
-        if (Myau.moduleManager == null) {
+        if (Myau.moduleManager == null || Myau.moduleManager.modules == null || Myau.moduleManager.modules.isEmpty()) {
             return string;
-        } else {
+        }
+        
+        try {
             AntiObfuscate antiObfuscate = (AntiObfuscate) Myau.moduleManager.modules.get(AntiObfuscate.class);
-            if (antiObfuscate.isEnabled()) {
+            if (antiObfuscate != null && antiObfuscate.isEnabled()) {
                 string = antiObfuscate.stripObfuscated(string);
             }
+            
             NickHider nickHider = (NickHider) Myau.moduleManager.modules.get(NickHider.class);
-            return nickHider.isEnabled() ? nickHider.replaceNick(string) : string;
+            if (nickHider != null && nickHider.isEnabled()) {
+                string = nickHider.replaceNick(string);
+            }
+        } catch (Exception e) {
+            // Silently ignore during initialization
         }
+        
+        return string;
     }
 
     @Redirect(

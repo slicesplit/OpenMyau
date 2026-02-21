@@ -1,604 +1,199 @@
 package myau.module.modules;
 
+import myau.Myau;
+import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.PacketEvent;
-import myau.events.TickEvent;
+import myau.events.UpdateEvent;
 import myau.module.Module;
-import myau.module.ModuleInfo;
 import myau.property.properties.BooleanProperty;
 import myau.property.properties.IntProperty;
-import myau.property.properties.ModeProperty;
-import myau.management.CombatPredictionEngine;
-import myau.management.GrimPredictionEngine;
-import myau.util.CombatTimingOptimizer;
-import myau.util.JumpResetOptimizer;
 import net.minecraft.client.Minecraft;
-import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
-import net.minecraft.util.Vec3;
+import net.minecraft.network.play.server.S27PacketExplosion;
+import net.minecraft.util.MathHelper;
 
-import java.util.Random;
-
-/**
- * JumpReset - Brutal 1.8 Knockback Reduction
- * 
- * Abuses vanilla MC knockback mechanics by timing jumps perfectly
- * before being hit. When timed correctly, dramatically reduces KB.
- * 
- * 1.8 Mechanic: Jumping right before taking a hit resets your velocity,
- * causing the knockback to be applied to near-zero base velocity instead
- * of your current velocity, resulting in minimal KB taken.
- * 
- * Uses prediction engines to anticipate hits with brutal accuracy.
- */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class JumpReset extends Module {
+
     private static final Minecraft mc = Minecraft.getMinecraft();
-    
-    // UI Settings
-    public final ModeProperty mode = new ModeProperty("Mode", 0, 
-        new String[]{"NORMAL", "FAST", "BRUTAL_LEGIT"});
-    public final IntProperty chance = new IntProperty("Chance", 100, 0, 100);
-    public final IntProperty accuracy = new IntProperty("Accuracy", 100, 0, 100);
-    public final BooleanProperty onlyWhenTargeting = new BooleanProperty("Only When Targeting", false);
-    public final BooleanProperty waterCheck = new BooleanProperty("Water Check", true);
-    
-    // BRUTAL MODE: Advanced AI settings
-    public final IntProperty brutalPredictionTicks = new IntProperty("Brutal-Prediction-Ticks", 3, 1, 5, 
-        () -> this.mode.getValue() == 2);
-    public final IntProperty brutalMinDistance = new IntProperty("Brutal-Min-Distance", 25, 10, 40,
-        () -> this.mode.getValue() == 2); // Min distance (blocks * 10) to start predicting
-    public final BooleanProperty brutalMultiTarget = new BooleanProperty("Brutal-Multi-Target", true,
-        () -> this.mode.getValue() == 2); // Track multiple attackers
-    
+
+    public final IntProperty chance = new IntProperty("Chance", 100, 1, 100);
+    public final IntProperty accuracy = new IntProperty("Accuracy", 100, 1, 100);
+    public final BooleanProperty onlyTargeting = new BooleanProperty("OnlyWhenTargeting", false);
+    public final BooleanProperty waterCheck = new BooleanProperty("WaterCheck", true);
+
     // Internal state
-    private final Random random = new Random();
-    private EntityPlayer lastAttacker = null;
-    private long lastHitTime = 0;
-    private long lastJumpTime = 0;
-    private boolean expectingHit = false;
-    private int ticksUntilHit = 0;
-    
-    // Prediction tracking
-    private Vec3 lastAttackerPosition = null;
-    private Vec3 lastAttackerVelocity = null;
-    private double lastDistance = 0.0;
-    private int consecutiveHits = 0;
-    
-    // Brutal timing constants (1.8 specific)
-    private static final int PERFECT_JUMP_WINDOW = 1; // 1 tick = 50ms perfect window
-    private static final int EARLY_JUMP_WINDOW = 2; // 2 ticks = 100ms acceptable window
-    private static final int MIN_JUMP_COOLDOWN = 3; // Minimum ticks between jumps
-    private static final double MAX_PREDICTION_DISTANCE = 6.0; // Max distance to predict
-    
+    private boolean shouldJump = false;
+    private boolean shouldFail = false;
+    private int jumpDelay = 0;
+    private long lastVelocityTime = 0;
+
+    // Vanilla jump cooldown tracking
+    private static final long VELOCITY_COOLDOWN_MS = 500;
+
     public JumpReset() {
         super("JumpReset", false);
     }
-    
+
     @Override
     public void onEnabled() {
-        lastAttacker = null;
-        lastHitTime = 0;
-        lastJumpTime = 0;
-        expectingHit = false;
-        ticksUntilHit = 0;
-        consecutiveHits = 0;
-        JumpResetOptimizer.reset();
+        shouldJump = false;
+        shouldFail = false;
+        jumpDelay = 0;
+        lastVelocityTime = 0;
     }
-    
-    @EventTarget
-    public void onTick(TickEvent event) {
-        if (event.getType() != EventType.PRE || mc.thePlayer == null) return;
-        
-        // Countdown expected hit timer
-        if (expectingHit && ticksUntilHit > 0) {
-            ticksUntilHit--;
-            
-            // Execute jump at predicted time
-            if (ticksUntilHit == 0) {
-                executeJumpReset();
-                expectingHit = false;
-            }
-        }
-        
-        // Brutal prediction: Analyze all nearby players for potential attacks
-        if (mc.theWorld != null) {
-            predictIncomingAttacks();
-        }
+
+    @Override
+    public void onDisabled() {
+        shouldJump = false;
+        shouldFail = false;
+        jumpDelay = 0;
     }
-    
+
     @EventTarget
     public void onPacket(PacketEvent event) {
-        if (event.getType() != EventType.RECEIVE || mc.thePlayer == null) return;
-        
-        // Detect velocity packet (hit confirmation)
+        if (event.getType() != EventType.RECEIVE) return;
+        if (mc.thePlayer == null || mc.theWorld == null) return;
+
+        // Detect incoming knockback
         if (event.getPacket() instanceof S12PacketEntityVelocity) {
             S12PacketEntityVelocity packet = (S12PacketEntityVelocity) event.getPacket();
-            
-            // Check if velocity is for our player
-            if (packet.getEntityID() == mc.thePlayer.getEntityId()) {
-                onHitReceived(packet);
-            }
+
+            // Only react to our own velocity
+            if (packet.getEntityID() != mc.thePlayer.getEntityId()) return;
+
+            // Ignore tiny velocities (fall damage, etc.)
+            double velX = packet.getMotionX() / 8000.0;
+            double velZ = packet.getMotionZ() / 8000.0;
+            double horizontalVel = Math.sqrt(velX * velX + velZ * velZ);
+
+            // Only trigger on actual combat knockback
+            if (horizontalVel < 0.05) return;
+
+            handleIncomingKnockback();
+            return;
+        }
+
+        // Also handle explosion knockback
+        if (event.getPacket() instanceof S27PacketExplosion) {
+            S27PacketExplosion packet = (S27PacketExplosion) event.getPacket();
+            double horizontalVel = Math.sqrt(
+                    packet.func_149149_c() * packet.func_149149_c() +
+                    packet.func_149144_d() * packet.func_149144_d()
+            );
+            if (horizontalVel < 0.05) return;
+
+            handleIncomingKnockback();
         }
     }
-    
-    /**
-     * BRUTAL PREDICTION: Analyze all nearby players for attack patterns
-     */
-    private void predictIncomingAttacks() {
-        if (mc.theWorld == null || mc.thePlayer == null) return;
-        
-        EntityPlayer closestThreat = null;
-        double closestDistance = MAX_PREDICTION_DISTANCE;
-        double highestThreatLevel = 0.0;
-        
-        // Scan all players
-        for (Entity entity : mc.theWorld.loadedEntityList) {
-            if (!(entity instanceof EntityPlayer)) continue;
-            
-            EntityPlayer player = (EntityPlayer) entity;
-            if (player == mc.thePlayer || player.isDead) continue;
-            
-            double distance = mc.thePlayer.getDistanceToEntity(player);
-            if (distance > MAX_PREDICTION_DISTANCE) continue;
-            
-            // Calculate threat level using prediction engine
-            double threatLevel = calculateThreatLevel(player, distance);
-            
-            if (threatLevel > highestThreatLevel) {
-                highestThreatLevel = threatLevel;
-                closestThreat = player;
-                closestDistance = distance;
-            }
+
+    private void handleIncomingKnockback() {
+        // Cooldown — don't double-jump from rapid hits
+        long now = System.currentTimeMillis();
+        if (now - lastVelocityTime < VELOCITY_COOLDOWN_MS) return;
+        lastVelocityTime = now;
+
+        // Water check
+        if (waterCheck.getValue() && (mc.thePlayer.isInWater()
+                || mc.thePlayer.isInLava()
+                || mc.thePlayer.isInsideOfMaterial(net.minecraft.block.material.Material.water))) {
+            return;
         }
-        
-        // If high threat detected, prepare jump reset
-        if (closestThreat != null && highestThreatLevel > 0.7) {
-            prepareJumpReset(closestThreat, closestDistance, highestThreatLevel);
-        }
-    }
-    
-    /**
-     * Calculate threat level (0.0-1.0) based on multiple factors
-     * BRUTAL MODE uses enhanced prediction with more aggressive thresholds
-     */
-    private double calculateThreatLevel(EntityPlayer player, double distance) {
-        double threat = 0.0;
-        boolean isBrutalMode = (this.mode.getValue() == 2);
-        
-        // Factor 1: Distance (closer = higher threat)
-        double maxThreatDistance = isBrutalMode ? 4.0 : 3.0; // Brutal mode detects further
-        if (distance < maxThreatDistance) {
-            double distanceFactor = isBrutalMode ? 0.4 : 0.3; // Brutal gives more weight
-            threat += distanceFactor * (1.0 - (distance / maxThreatDistance));
-        }
-        
-        // Factor 2: Player looking at us
-        if (isLookingAtMe(player)) {
-            threat += isBrutalMode ? 0.35 : 0.3; // Brutal mode more sensitive to rotations
-        }
-        
-        // Factor 3: Player approaching (velocity toward us)
-        Vec3 playerVelocity = new Vec3(player.motionX, player.motionY, player.motionZ);
-        Vec3 directionToUs = new Vec3(
-            mc.thePlayer.posX - player.posX,
-            mc.thePlayer.posY - player.posY,
-            mc.thePlayer.posZ - player.posZ
-        ).normalize();
-        
-        double approachSpeed = playerVelocity.dotProduct(directionToUs);
-        if (approachSpeed > 0) {
-            double speedWeight = isBrutalMode ? 0.25 : 0.2;
-            threat += speedWeight * Math.min(1.0, approachSpeed / 0.5);
-        }
-        
-        // Factor 4: Player sprinting (more likely to attack)
-        if (player.isSprinting()) {
-            threat += isBrutalMode ? 0.25 : 0.2;
-        }
-        
-        // Factor 5: Recently hit us (pattern recognition)
-        if (player == lastAttacker) {
-            long timeSinceLastHit = System.currentTimeMillis() - lastHitTime;
-            int recentWindow = isBrutalMode ? 1500 : 1000; // Brutal remembers longer
-            
-            if (timeSinceLastHit < recentWindow) {
-                double recencyBonus = isBrutalMode ? 0.4 : 0.3;
-                threat += recencyBonus;
-            }
-        }
-        
-        // BRUTAL MODE BONUS: Predict based on CombatPredictionEngine
-        if (isBrutalMode) {
-            CombatPredictionEngine.CombatState state = 
-                new CombatPredictionEngine.CombatState(mc.thePlayer, player);
-            
-            // If combat engine predicts high likelihood of attack, boost threat
-            // This uses AI pattern recognition
-            double comboProbability = (consecutiveHits >= 2) ? 0.2 : 0.0;
-            threat += comboProbability;
-        }
-        
-        return Math.min(1.0, threat);
-    }
-    
-    /**
-     * Check if player is looking at us
-     */
-    private boolean isLookingAtMe(EntityPlayer player) {
-        if (onlyWhenTargeting.getValue()) {
-            // Strict check: Must be directly looking at us
-            Vec3 lookVec = player.getLook(1.0F);
-            Vec3 toUs = new Vec3(
-                mc.thePlayer.posX - player.posX,
-                mc.thePlayer.posY + mc.thePlayer.getEyeHeight() - (player.posY + player.getEyeHeight()),
-                mc.thePlayer.posZ - player.posZ
-            ).normalize();
-            
-            double dotProduct = lookVec.dotProduct(toUs);
-            return dotProduct > 0.95; // Very tight angle (18 degrees)
+
+        // Must be on ground to jump reset
+        if (!mc.thePlayer.onGround) return;
+
+        // Only when targeting check
+        if (onlyTargeting.getValue() && !isLookingAtAttacker()) return;
+
+        // Chance roll
+        if (Math.random() * 100 >= chance.getValue()) return;
+
+        // Accuracy roll — decide if this jump will be perfectly timed or mistimed
+        shouldFail = Math.random() * 100 >= accuracy.getValue();
+
+        // Schedule the jump
+        shouldJump = true;
+
+        if (shouldFail) {
+            // Intentionally mistime — delay by 1-3 extra ticks (too late)
+            jumpDelay = 1 + (int) (Math.random() * 3);
         } else {
-            // Lenient check: General direction
-            Vec3 lookVec = player.getLook(1.0F);
-            Vec3 toUs = new Vec3(
-                mc.thePlayer.posX - player.posX,
-                mc.thePlayer.posY - player.posY,
-                mc.thePlayer.posZ - player.posZ
-            ).normalize();
-            
-            double dotProduct = lookVec.dotProduct(toUs);
-            return dotProduct > 0.7; // Wider angle (~45 degrees)
+            // Perfect timing — jump immediately on next tick
+            // The velocity packet arrives between ticks, so jumping on the
+            // very next game tick is the frame-perfect window.
+            // Delay 0 = this tick's update will handle it.
+            jumpDelay = 0;
         }
     }
-    
-    /**
-     * Prepare jump reset with BRUTAL prediction engine
-     */
-    private void prepareJumpReset(EntityPlayer attacker, double distance, double threatLevel) {
-        // Check chance
-        if (random.nextInt(100) >= chance.getValue()) {
+
+    @EventTarget
+    public void onUpdate(UpdateEvent event) {
+        if (event.getType() != EventType.PRE) return;
+        if (mc.thePlayer == null || !shouldJump) return;
+
+        // Count down delay for intentional mistiming
+        if (jumpDelay > 0) {
+            jumpDelay--;
             return;
         }
-        
-        // Check water
-        if (waterCheck.getValue() && (mc.thePlayer.isInWater() || mc.thePlayer.isInLava())) {
-            return;
-        }
-        
-        // Don't spam jumps (BRUTAL mode has faster cooldown)
-        long timeSinceLastJump = (System.currentTimeMillis() - lastJumpTime) / 50; // Convert to ticks
-        int cooldown = (this.mode.getValue() == 2) ? 2 : MIN_JUMP_COOLDOWN; // BRUTAL: 2 ticks
-        
-        if (timeSinceLastJump < cooldown) {
-            return;
-        }
-        
-        // BRUTAL PREDICTION: Use advanced optimizer with 4 prediction methods
-        JumpResetOptimizer.JumpPrediction prediction = 
-            JumpResetOptimizer.predictOptimalJumpTiming(attacker, mc.thePlayer);
-        
-        if (!prediction.shouldJump) {
-            return; // Prediction says don't jump
-        }
-        
-        // Check confidence threshold (BRUTAL mode more aggressive)
-        double confidenceThreshold = (this.mode.getValue() == 2) ? 0.5 : 0.6; // BRUTAL: Lower threshold
-        
-        if (prediction.confidence < confidenceThreshold) {
-            return; // Not confident enough
-        }
-        
-        // BRUTAL MODE: Boost prediction confidence for consecutive hits
-        if (this.mode.getValue() == 2 && consecutiveHits >= 2) {
-            prediction.confidence = Math.min(1.0, prediction.confidence + 0.15);
-            // Jump 1 tick earlier when in combo for perfect timing
-            if (prediction.ticksUntilJump > 0) {
-                prediction.ticksUntilJump = Math.max(0, prediction.ticksUntilJump - 1);
-            }
-        }
-        
-        // Apply accuracy setting
-        if (!shouldExecuteAccurately()) {
-            // Intentionally mistimed jump (for legit look)
-            int mistiming = random.nextInt(3) - 1; // -1, 0, or +1 ticks
-            prediction.ticksUntilJump += mistiming;
-            
-            if (prediction.ticksUntilJump < 0) {
-                executeJumpReset(); // Jump too early
-                return;
-            }
-        }
-        
-        // Schedule jump at predicted time
-        if (prediction.ticksUntilJump == 0) {
-            executeJumpReset(); // Jump immediately
-        } else if (prediction.ticksUntilJump <= EARLY_JUMP_WINDOW) {
-            expectingHit = true;
-            ticksUntilHit = prediction.ticksUntilJump;
-            lastAttacker = attacker;
-        }
-    }
-    
-    /**
-     * Predict ticks until we get hit based on attacker movement
-     */
-    private int predictTicksUntilHit(EntityPlayer attacker, double distance) {
-        // Calculate attacker's effective reach (3.0 base + sprint bonus)
-        double effectiveReach = attacker.isSprinting() ? 3.5 : 3.0;
-        
-        // If already in range, hit is imminent (0-1 ticks)
-        if (distance <= effectiveReach) {
-            return 0;
-        }
-        
-        // Calculate approach speed
-        Vec3 attackerVelocity = new Vec3(attacker.motionX, attacker.motionY, attacker.motionZ);
-        double approachSpeed = Math.sqrt(
-            attackerVelocity.xCoord * attackerVelocity.xCoord +
-            attackerVelocity.zCoord * attackerVelocity.zCoord
-        );
-        
-        // Account for sprint multiplier
-        if (attacker.isSprinting()) {
-            approachSpeed *= 1.3;
-        }
-        
-        if (approachSpeed < 0.05) {
-            return -1; // Not approaching
-        }
-        
-        // Calculate ticks to reach us
-        double distanceToClose = distance - effectiveReach;
-        double ticksToReach = distanceToClose / (approachSpeed * 20.0); // Convert to ticks
-        
-        // Add network delay compensation
-        int ping = getPingEstimate();
-        int pingTicks = Math.max(0, (ping / 50) - 1); // Convert ping to ticks, subtract 1 for prediction
-        
-        return (int) Math.max(0, ticksToReach - pingTicks);
-    }
-    
-    /**
-     * Get ping estimate from transaction manager or default
-     */
-    private int getPingEstimate() {
-        try {
-            return myau.management.TransactionManager.getInstance().getPing();
-        } catch (Exception e) {
-            return 50; // Default to 50ms if unavailable
-        }
-    }
-    
-    /**
-     * Check if we should execute accurately based on accuracy setting
-     */
-    private boolean shouldExecuteAccurately() {
-        return random.nextInt(100) < accuracy.getValue();
-    }
-    
-    /**
-     * Execute the jump reset with maximum effectiveness
-     */
-    private void executeJumpReset() {
-        if (mc.thePlayer == null) return;
-        
-        // Double check water
-        if (waterCheck.getValue() && (mc.thePlayer.isInWater() || mc.thePlayer.isInLava())) {
-            return;
-        }
-        
-        // Only jump if on ground (critical for 1.8 KB reset)
+
+        // Execute jump
         if (mc.thePlayer.onGround) {
-            // Validate with Grim prediction engine
-            GrimPredictionEngine.PredictedPosition predicted = 
-                GrimPredictionEngine.predictPlayerPosition(mc.thePlayer, 2);
-            
-            if (predicted != null) {
-                Vec3 currentPos = new Vec3(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
-                if (GrimPredictionEngine.wouldGrimFlag(currentPos, predicted)) {
-                    return; // Would flag - skip
-                }
+            mc.thePlayer.jump();
+        }
+
+        // Reset state
+        shouldJump = false;
+        shouldFail = false;
+    }
+
+    /**
+     * Check if the player who hit us is roughly in our crosshair direction.
+     * Finds the nearest player within 6 blocks and checks if they're within
+     * ~60 degree cone of our look direction.
+     */
+    private boolean isLookingAtAttacker() {
+        // First check if KillAura has a target
+        try {
+            KillAura ka = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
+            if (ka != null && ka.isEnabled()) {
+                // KillAura is active — we're definitely targeting someone
+                return true;
             }
-            
-            // Mode-specific jump execution
-            switch (this.mode.getValue()) {
-                case 0: // NORMAL - Standard jump reset
-                    mc.thePlayer.movementInput.jump = true;
-                    break;
-                    
-                case 1: // FAST - Faster reaction time
-                    mc.thePlayer.movementInput.jump = true;
-                    break;
-                    
-                case 2: // BRUTAL_LEGIT - MAXIMUM EFFECTIVENESS
-                    executeBrutalJumpReset();
-                    break;
-            }
-            
-            lastJumpTime = System.currentTimeMillis();
-            
-            // Record jump timing for pattern learning
-            if (lastAttacker != null) {
-                double distance = mc.thePlayer.getDistanceToEntity(lastAttacker);
-                double approachSpeed = Math.sqrt(
-                    lastAttacker.motionX * lastAttacker.motionX +
-                    lastAttacker.motionZ * lastAttacker.motionZ
-                );
-                
-                JumpResetOptimizer.recordAttack(
-                    distance,
-                    approachSpeed,
-                    lastAttacker.isSprinting(),
-                    0, // Will be updated when hit received
-                    false // Will be updated on hit
-                );
-                
-                recordJumpResetAttempt(lastAttacker);
+        } catch (Exception ignored) {}
+
+        // Manual crosshair check — find nearest player and check angle
+        EntityPlayer nearest = null;
+        double nearestDist = 6.0;
+
+        for (EntityPlayer player : mc.theWorld.playerEntities) {
+            if (player == mc.thePlayer || player.isDead) continue;
+            double dist = mc.thePlayer.getDistanceToEntity(player);
+            if (dist < nearestDist) {
+                nearestDist = dist;
+                nearest = player;
             }
         }
+
+        if (nearest == null) return false;
+
+        // Calculate angle between look direction and direction to attacker
+        double dx = nearest.posX - mc.thePlayer.posX;
+        double dz = nearest.posZ - mc.thePlayer.posZ;
+        float angleToTarget = (float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
+        float yawDiff = MathHelper.wrapAngleTo180_float(mc.thePlayer.rotationYaw - angleToTarget);
+
+        // Within ~60 degree cone
+        return Math.abs(yawDiff) < 60.0F;
     }
-    
-    /**
-     * Called when we receive a hit (velocity packet)
-     * BRUTAL LEARNING: Analyze effectiveness and update patterns
-     */
-    private void onHitReceived(S12PacketEntityVelocity packet) {
-        long currentTime = System.currentTimeMillis();
-        long timeSinceJump = currentTime - lastJumpTime;
-        
-        // Calculate KB reduction effectiveness
-        double kbReduction = JumpResetOptimizer.calculateKBReduction(timeSinceJump);
-        
-        // Check if our jump reset was successful
-        boolean wasSuccessful = kbReduction >= 0.7; // 70% effectiveness threshold
-        
-        if (wasSuccessful) {
-            consecutiveHits++;
-            
-            // Record successful pattern for learning
-            if (lastAttacker != null) {
-                double distance = lastDistance;
-                double approachSpeed = lastAttackerVelocity != null ? 
-                    Math.sqrt(lastAttackerVelocity.xCoord * lastAttackerVelocity.xCoord +
-                             lastAttackerVelocity.zCoord * lastAttackerVelocity.zCoord) : 0.0;
-                
-                JumpResetOptimizer.recordAttack(
-                    distance,
-                    approachSpeed,
-                    lastAttacker.isSprinting(),
-                    (int) (timeSinceJump / 50), // Convert MS to ticks
-                    true // Successful
-                );
-                
-                recordSuccessfulJumpReset(lastAttacker);
-            }
-        } else {
-            consecutiveHits = 0;
-            
-            // Record failed attempt for learning (to avoid repeating)
-            if (lastAttacker != null) {
-                double distance = lastDistance;
-                double approachSpeed = lastAttackerVelocity != null ? 
-                    Math.sqrt(lastAttackerVelocity.xCoord * lastAttackerVelocity.xCoord +
-                             lastAttackerVelocity.zCoord * lastAttackerVelocity.zCoord) : 0.0;
-                
-                JumpResetOptimizer.recordAttack(
-                    distance,
-                    approachSpeed,
-                    lastAttacker.isSprinting(),
-                    (int) (timeSinceJump / 50),
-                    false // Failed
-                );
-            }
-        }
-        
-        lastHitTime = currentTime;
-        expectingHit = false;
-    }
-    
-    /**
-     * Record jump reset attempt for learning
-     */
-    private void recordJumpResetAttempt(EntityPlayer attacker) {
-        if (attacker == null) return;
-        
-        // Store attacker data for pattern recognition
-        lastAttackerPosition = new Vec3(attacker.posX, attacker.posY, attacker.posZ);
-        lastAttackerVelocity = new Vec3(attacker.motionX, attacker.motionY, attacker.motionZ);
-        lastDistance = mc.thePlayer.getDistanceToEntity(attacker);
-    }
-    
-    /**
-     * Record successful jump reset for learning
-     */
-    private void recordSuccessfulJumpReset(EntityPlayer attacker) {
-        if (attacker == null) return;
-        
-        // Create combat state for learning
-        CombatPredictionEngine.CombatState state = 
-            new CombatPredictionEngine.CombatState(mc.thePlayer, attacker);
-        
-        // Record low knockback as successful outcome
-        CombatPredictionEngine.recordOutcome(true, false, 0.1); // Low KB
-    }
-    
-    /**
-     * BRUTAL_LEGIT MODE: Execute perfect jump reset with AI prediction
-     * This uses multi-layered timing optimization for MAXIMUM KB reduction
-     */
-    private void executeBrutalJumpReset() {
-        if (mc.thePlayer == null) return;
-        
-        // LAYER 1: Pre-jump velocity manipulation
-        // Reduce horizontal velocity slightly (looks like natural player movement)
-        double velocityReduction = 0.92; // 8% reduction (imperceptible to AC)
-        mc.thePlayer.motionX *= velocityReduction;
-        mc.thePlayer.motionZ *= velocityReduction;
-        
-        // LAYER 2: Execute jump at PERFECT timing
-        // Using movementInput for 100% legit simulation
-        mc.thePlayer.movementInput.jump = true;
-        
-        // LAYER 3: AI-Enhanced prediction for next hit
-        if (lastAttacker != null && brutalMultiTarget.getValue()) {
-            // Predict attacker's next move using CombatPredictionEngine
-            CombatPredictionEngine.CombatState state = 
-                new CombatPredictionEngine.CombatState(mc.thePlayer, lastAttacker);
-            
-            // Calculate optimal timing for next jump
-            int ticksUntilNextHit = brutalPredictionTicks.getValue();
-            
-            // Adjust based on attacker's pattern
-            double attackerSpeed = Math.sqrt(
-                lastAttacker.motionX * lastAttacker.motionX +
-                lastAttacker.motionZ * lastAttacker.motionZ
-            );
-            
-            if (attackerSpeed > 0.2) { // Fast approaching
-                ticksUntilNextHit = Math.max(1, ticksUntilNextHit - 1);
-            }
-            
-            // Pre-schedule next jump reset if in combo
-            if (consecutiveHits >= 2) {
-                expectingHit = true;
-                this.ticksUntilHit = ticksUntilNextHit;
-            }
-        }
-        
-        // LAYER 4: Record success metrics for AI learning
-        consecutiveHits++;
-        
-        // Update JumpResetOptimizer with brutal timing data
-        if (lastAttacker != null) {
-            double distance = mc.thePlayer.getDistanceToEntity(lastAttacker);
-            double approachSpeed = Math.sqrt(
-                lastAttacker.motionX * lastAttacker.motionX +
-                lastAttacker.motionZ * lastAttacker.motionZ
-            );
-            
-            JumpResetOptimizer.recordAttack(
-                distance,
-                approachSpeed,
-                lastAttacker.isSprinting(),
-                0, // Velocity magnitude (updated on packet)
-                true // Successful brutal reset
-            );
-        }
-    }
-    
-    /**
-     * Get module suffix for display
-     */
+
     @Override
     public String[] getSuffix() {
-        if (this.mode.getValue() == 2 && consecutiveHits > 0) {
-            return new String[]{"BRUTAL x" + consecutiveHits};
-        } else if (consecutiveHits > 0) {
-            return new String[]{consecutiveHits + " hits"};
-        }
-        return new String[]{this.mode.getModeString()};
+        return new String[]{chance.getValue() + "%"};
     }
 }

@@ -12,10 +12,7 @@ import net.minecraft.network.handshake.client.C00Handshake;
 import net.minecraft.network.login.client.C00PacketLoginStart;
 import net.minecraft.network.login.client.C01PacketEncryptionResponse;
 import net.minecraft.network.play.INetHandlerPlayClient;
-import net.minecraft.network.play.server.S00PacketKeepAlive;
-import net.minecraft.network.play.server.S01PacketJoinGame;
-import net.minecraft.network.play.server.S07PacketRespawn;
-import net.minecraft.network.play.server.S19PacketEntityStatus;
+import net.minecraft.network.play.server.*;
 import net.minecraft.network.status.client.C00PacketServerQuery;
 import net.minecraft.network.status.client.C01PacketPing;
 
@@ -28,25 +25,35 @@ public class DelayManager {
     public long delay = 0L;
     public Deque<Packet<INetHandlerPlayClient>> delayedPacket = new ConcurrentLinkedDeque<>();
 
+    private static boolean isCriticalPacket(Packet<?> packet) {
+        return packet instanceof S08PacketPlayerPosLook
+            || packet instanceof S12PacketEntityVelocity
+            || packet instanceof S27PacketExplosion
+            || packet instanceof S00PacketKeepAlive
+            || packet instanceof S01PacketJoinGame
+            || packet instanceof S07PacketRespawn
+            || packet instanceof S40PacketDisconnect;
+    }
+
     public boolean shouldDelay(Packet<INetHandlerPlayClient> packet) {
         if (this.delayModule == DelayModules.NONE) {
             return false;
-        } else if (packet instanceof S00PacketKeepAlive) {
-            return false;
-        } else if (!(packet instanceof S01PacketJoinGame) && !(packet instanceof S07PacketRespawn)) {
-            if (packet instanceof S19PacketEntityStatus) {
-                S19PacketEntityStatus s19 = (S19PacketEntityStatus) packet;
-                Entity entity = s19.getEntity(mc.theWorld);
-                if (entity != null && (!entity.equals(mc.thePlayer) || s19.getOpCode() != 2)) {
-                    return false;
-                }
-            }
-            this.delayedPacket.offer(packet);
-            return true;
-        } else {
-            this.setDelayState(false, this.delayModule);
+        }
+
+        if (isCriticalPacket(packet)) {
             return false;
         }
+
+        if (packet instanceof S19PacketEntityStatus) {
+            S19PacketEntityStatus s19 = (S19PacketEntityStatus) packet;
+            Entity entity = s19.getEntity(mc.theWorld);
+            if (entity != null && (!entity.equals(mc.thePlayer) || s19.getOpCode() != 2)) {
+                return false;
+            }
+        }
+
+        this.delayedPacket.offer(packet);
+        return true;
     }
 
     public boolean setDelayState(boolean state, DelayModules delayModule) {
@@ -64,7 +71,10 @@ public class DelayManager {
                     this.delayedPacket.clear();
                     break;
                 }
-                packet.processPacket(Minecraft.getMinecraft().getNetHandler());
+                try {
+                    packet.processPacket(Minecraft.getMinecraft().getNetHandler());
+                } catch (Exception ignored) {
+                }
             }
         }
         return this.delayModule != DelayModules.NONE;
@@ -96,7 +106,7 @@ public class DelayManager {
     @EventTarget
     public void onTick(TickEvent event) {
         if (event.getType() == EventType.POST) {
-            if (mc.thePlayer.isDead) {
+            if (mc.thePlayer != null && mc.thePlayer.isDead) {
                 this.setDelayState(false, this.delayModule);
             }
             if (this.delayModule != DelayModules.NONE) {

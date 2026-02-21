@@ -390,6 +390,66 @@ public class RenderUtil {
         RenderUtil.drawFilledBox(new AxisAlignedBB(blockPos.getX(), blockPos.getY(), blockPos.getZ(), (double) blockPos.getX() + 1.0, (double) blockPos.getY() + height, (double) blockPos.getZ() + 1.0).offset(-((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX(), -((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY(), -((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ()), red, green, blue);
     }
 
+    public static void drawFilledBox(AxisAlignedBB bb) {
+        Tessellator tessellator = Tessellator.getInstance();
+        WorldRenderer wr = tessellator.getWorldRenderer();
+        wr.begin(7, DefaultVertexFormats.POSITION);
+        // bottom
+        wr.pos(bb.minX, bb.minY, bb.minZ).endVertex();
+        wr.pos(bb.minX, bb.minY, bb.maxZ).endVertex();
+        wr.pos(bb.maxX, bb.minY, bb.maxZ).endVertex();
+        wr.pos(bb.maxX, bb.minY, bb.minZ).endVertex();
+        // top
+        wr.pos(bb.minX, bb.maxY, bb.minZ).endVertex();
+        wr.pos(bb.maxX, bb.maxY, bb.minZ).endVertex();
+        wr.pos(bb.maxX, bb.maxY, bb.maxZ).endVertex();
+        wr.pos(bb.minX, bb.maxY, bb.maxZ).endVertex();
+        // -Z face
+        wr.pos(bb.minX, bb.minY, bb.minZ).endVertex();
+        wr.pos(bb.maxX, bb.minY, bb.minZ).endVertex();
+        wr.pos(bb.maxX, bb.maxY, bb.minZ).endVertex();
+        wr.pos(bb.minX, bb.maxY, bb.minZ).endVertex();
+        // +Z face
+        wr.pos(bb.minX, bb.minY, bb.maxZ).endVertex();
+        wr.pos(bb.minX, bb.maxY, bb.maxZ).endVertex();
+        wr.pos(bb.maxX, bb.maxY, bb.maxZ).endVertex();
+        wr.pos(bb.maxX, bb.minY, bb.maxZ).endVertex();
+        // -X face
+        wr.pos(bb.minX, bb.minY, bb.minZ).endVertex();
+        wr.pos(bb.minX, bb.maxY, bb.minZ).endVertex();
+        wr.pos(bb.minX, bb.maxY, bb.maxZ).endVertex();
+        wr.pos(bb.minX, bb.minY, bb.maxZ).endVertex();
+        // +X face
+        wr.pos(bb.maxX, bb.minY, bb.minZ).endVertex();
+        wr.pos(bb.maxX, bb.minY, bb.maxZ).endVertex();
+        wr.pos(bb.maxX, bb.maxY, bb.maxZ).endVertex();
+        wr.pos(bb.maxX, bb.maxY, bb.minZ).endVertex();
+        tessellator.draw();
+    }
+
+    public static void drawOutlinedBox(AxisAlignedBB bb) {
+        GL11.glEnable(GL11.GL_LINE_SMOOTH);
+        GL11.glHint(GL11.GL_LINE_SMOOTH_HINT, GL11.GL_NICEST);
+        GL11.glBegin(GL11.GL_LINES);
+        // bottom edges
+        GL11.glVertex3d(bb.minX, bb.minY, bb.minZ); GL11.glVertex3d(bb.maxX, bb.minY, bb.minZ);
+        GL11.glVertex3d(bb.maxX, bb.minY, bb.minZ); GL11.glVertex3d(bb.maxX, bb.minY, bb.maxZ);
+        GL11.glVertex3d(bb.maxX, bb.minY, bb.maxZ); GL11.glVertex3d(bb.minX, bb.minY, bb.maxZ);
+        GL11.glVertex3d(bb.minX, bb.minY, bb.maxZ); GL11.glVertex3d(bb.minX, bb.minY, bb.minZ);
+        // top edges
+        GL11.glVertex3d(bb.minX, bb.maxY, bb.minZ); GL11.glVertex3d(bb.maxX, bb.maxY, bb.minZ);
+        GL11.glVertex3d(bb.maxX, bb.maxY, bb.minZ); GL11.glVertex3d(bb.maxX, bb.maxY, bb.maxZ);
+        GL11.glVertex3d(bb.maxX, bb.maxY, bb.maxZ); GL11.glVertex3d(bb.minX, bb.maxY, bb.maxZ);
+        GL11.glVertex3d(bb.minX, bb.maxY, bb.maxZ); GL11.glVertex3d(bb.minX, bb.maxY, bb.minZ);
+        // vertical edges
+        GL11.glVertex3d(bb.minX, bb.minY, bb.minZ); GL11.glVertex3d(bb.minX, bb.maxY, bb.minZ);
+        GL11.glVertex3d(bb.maxX, bb.minY, bb.minZ); GL11.glVertex3d(bb.maxX, bb.maxY, bb.minZ);
+        GL11.glVertex3d(bb.maxX, bb.minY, bb.maxZ); GL11.glVertex3d(bb.maxX, bb.maxY, bb.maxZ);
+        GL11.glVertex3d(bb.minX, bb.minY, bb.maxZ); GL11.glVertex3d(bb.minX, bb.maxY, bb.maxZ);
+        GL11.glEnd();
+        GL11.glDisable(GL11.GL_LINE_SMOOTH);
+    }
+
     public static void drawBlockBoundingBox(BlockPos blockPos, double height, int red, int green, int blue, int alpha, float lineWidth) {
         RenderUtil.drawBoundingBox(new AxisAlignedBB(blockPos.getX(), blockPos.getY(), blockPos.getZ(), (double) blockPos.getX() + 1.0, (double) blockPos.getY() + height, (double) blockPos.getZ() + 1.0).offset(-((IAccessorRenderManager) mc.getRenderManager()).getRenderPosX(), -((IAccessorRenderManager) mc.getRenderManager()).getRenderPosY(), -((IAccessorRenderManager) mc.getRenderManager()).getRenderPosZ()), red, green, blue, alpha, lineWidth);
     }
