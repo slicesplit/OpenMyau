@@ -1,9 +1,8 @@
 package myau.module.modules;
 
 import myau.module.ModuleInfo;
-import myau.enums.ModuleCategory;
-
 import myau.Myau;
+import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.event.types.Priority;
 import myau.events.PacketEvent;
@@ -43,22 +42,13 @@ public class LagRange extends Module {
     private boolean hasTarget = false;
     private Vec3 lastPosition = null;
     private Vec3 currentPosition = null;
-    
-    // Cached references for backtrack detection
-    private OldBacktrack oldBacktrack = null;
-    private NewBacktrack newBacktrack = null;
-    
-    public final IntProperty delay = new IntProperty("delay", 150, 0, 10000);
+    public final IntProperty delay = new IntProperty("delay", 150, 0, 1000);
     public final FloatProperty range = new FloatProperty("range", 10.0F, 3.0F, 100.0F);
     public final BooleanProperty weaponsOnly = new BooleanProperty("weapons-only", true);
     public final BooleanProperty allowTools = new BooleanProperty("allow-tools", false, this.weaponsOnly::getValue);
     public final BooleanProperty botCheck = new BooleanProperty("bot-check", true);
     public final BooleanProperty teams = new BooleanProperty("teams", true);
     public final ModeProperty showPosition = new ModeProperty("show-position", 0, new String[]{"NONE", "DEFAULT", "HUD"});
-    
-    // SMART INTEGRATION: Coordinate with backtrack for perfect synergy
-    public final BooleanProperty smartIntegration = new BooleanProperty("smart-integration", true);
-    public final IntProperty maxTotalLag = new IntProperty("max-total-lag", 250, 100, 500);
 
     private boolean isValidTarget(EntityPlayer entityPlayer) {
         if (entityPlayer != mc.thePlayer && entityPlayer != mc.thePlayer.ridingEntity) {
@@ -91,49 +81,6 @@ public class LagRange extends Module {
 
     public LagRange() {
         super("LagRange", false);
-    }
-    
-    @Override
-    public void onEnabled() {
-        super.onEnabled();
-        
-        // Cache backtrack references
-        oldBacktrack = (OldBacktrack) Myau.moduleManager.modules.get(OldBacktrack.class);
-        newBacktrack = (NewBacktrack) Myau.moduleManager.modules.get(NewBacktrack.class);
-    }
-    
-    private boolean isBacktrackActive() {
-        // Refresh if null
-        if (oldBacktrack == null) {
-            oldBacktrack = (OldBacktrack) Myau.moduleManager.modules.get(OldBacktrack.class);
-        }
-        if (newBacktrack == null) {
-            newBacktrack = (NewBacktrack) Myau.moduleManager.modules.get(NewBacktrack.class);
-        }
-        
-        return (oldBacktrack != null && oldBacktrack.isEnabled()) || 
-               (newBacktrack != null && newBacktrack.isEnabled());
-    }
-    
-    private int getSmartDelay(int baseDelay) {
-        if (!smartIntegration.getValue()) {
-            return baseDelay; // No integration, use base delay
-        }
-        
-        if (!isBacktrackActive()) {
-            return baseDelay; // No backtrack, use full delay
-        }
-        
-        // SMART INTEGRATION: When backtrack is active, reduce LagRange delay
-        // This prevents excessive combined lag while keeping both working
-        
-        // Backtrack typically adds 50-150ms of lag
-        // Reduce LagRange proportionally to keep total under maxTotalLag
-        int estimatedBacktrackLag = 100; // Conservative estimate
-        int maxLagRangeDelay = maxTotalLag.getValue() - estimatedBacktrackLag;
-        
-        // Cap delay to prevent rubberband
-        return Math.min(baseDelay, Math.max(50, maxLagRangeDelay));
     }
 
     @EventTarget(Priority.LOW)
@@ -174,21 +121,11 @@ public class LagRange extends Module {
                                     if (distance < targetDist || distance < eyeDist) {
                                         if (this.tickIndex < 0) {
                                             this.tickIndex = 0;
-                                            // SMART INTEGRATION: Calculate delay based on backtrack state
-                                            int effectiveDelay = getSmartDelay(this.delay.getValue());
-                                            
-                                            for (this.delayCounter = this.delayCounter + (long) effectiveDelay;
+                                            for (this.delayCounter = this.delayCounter + (long) this.delay.getValue();
                                                  this.delayCounter > 0L;
                                                  this.delayCounter = this.delayCounter - 50
                                             ) {
                                                 this.tickIndex++;
-                                            }
-                                            
-                                            // SAFETY CAP: Never exceed max ticks (prevent rubberband)
-                                            // maxTotalLag / 50ms per tick = max ticks
-                                            int maxTicks = maxTotalLag.getValue() / 50;
-                                            if (this.tickIndex > maxTicks) {
-                                                this.tickIndex = maxTicks;
                                             }
                                         }
                                         Myau.lagManager.setDelay(this.tickIndex);

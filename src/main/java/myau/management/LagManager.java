@@ -44,7 +44,7 @@ public class LagManager {
                 if (this.tickDelay > 0 && lagPacket.delay <= this.tickDelay) {
                     break;
                 }
-                PacketUtil.sendPacketNoEvent(lagPacket.packet);
+                PacketUtil.sendPacketSafe(lagPacket.packet);
                 if (lagPacket.packet instanceof C03PacketPlayer) {
                     C03PacketPlayer c03 = (C03PacketPlayer) lagPacket.packet;
                     if (c03.isMoving()) {

@@ -4,6 +4,7 @@ import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.events.PacketEvent;
+import myau.util.PacketUtil;
 import myau.events.UpdateEvent;
 import myau.event.types.EventType;
 import myau.module.Module;
@@ -265,8 +266,7 @@ public class AntiCombo extends Module {
     private void processPacketDirect(Packet<?> packet) {
         if (mc.thePlayer != null && mc.thePlayer.sendQueue != null) {
             try {
-                // Re-add to network manager channel to process
-                mc.thePlayer.sendQueue.getNetworkManager().sendPacket(packet);
+                PacketUtil.sendPacketSafe(packet);
             } catch (Exception e) {
                 // Ignore processing errors
             }

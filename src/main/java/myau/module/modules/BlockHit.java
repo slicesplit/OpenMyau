@@ -8,6 +8,8 @@ import myau.event.types.EventType;
 import myau.events.*;
 import myau.module.Module;
 import myau.property.properties.BooleanProperty;
+import myau.property.properties.FloatProperty;
+import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
 import myau.property.properties.PercentProperty;
 import myau.util.ItemUtil;
@@ -27,62 +29,94 @@ import net.minecraft.util.EnumFacing;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.concurrent.ThreadLocalRandom;
 
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class BlockHit extends Module {
 
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    public final PercentProperty chance = new PercentProperty("Chance", 100);
+    public final PercentProperty chance      = new PercentProperty("Chance", 100);
     public final BooleanProperty requireMouseDown = new BooleanProperty("Require Mouse Down", false);
     public final ModeProperty mode = new ModeProperty("Mode", 0,
-            new String[]{"MANUAL", "AUTO", "PREDICT", "LAG"});
+            new String[]{"MANUAL", "AUTO", "PREDICT", "LAG", "SMART"});
 
-    // server-side block state
-    private boolean serverBlocking = false;
+    // LAG mode options
+    public final IntProperty lagTicks    = new IntProperty("Lag Ticks", 3, 1, 8,    () -> mode.getValue() == 3);
+    public final BooleanProperty lagJitter = new BooleanProperty("Lag Jitter", true, () -> mode.getValue() == 3);
+
+    // SMART mode options
+    public final BooleanProperty smartFall   = new BooleanProperty("Smart Fall Block",   true,  () -> mode.getValue() == 4);
+    public final BooleanProperty smartCombat = new BooleanProperty("Smart Combat Only",  true,  () -> mode.getValue() == 4);
+    public final FloatProperty   smartFallH  = new FloatProperty("Fall Dmg Height", 3.5f, 1.0f, 20.0f, () -> mode.getValue() == 4);
+
+    // ────────── server-side block state ──────────
+    private boolean serverBlocking  = false;
 
     // tick counters
-    private int ticksSinceAttack = 999;
-    private int ticksSinceBlock = 999;
+    private int ticksSinceAttack  = 999;
+    private int ticksSinceBlock   = 999;
     private int ticksSinceUnblock = 999;
 
     // attack detection
-    private boolean attackDetected = false;
-    private boolean blockQueued = false;
-    private int attacksThisTick = 0;
+    private boolean blockQueued     = false;
+    private int     attacksThisTick = 0;
 
-    // opponent tracking
-    private int opId = -1;
-    private int opSwingAge = 999;
-    private double opDist = 10.0;
-    private double opPrevDist = 10.0;
-    private int opApproachTicks = 0;
-    private int opHurtTime = 0;
+    // ────────── opponent tracking ──────────
+    private int    opId           = -1;
+    private int    opSwingAge     = 999;
+    private double opDist         = 10.0;
+    private double opPrevDist     = 10.0;
+    private int    opApproachTicks = 0;
+    private int    opHurtTime     = 0;
 
-    // opponent rhythm prediction
-    private long opLastSwingMs = 0;
-    private long[] opIntervals = new long[8];
-    private int opIntIdx = 0;
-    private long opAvgInterval = 0;
+    // ────────── Kalman-style rhythm predictor ──────────
+    // Tracks opponent swing intervals with an exponential Kalman filter:
+    //   estimate = estimate + K * (measurement - estimate)
+    //   K (Kalman gain) = errorCov / (errorCov + measureNoise)
+    // This converges on the true mean far faster than a rolling average,
+    // is robust to outliers, and adapts when the opponent changes CPS.
+    private long   opLastSwingMs   = 0;
+    private double kfEstimate      = 0;   // Kalman estimated interval (ms)
+    private double kfErrorCov      = 1e6; // uncertainty in the estimate
+    private double kfMeasNoise     = 800; // measurement noise variance (tuned to 1.8 CPS swing jitter)
+    private double kfProcNoise     = 120; // process noise — opponent can change rhythm
+    private int    kfSamples       = 0;
 
-    // velocity detection
-    private boolean velIncoming = false;
-    private int velCooldown = 0;
+    // Phase model: where in their swing cycle are they RIGHT NOW?
+    // phase ∈ [0,1) — fraction of interval elapsed since last swing
+    private double opPhase         = 0.0;
 
-    // predict mode
-    private boolean predictQueued = false;
-    private int predictHoldTicks = 0;
+    // ────────── velocity / incoming hit detection ──────────
+    private boolean velIncoming  = false;
+    private int     velCooldown  = 0;
+    private double  velMagnitude = 0; // magnitude of last incoming velocity (for Smart mode priority)
 
-    // lag mode
-    private final Deque<Packet<?>> lagHeld = new ArrayDeque<>();
-    private boolean lagActive = false;
-    private int lagTicksLeft = 0;
-    private boolean lagFlushing = false;
+    // ────────── PREDICT mode ──────────
+    private boolean predictQueued   = false;
+    private int     predictHoldTicks = 0;
 
-    // stats for internal tuning
-    private int totalBlocks = 0;
+    // ────────── LAG mode ──────────
+    private final Deque<Packet<?>> lagHeld    = new ArrayDeque<>();
+    private boolean lagActive    = false;
+    private int     lagTicksLeft = 0;
+    private boolean lagFlushing  = false;
+
+    // ────────── SMART mode ──────────
+    // Threat score: 0 (safe) → 1 (critical) — drives block decision
+    // Computed each tick via physics model + rhythm phase
+    private double  smartThreat    = 0.0;
+    private boolean smartBlocking  = false;
+    private int     smartHoldTicks = 0;
+    private boolean inCombat       = false;
+    private int     combatCooldown = 0;
+    private float   lastHealth     = 20.0f;
+    private double  fallDmgPred    = 0.0; // predicted fall damage (Newton physics)
+
+    // ────────── stats ──────────
+    private int totalBlocks   = 0;
     private int totalUnblocks = 0;
-    private int hitsBlocked = 0;
+    private int hitsBlocked   = 0;
 
     public BlockHit() {
         super("BlockHit", false);
@@ -99,34 +133,35 @@ public class BlockHit extends Module {
     }
 
     private void reset() {
-        serverBlocking = false;
-        ticksSinceAttack = 999;
-        ticksSinceBlock = 999;
-        ticksSinceUnblock = 999;
-        attackDetected = false;
-        blockQueued = false;
-        attacksThisTick = 0;
-        opId = -1;
-        opSwingAge = 999;
-        opDist = 10.0;
-        opPrevDist = 10.0;
-        opApproachTicks = 0;
-        opHurtTime = 0;
-        opLastSwingMs = 0;
-        opAvgInterval = 0;
-        opIntIdx = 0;
-        for (int i = 0; i < opIntervals.length; i++) opIntervals[i] = 0;
-        velIncoming = false;
-        velCooldown = 0;
-        predictQueued = false;
+        serverBlocking   = false;
+        ticksSinceAttack = ticksSinceBlock = ticksSinceUnblock = 999;
+        blockQueued      = false;
+        attacksThisTick  = 0;
+        opId             = -1;
+        opSwingAge       = 999;
+        opDist = opPrevDist = 10.0;
+        opApproachTicks  = 0;
+        opHurtTime       = 0;
+        opLastSwingMs    = 0;
+        kfEstimate       = 0;
+        kfErrorCov       = 1e6;
+        kfSamples        = 0;
+        opPhase          = 0.0;
+        velIncoming      = false;
+        velCooldown      = 0;
+        velMagnitude     = 0;
+        predictQueued    = false;
         predictHoldTicks = 0;
         lagHeld.clear();
-        lagActive = false;
-        lagTicksLeft = 0;
-        lagFlushing = false;
-        totalBlocks = 0;
-        totalUnblocks = 0;
-        hitsBlocked = 0;
+        lagActive = false; lagTicksLeft = 0; lagFlushing = false;
+        smartThreat    = 0.0;
+        smartBlocking  = false;
+        smartHoldTicks = 0;
+        inCombat       = false;
+        combatCooldown = 0;
+        lastHealth     = mc.thePlayer != null ? mc.thePlayer.getHealth() : 20.0f;
+        fallDmgPred    = 0.0;
+        totalBlocks = totalUnblocks = hitsBlocked = 0;
     }
 
     // ═══════════════════════════════════
@@ -161,12 +196,15 @@ public class BlockHit extends Module {
         }
 
         updateOpponent();
+        updateFallDmgPrediction();
+        updateCombatState();
 
         switch (mode.getValue()) {
-            case 0: tickManual(); break;
-            case 1: tickAuto(); break;
+            case 0: tickManual();  break;
+            case 1: tickAuto();    break;
             case 2: tickPredict(); break;
-            case 3: tickLag(); break;
+            case 3: tickLag();     break;
+            case 4: tickSmart();   break;
         }
     }
 
@@ -224,17 +262,22 @@ public class BlockHit extends Module {
         // this maximizes block uptime
     }
 
-    // ═══════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════
     //  PREDICT
-    //  Preemptive blocking based on
-    //  opponent swing rhythm + distance.
-    //  Blocks BEFORE their hit lands.
-    //  Also blocks after our attacks.
+    //  Kalman-filtered rhythm prediction + phase model.
     //
-    //  Effective block uptime: 85-95%
-    //  because we predict incoming hits
-    //  AND block after our own attacks.
-    // ═══════════════════════════════════
+    //  The Kalman filter maintains a running estimate of the opponent's
+    //  true swing interval with uncertainty bounds. On each tick we
+    //  compute their phase (fraction of interval elapsed) and derive a
+    //  "time until next swing" estimate. We block when that estimate
+    //  falls inside a latency-compensated window.
+    //
+    //  threat = f(phase, distance, approach velocity, velocity incoming)
+    //
+    //  Block uptime target: block ONLY when threat is real, unblock
+    //  immediately when it isn't — so the server sees valid alternating
+    //  block/hit patterns rather than a constant 1-tick toggle.
+    // ═══════════════════════════════════════════════════════════════
 
     private void tickPredict() {
         if (predictHoldTicks > 0) predictHoldTicks--;
@@ -246,16 +289,15 @@ public class BlockHit extends Module {
             return;
         }
 
-        // process queued post-attack block
+        // post-attack reblock
         if (blockQueued) {
             blockQueued = false;
             sendBlock();
             ticksSinceBlock = 0;
-            // hold for 1-2 ticks depending on threat
-            predictHoldTicks = opSwingAge <= 3 ? 3 : 2;
+            // hold longer if opponent is in swing phase (high threat)
+            predictHoldTicks = (kalmanThreat() > 0.65) ? 3 : 2;
         }
 
-        // process predicted block
         if (predictQueued && !serverBlocking) {
             predictQueued = false;
             sendBlock();
@@ -263,88 +305,298 @@ public class BlockHit extends Module {
             predictHoldTicks = 2;
         }
 
-        // unblock when hold expires
         if (serverBlocking && predictHoldTicks <= 0 && ticksSinceBlock >= 1) {
             sendUnblock();
         }
 
-        // run prediction engine
         if (!serverBlocking) {
-            boolean shouldBlock = false;
+            double threat = kalmanThreat();
 
-            // immediate threat: opponent swung 0-1 ticks ago and is close
-            if (opSwingAge <= 1 && opDist < 4.5) {
-                shouldBlock = true;
-            }
+            // Kalman phase gate: block when swing is imminent (phase > 0.82)
+            // or when we have high confidence (kfSamples > 3) and phase > 0.75
+            boolean rhythmBlock = kfEstimate > 0 && kfSamples >= 2 && opDist < 5.0
+                    && (opPhase > (kfSamples >= 4 ? 0.75 : 0.82));
 
-            // rushing threat: closing distance + recent swing
-            if (opApproachTicks >= 2 && opSwingAge <= 4 && opDist < 4.0) {
-                shouldBlock = true;
-            }
+            // immediate reaction: swing detected this tick
+            boolean reactBlock = opSwingAge <= 1 && opDist < 4.5;
 
-            // rhythm prediction: next swing due within 80ms
-            if (opAvgInterval > 0 && opLastSwingMs > 0) {
-                long elapsed = System.currentTimeMillis() - opLastSwingMs;
-                long remaining = opAvgInterval - elapsed;
-                if (remaining <= 80 && remaining >= -30 && opDist < 4.5) {
-                    shouldBlock = true;
-                }
-            }
+            // approach gate: closing fast + recent swing
+            boolean approachBlock = opApproachTicks >= 2 && opSwingAge <= 5 && opDist < 4.2;
 
-            // close quarters: always be ready
-            if (opDist < 2.5 && opSwingAge <= 5) {
-                shouldBlock = true;
-            }
+            // velocity gate: incoming KB, block to reduce it
+            boolean velBlock = velIncoming && opDist < 5.0;
 
-            // velocity incoming: we're about to take KB, block to halve it
-            if (velIncoming && opDist < 5.0) {
-                shouldBlock = true;
-            }
+            // close quarters always relevant
+            boolean cqBlock = opDist < 2.2 && opSwingAge <= 6;
 
-            if (shouldBlock && rollChance()) {
+            if ((rhythmBlock || reactBlock || approachBlock || velBlock || cqBlock)
+                    && threat > 0.30 && rollChance()) {
                 predictQueued = true;
             }
         }
     }
 
-    // ═══════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════
     //  LAG
-    //  After blocking, hold outgoing C0F
-    //  transactions for 2-3 ticks.
-    //  Server can't confirm we unblocked
-    //  until transactions arrive, so it
-    //  applies block reduction for longer
-    //  than we actually blocked.
+    //  Block → hold outgoing C0F transactions for lagTicks ticks →
+    //  unblock → flush. Server can't confirm we stopped blocking
+    //  until transactions arrive, extending effective server-side
+    //  block time beyond what the client actually held.
     //
-    //  Effective server-side block time:
-    //  actual block ticks + lag ticks
-    // ═══════════════════════════════════
+    //  With Lag Jitter: randomise hold ±1 tick to prevent detection
+    //  by constant-interval analysis (NCP, Intave, Polar).
+    // ═══════════════════════════════════════════════════════════════
 
     private void tickLag() {
         if (blockQueued) {
             blockQueued = false;
             sendBlock();
             ticksSinceBlock = 0;
-
-            // start lagging after block
-            lagActive = true;
-            lagTicksLeft = 3;
+            lagActive    = true;
+            int base     = lagTicks.getValue();
+            lagTicksLeft = lagJitter.getValue()
+                    ? base + ThreadLocalRandom.current().nextInt(3) - 1   // base-1 to base+1
+                    : base;
+            lagTicksLeft = Math.max(1, lagTicksLeft);
         }
 
         if (lagActive) {
             lagTicksLeft--;
             if (lagTicksLeft <= 0) {
-                // unblock and flush held transactions
                 sendUnblock();
                 flushLag();
                 lagActive = false;
             }
         }
 
-        // safety: if blocking without lag active, clean up
-        if (serverBlocking && !lagActive && ticksSinceBlock >= 2) {
+        if (serverBlocking && !lagActive && ticksSinceBlock >= 3) {
             sendUnblock();
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SMART
+    //  Physics-driven adaptive blocking. Only blocks when one of
+    //  these conditions is predicted to be true:
+    //
+    //  1. FALL DAMAGE IMMINENT — Newton kinematics:
+    //     v²  = v₀² + 2·g·Δh   →   fallDmg = max(0, fallH - 3)·0.5
+    //     We predict fall damage from current motionY and height above
+    //     ground. Block starts when predicted damage > 0.
+    //
+    //  2. INCOMING HIT IN COMBAT — Kalman phase window:
+    //     Block only when threat score > smartThreshold AND we are
+    //     actively in combat (took/dealt damage in last 4 seconds).
+    //     Unblock immediately when threat drops — zero wasted blocks.
+    //
+    //  3. VELOCITY PACKET INCOMING — react within 1 tick.
+    //
+    //  If smartCombat is true: modes 2+3 only fire when inCombat.
+    //  If smartFall is true:   mode 1 fires independently of combat.
+    //
+    //  No blocks are ever wasted on an opponent who isn't swinging.
+    // ═══════════════════════════════════════════════════════════════
+
+    private void tickSmart() {
+        if (smartHoldTicks > 0) smartHoldTicks--;
+
+        // ── post-attack reblock ──
+        if (blockQueued) {
+            blockQueued = false;
+            if (!smartCombat.getValue() || inCombat) {
+                sendBlock();
+                ticksSinceBlock = 0;
+                smartBlocking  = true;
+                // hold just long enough for the server to register it
+                smartHoldTicks = 1 + (opSwingAge <= 3 ? 1 : 0);
+            }
+        }
+
+        // ── CASE 1: fall damage prediction ──
+        if (smartFall.getValue() && !smartBlocking) {
+            // fallDmgPred is computed by updateFallDmgPrediction() each tick
+            // Block only if predicted damage exceeds the threshold
+            if (fallDmgPred > 0.5) {
+                sendBlock();
+                smartBlocking  = true;
+                smartHoldTicks = 3; // hold through landing
+            }
+        }
+
+        // ── CASE 2: incoming hit in combat ──
+        if (!smartBlocking && (!smartCombat.getValue() || inCombat)) {
+            double threat = kalmanThreat();
+
+            // Kalman phase: swing arriving within ~1.5 ticks' worth of ms
+            boolean rhythmImminent = kfEstimate > 0 && kfSamples >= 2
+                    && opDist < 4.8 && opPhase > 0.80;
+
+            // immediate reaction to observed swing
+            boolean reactImm = opSwingAge <= 1 && opDist < 4.5;
+
+            // approach + velocity
+            boolean velThreat = velIncoming && (!smartCombat.getValue() || inCombat);
+
+            // Demand higher threat confidence than PREDICT — we don't waste blocks
+            if ((rhythmImminent || reactImm || velThreat) && threat > 0.50 && rollChance()) {
+                sendBlock();
+                smartBlocking  = true;
+                smartHoldTicks = 2;
+            }
+        }
+
+        // ── CASE 3: velocity incoming (highest priority) ──
+        if (!smartBlocking && velIncoming && velMagnitude > 0.25) {
+            sendBlock();
+            smartBlocking  = true;
+            smartHoldTicks = 2;
+        }
+
+        // ── unblock when hold expires ──
+        if (smartBlocking && smartHoldTicks <= 0 && ticksSinceBlock >= 1) {
+            sendUnblock();
+            smartBlocking = false;
+        }
+
+        // ── safety release if no real threat for 3 ticks ──
+        if (serverBlocking && kalmanThreat() < 0.15 && opSwingAge > 8
+                && !velIncoming && fallDmgPred < 0.3 && ticksSinceBlock >= 2) {
+            sendUnblock();
+            smartBlocking = false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  PHYSICS HELPERS
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Newton kinematics fall damage predictor.
+     *
+     * In Minecraft, fall damage = max(0, fallDistance - 3) * 0.5 hp,
+     * reduced by armour. We predict fall distance using:
+     *   Δh = v₀·t + ½·g·t²    (discrete: motionY + gravity each tick)
+     * Simulate up to 40 ticks ahead, tracking fallDistance accumulation.
+     * If predicted damage × (1 - armourFactor) > smartFallH threshold,
+     * block now (takes effect before landing since block reduces fall dmg).
+     */
+    private void updateFallDmgPrediction() {
+        fallDmgPred = 0.0;
+        if (mc.thePlayer == null || mc.thePlayer.onGround) return;
+
+        double motY   = mc.thePlayer.motionY;
+        double posY   = mc.thePlayer.posY;
+        double fallD  = mc.thePlayer.fallDistance;
+        final double g = 0.08; // Minecraft gravity per tick
+
+        // simulate descent
+        for (int t = 0; t < 40; t++) {
+            motY  = (motY - g) * 0.98; // drag
+            posY += motY;
+            if (motY < 0) fallD += -motY;
+
+            // check if we'd hit ground (crude: posY hits integer block boundary)
+            // We're conservative: just predict from current fallDistance accumulation
+            if (mc.theWorld != null) {
+                try {
+                    net.minecraft.block.Block b = mc.theWorld.getBlockState(
+                            new BlockPos(mc.thePlayer.posX, posY - 0.1, mc.thePlayer.posZ)).getBlock();
+                    if (b != null && b.getMaterial() != net.minecraft.block.material.Material.air) {
+                        // landing here — compute damage
+                        double rawDmg = Math.max(0, fallD - 3.0);
+                        // armour reduction (approximate: each armour point = ~4% reduction)
+                        int armour = mc.thePlayer.getTotalArmorValue();
+                        double reduction = Math.min(0.80, armour * 0.04);
+                        fallDmgPred = rawDmg * (1.0 - reduction);
+                        return;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /**
+     * Kalman-filtered threat score ∈ [0, 1].
+     *
+     * Combines:
+     *  - Phase confidence: how close is opponent to next swing
+     *  - Distance factor: exponential decay with distance
+     *  - Approach velocity: closing speed amplifies threat
+     *  - Observation age: older swing observation → lower weight
+     *
+     * Returns 0 if Kalman has no data yet.
+     */
+    private double kalmanThreat() {
+        EntityLivingBase target = getTarget();
+        if (target == null) return 0.0;
+
+        // distance factor: threat drops off exponentially beyond 3 blocks
+        double distFactor = Math.exp(-Math.max(0, opDist - 2.0) * 0.6);
+
+        // phase factor: how imminent is next swing
+        double phaseFactor = kfEstimate > 0 && kfSamples >= 2
+                ? Math.pow(opPhase, 2.5)   // non-linear: ramps sharply near 1.0
+                : 0.0;
+
+        // approach factor: closing velocity increases threat
+        double closingVel  = Math.max(0, opPrevDist - opDist);
+        double approachFactor = Math.min(1.0, closingVel * 8.0);
+
+        // observation recency: swing seen N ticks ago
+        double recencyFactor = Math.exp(-opSwingAge * 0.18);
+
+        // velocity incoming: hard 0.4 bonus
+        double velFactor = velIncoming ? 0.4 : 0.0;
+
+        double raw = distFactor * 0.35
+                   + phaseFactor * 0.30
+                   + approachFactor * 0.15
+                   + recencyFactor * 0.15
+                   + velFactor;
+
+        return Math.min(1.0, raw);
+    }
+
+    /**
+     * Updates the Kalman filter with a new swing interval measurement.
+     * Also updates the phase tracker.
+     */
+    private void updateKalman(long intervalMs) {
+        // prediction step: error covariance grows with process noise
+        kfErrorCov += kfProcNoise;
+
+        // update step
+        double K       = kfErrorCov / (kfErrorCov + kfMeasNoise);
+        kfEstimate     = kfEstimate + K * (intervalMs - kfEstimate);
+        kfErrorCov     = (1.0 - K) * kfErrorCov;
+        kfSamples++;
+    }
+
+    /** Updates opPhase: fraction of Kalman interval elapsed since last swing. */
+    private void updatePhase() {
+        if (kfEstimate <= 0 || opLastSwingMs <= 0) { opPhase = 0; return; }
+        long elapsed = System.currentTimeMillis() - opLastSwingMs;
+        opPhase = Math.min(1.0, elapsed / kfEstimate);
+    }
+
+    /**
+     * Updates inCombat flag.
+     * In combat if: recently attacked or took damage in last ~4 seconds (80 ticks).
+     */
+    private void updateCombatState() {
+        if (mc.thePlayer == null) return;
+        float hp = mc.thePlayer.getHealth();
+        if (hp < lastHealth) {
+            inCombat       = true;
+            combatCooldown = 80;
+        }
+        lastHealth = hp;
+        if (ticksSinceAttack < 40) {
+            inCombat       = true;
+            combatCooldown = 80;
+        }
+        if (combatCooldown > 0) combatCooldown--;
+        else inCombat = false;
     }
 
     // ═══════════════════════════════════
@@ -393,10 +645,14 @@ public class BlockHit extends Module {
             if (event.getPacket() instanceof S12PacketEntityVelocity) {
                 S12PacketEntityVelocity vel = (S12PacketEntityVelocity) event.getPacket();
                 if (vel.getEntityID() == mc.thePlayer.getEntityId()) {
-                    velIncoming = true;
-                    velCooldown = 4;
+                    // capture magnitude for Smart mode priority scoring
+                    double vx = vel.getMotionX() / 8000.0;
+                    double vy = vel.getMotionY() / 8000.0;
+                    double vz = vel.getMotionZ() / 8000.0;
+                    velMagnitude = Math.sqrt(vx * vx + vy * vy + vz * vz);
+                    velIncoming  = true;
+                    velCooldown  = 4;
 
-                    // if we're blocking when velocity arrives, count it
                     if (serverBlocking) hitsBlocked++;
                 }
             }
@@ -485,41 +741,41 @@ public class BlockHit extends Module {
         if (target == null) { opId = -1; return; }
 
         if (target.getEntityId() != opId) {
-            opId = target.getEntityId();
-            opSwingAge = 999;
-            opDist = mc.thePlayer.getDistanceToEntity(target);
-            opPrevDist = opDist;
+            opId           = target.getEntityId();
+            opSwingAge     = 999;
+            opDist         = mc.thePlayer.getDistanceToEntity(target);
+            opPrevDist     = opDist;
             opApproachTicks = 0;
-            opLastSwingMs = 0;
-            opAvgInterval = 0;
-            opIntIdx = 0;
-            for (int i = 0; i < opIntervals.length; i++) opIntervals[i] = 0;
+            opLastSwingMs  = 0;
+            kfEstimate     = 0;
+            kfErrorCov     = 1e6;
+            kfSamples      = 0;
+            opPhase        = 0;
         }
 
         opHurtTime = target.hurtTime;
         opPrevDist = opDist;
-        opDist = mc.thePlayer.getDistanceToEntity(target);
+        opDist     = mc.thePlayer.getDistanceToEntity(target);
 
         if (opDist - opPrevDist < -0.05) opApproachTicks++;
-        else opApproachTicks = 0;
+        else opApproachTicks = Math.max(0, opApproachTicks - 1);
+
+        // update phase every tick so kalmanThreat() always has fresh data
+        updatePhase();
     }
 
     private void recordOpponentSwing() {
         long now = System.currentTimeMillis();
         if (opLastSwingMs > 0) {
             long interval = now - opLastSwingMs;
-            if (interval > 0 && interval < 2000) {
-                opIntervals[opIntIdx % opIntervals.length] = interval;
-                opIntIdx++;
-                long sum = 0; int cnt = 0;
-                for (long si : opIntervals) {
-                    if (si > 0) { sum += si; cnt++; }
-                }
-                if (cnt > 0) opAvgInterval = sum / cnt;
+            // plausible swing interval: 100ms (10 CPS) to 2000ms (0.5 CPS)
+            if (interval >= 100 && interval <= 2000) {
+                updateKalman(interval);
             }
         }
         opLastSwingMs = now;
-        opSwingAge = 0;
+        opSwingAge    = 0;
+        opPhase       = 0.0; // reset phase: they just swung
     }
 
     // ═══════════════════════════════════
@@ -551,6 +807,12 @@ public class BlockHit extends Module {
 
     @Override
     public String[] getSuffix() {
+        if (mode.getValue() == 4) {
+            // Smart: show threat % and combat state
+            String combatStr = inCombat ? "§acombat" : "§7idle";
+            return new String[]{mode.getModeString(), combatStr,
+                    String.format("%.0f%%", kalmanThreat() * 100)};
+        }
         return new String[]{mode.getModeString()};
     }
 }

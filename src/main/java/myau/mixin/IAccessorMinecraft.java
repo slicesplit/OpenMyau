@@ -1,6 +1,7 @@
 package myau.mixin;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.util.Timer;
 import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
@@ -22,4 +23,10 @@ public interface IAccessorMinecraft {
 
     @Accessor("rightClickDelayTimer")
     void setRightClickDelayTimer(int integer);
+
+    @Accessor("currentServerData")
+    ServerData getCurrentServerData();
+
+    @Accessor("integratedServerIsRunning")
+    boolean isIntegratedServerRunning();
 }

@@ -3,213 +3,192 @@ package myau.module.modules;
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
-import myau.event.types.EventType;
-import myau.events.*;
+import myau.events.AttackEvent;
+import myau.events.UpdateEvent;
 import myau.module.Module;
-import myau.property.properties.*;
+import myau.property.properties.BooleanProperty;
+import myau.property.properties.ModeProperty;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.settings.KeyBinding;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityLivingBase;
+import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.network.play.client.C0BPacketEntityAction;
-import net.minecraft.network.play.client.C0BPacketEntityAction.Action;
 
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class SprintReset extends Module {
 
+    public final ModeProperty mode = new ModeProperty("Mode", 2, new String[]{"PACKET", "LEGIT", "SILENT"});
+    private final BooleanProperty onlyWhileSprinting = new BooleanProperty("Only While Sprinting", true);
+    private final BooleanProperty onlyWhileMoving = new BooleanProperty("Only While Moving", true);
+    private final BooleanProperty resetOnCrit = new BooleanProperty("Reset On Crit", true);
+    private final BooleanProperty smartReset = new BooleanProperty("Smart Reset", false);
+    private final BooleanProperty fastReset = new BooleanProperty("Fast Reset", false);
     private static final Minecraft mc = Minecraft.getMinecraft();
-
-    public final ModeProperty mode = new ModeProperty("mode", 0,
-            new String[]{"Packet", "S-Tap", "W-Tap", "Legit S-Tap"});
-
-    // How many ticks to hold the direction key released (for legit modes)
-    public final IntProperty releaseLength = new IntProperty("release-ticks", 1, 1, 3,
-            () -> mode.getValue() >= 1);
-
-    // Only reset when moving forward
-    public final BooleanProperty onlyForward = new BooleanProperty("only-forward", true);
-
-    // Only when target is in range
-    public final BooleanProperty onlyInRange = new BooleanProperty("only-in-range", true);
-
-    private int releaseTicks;
-    private boolean wasReleased;
+    private boolean attacked = false;
+    private boolean needsReset = false;
+    private int ticksSinceAttack = 0;
+    private Entity lastTarget = null;
 
     public SprintReset() {
-        super("SprintReset", false);
+        super("SprintReset", false, false);
     }
 
     @Override
     public void onEnabled() {
-        releaseTicks = 0;
-        wasReleased = false;
+        attacked = false;
+        needsReset = false;
+        ticksSinceAttack = 0;
+        lastTarget = null;
     }
 
     @Override
     public void onDisabled() {
-        releaseTicks = 0;
-        wasReleased = false;
+        attacked = false;
+        needsReset = false;
+        ticksSinceAttack = 0;
+        lastTarget = null;
     }
-
-    // ══════════════════════════════════════════════
-    //  ATTACK EVENT — triggers the sprint reset
-    // ══════════════════════════════════════════════
 
     @EventTarget
     public void onAttack(AttackEvent event) {
-        if (mc.thePlayer == null) return;
-        if (!mc.thePlayer.isSprinting()) return;
+        if (!this.isEnabled()) return;
+        if (mc.thePlayer == null || mc.theWorld == null) return;
 
-        if (onlyForward.getValue() && !isMovingForward()) return;
+        Entity target = event.getTarget();
+        if (target == null) return;
+        if (!(target instanceof EntityLivingBase)) return;
 
-        if (onlyInRange.getValue()) {
-            if (mc.thePlayer.getDistanceToEntity(event.getTarget()) > 3.5) return;
+        if (onlyWhileSprinting.getValue() && !mc.thePlayer.isSprinting()) return;
+        if (onlyWhileMoving.getValue() && !isMoving()) return;
+
+        if (smartReset.getValue()) {
+            if (((EntityLivingBase) target).getHealth() <= 0) return;
+            if (mc.thePlayer.getDistanceToEntity(target) > 6.0f) return;
         }
+        if (fastReset.getValue() && lastTarget != null && lastTarget != target) {
+            handlePacketReset();
+        }
+
+        lastTarget = target;
+        attacked = true;
 
         switch (mode.getValue()) {
             case 0:
-                doPacketReset();
+                handlePacketReset();
                 break;
             case 1:
-                startSTap();
+                handleLegitReset();
                 break;
             case 2:
-                startWTap();
-                break;
-            case 3:
-                startLegitSTap();
+                handleSilentReset();
                 break;
         }
     }
-
-    // ══════════════════════════════════════════════
-    //  TICK — handles multi-tick resets for legit modes
-    // ══════════════════════════════════════════════
 
     @EventTarget
     public void onUpdate(UpdateEvent event) {
-        if (event.getType() != EventType.PRE) return;
-        if (mc.thePlayer == null) return;
+        if (!this.isEnabled()) return;
+        if (mc.thePlayer == null || mc.theWorld == null) return;
 
-        if (wasReleased) {
-            releaseTicks++;
-            if (releaseTicks >= releaseLength.getValue()) {
-                restoreKeys();
-                wasReleased = false;
-                releaseTicks = 0;
+        if (attacked) {
+            ticksSinceAttack++;
+        }
+
+        if (mode.getValue() == 1 && needsReset) {
+            if (ticksSinceAttack >= 1) {
+                mc.thePlayer.setSprinting(true);
+                needsReset = false;
+                attacked = false;
+                ticksSinceAttack = 0;
             }
+        }
+
+        if (mode.getValue() == 2 && needsReset) {
+            if (ticksSinceAttack >= 1) {
+                mc.thePlayer.sendQueue.addToSendQueue(
+                        new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
+                );
+                needsReset = false;
+                attacked = false;
+                ticksSinceAttack = 0;
+            }
+        }
+
+        if (ticksSinceAttack > 5) {
+            attacked = false;
+            needsReset = false;
+            ticksSinceAttack = 0;
         }
     }
 
-    // ══════════════════════════════════════════════════════
-    //  MODE 0: PACKET RESET — The most brutal method
-    //
-    //  How it works:
-    //  1. Send STOP_SPRINTING to server
-    //  2. Server marks player as not sprinting
-    //  3. Send START_SPRINTING to server
-    //  4. Server marks player as sprinting again
-    //
-    //  This all happens on the SAME TICK as the attack.
-    //  The server processes packets in order:
-    //    C0B(STOP) → C02(ATTACK) → C0B(START)
-    //
-    //  But because sprint state is checked when C02 is
-    //  processed, and we re-engage sprint BEFORE the next
-    //  tick, the server sees:
-    //    - Sprint stops
-    //    - Attack lands (no sprint KB... wait)
-    //
-    //  Actually, the brutal version sends:
-    //    C0B(STOP) → C0B(START) → C02(ATTACK)
-    //
-    //  So the server sees sprint re-engaged BEFORE the
-    //  attack packet, giving full sprint knockback every
-    //  single hit. The sprint was "reset" so the game
-    //  treats it as a new sprint hit.
-    //
-    //  Why this is the most brutal:
-    //  - Zero tick delay between reset and attack
-    //  - 100% sprint KB rate (every hit is a sprint hit)
-    //  - No movement disruption (player never stops moving)
-    //  - No visual tells (no stutter, no slow down)
-    //  - Works at any CPS
-    //  - Impossible to replicate manually
-    // ══════════════════════════════════════════════════════
-
-    private void doPacketReset() {
-        if (mc.getNetHandler() == null) return;
-
-        // Stop sprint
-        mc.getNetHandler().addToSendQueue(
-                new C0BPacketEntityAction(mc.thePlayer, Action.STOP_SPRINTING));
-
-        // Immediately re-engage sprint
-        mc.getNetHandler().addToSendQueue(
-                new C0BPacketEntityAction(mc.thePlayer, Action.START_SPRINTING));
-
-        // Ensure client state matches
-        mc.thePlayer.setSprinting(true);
+    private void handlePacketReset() {
+        mc.thePlayer.sendQueue.addToSendQueue(
+                new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
+        );
+        mc.thePlayer.sendQueue.addToSendQueue(
+                new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.START_SPRINTING)
+        );
+        if (resetOnCrit.getValue() && canCrit()) {
+            performCritReset();
+        }
+        attacked = false;
+        ticksSinceAttack = 0;
     }
 
-    // ══════════════════════════════════════════════
-    //  MODE 1: S-TAP
-    //  Simulates pressing S for 1-3 ticks
-    //  Forces sprint off because you can't sprint backward
-    // ══════════════════════════════════════════════
+    private void handleLegitReset() {
+        mc.thePlayer.setSprinting(false);
+        needsReset = true;
+        ticksSinceAttack = 0;
 
-    private void startSTap() {
-        KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
-        KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), true);
-        wasReleased = true;
-        releaseTicks = 0;
+        if (resetOnCrit.getValue() && canCrit()) {
+            performCritReset();
+        }
     }
 
-    // ══════════════════════════════════════════════
-    //  MODE 2: W-TAP
-    //  Releases W for 1-3 ticks to break sprint
-    // ══════════════════════════════════════════════
+    private void handleSilentReset() {
+        mc.thePlayer.sendQueue.addToSendQueue(
+                new C0BPacketEntityAction(mc.thePlayer, C0BPacketEntityAction.Action.STOP_SPRINTING)
+        );
 
-    private void startWTap() {
-        KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
-        wasReleased = true;
-        releaseTicks = 0;
+        needsReset = true;
+        ticksSinceAttack = 0;
+
+        if (resetOnCrit.getValue() && canCrit()) {
+            performCritReset();
+        }
     }
 
-    // ══════════════════════════════════════════════
-    //  MODE 3: LEGIT S-TAP
-    //  Same as S-Tap but with randomized timing
-    //  to look more human on replays
-    // ══════════════════════════════════════════════
+    private void performCritReset() {
+        if (mc.thePlayer.onGround && !mc.thePlayer.isInWater() && !mc.thePlayer.isOnLadder()) {
+            double x = mc.thePlayer.posX;
+            double y = mc.thePlayer.posY;
+            double z = mc.thePlayer.posZ;
 
-    private void startLegitSTap() {
-        // 30% chance to skip a reset — humans aren't perfect
-        if (Math.random() < 0.30) return;
-
-        KeyBinding.setKeyBindState(mc.gameSettings.keyBindForward.getKeyCode(), false);
-        KeyBinding.setKeyBindState(mc.gameSettings.keyBindBack.getKeyCode(), true);
-        wasReleased = true;
-        releaseTicks = 0;
+            mc.thePlayer.sendQueue.addToSendQueue(
+                    new C03PacketPlayer.C04PacketPlayerPosition(x, y + 0.0625, z, false)
+            );
+            mc.thePlayer.sendQueue.addToSendQueue(
+                    new C03PacketPlayer.C04PacketPlayerPosition(x, y, z, false)
+            );
+            mc.thePlayer.sendQueue.addToSendQueue(
+                    new C03PacketPlayer.C04PacketPlayerPosition(x, y + 1.1E-5, z, false)
+            );
+            mc.thePlayer.sendQueue.addToSendQueue(
+                    new C03PacketPlayer.C04PacketPlayerPosition(x, y, z, false)
+            );
+        }
     }
 
-    // ══════════════════════════════════════════════
-    //  KEY RESTORATION
-    // ══════════════════════════════════════════════
-
-    private void restoreKeys() {
-        // Restore keys based on what the player is actually pressing
-        KeyBinding.setKeyBindState(
-                mc.gameSettings.keyBindForward.getKeyCode(),
-                org.lwjgl.input.Keyboard.isKeyDown(mc.gameSettings.keyBindForward.getKeyCode()));
-        KeyBinding.setKeyBindState(
-                mc.gameSettings.keyBindBack.getKeyCode(),
-                org.lwjgl.input.Keyboard.isKeyDown(mc.gameSettings.keyBindBack.getKeyCode()));
+    private boolean canCrit() {
+        return mc.thePlayer.onGround
+                && !mc.thePlayer.isInWater()
+                && !mc.thePlayer.isInLava()
+                && !mc.thePlayer.isOnLadder()
+                && !mc.thePlayer.isPotionActive(net.minecraft.potion.Potion.blindness)
+                && mc.thePlayer.ridingEntity == null;
     }
 
-    private boolean isMovingForward() {
-        return mc.thePlayer.moveForward > 0;
-    }
-
-    @Override
-    public String[] getSuffix() {
-        return new String[]{mode.getModeString()};
+    private boolean isMoving() {
+        return mc.thePlayer.moveForward != 0 || mc.thePlayer.moveStrafing != 0;
     }
 }

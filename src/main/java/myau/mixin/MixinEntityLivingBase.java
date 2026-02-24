@@ -11,8 +11,11 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
+import myau.module.modules.Animations;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Constant;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
@@ -56,6 +59,20 @@ public abstract class MixinEntityLivingBase extends MixinEntity {
         } else {
             entityLivingBase.moveFlying(float2, float3, float4);
         }
+    }
+
+    @ModifyConstant(
+            method = "getArmSwingAnimationEnd",
+            constant = @Constant(intValue = 6)
+    )
+    private int modifySwingSpeed(int original) {
+        if (!(((Object) this) instanceof EntityPlayerSP)) return original;
+        if (Myau.moduleManager == null) return original;
+        Animations anim = (Animations) Myau.moduleManager.modules.get(Animations.class);
+        if (anim == null || !anim.isEnabled()) return original;
+        // FDP formula: 2 + (20 - swingSpeed); swingSpeed is int 2..20, default 2
+        // → gives range 2..20 ticks (higher swingSpeed = faster swing)
+        return 2 + (20 - anim.swingSpeed.getValue());
     }
 
     @ModifyVariable(

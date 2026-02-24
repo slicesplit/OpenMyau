@@ -8,7 +8,9 @@ import myau.events.MoveInputEvent;
 import myau.events.PlayerUpdateEvent;
 import myau.events.UpdateEvent;
 import myau.management.RotationState;
+import myau.management.ServerGroundTracker;
 import myau.module.modules.AntiDebuff;
+import myau.module.modules.ChatLimitRemove;
 import myau.module.modules.NoSlow;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.potion.Potion;
@@ -114,6 +116,14 @@ public abstract class MixinEntityPlayerSP extends MixinEntityPlayer {
     }
 
     @Inject(
+            method = {"onUpdateWalkingPlayer"},
+            at = {@At("HEAD")}
+    )
+    private void captureServerOnGround(CallbackInfo ci) {
+        ServerGroundTracker.serverOnGround = this.onGround;
+    }
+
+    @Inject(
             method = {"onLivingUpdate"},
             at = {@At(
                     value = "INVOKE",
@@ -163,5 +173,23 @@ public abstract class MixinEntityPlayerSP extends MixinEntityPlayer {
             }
         }
         return ((IAccessorEntityLivingBase) entityPlayerSP).getActivePotionsMap().containsKey(potion.id);
+    }
+
+    // Bypass the vanilla 256-char substring truncation in sendChatMessage
+    @Redirect(
+            method = {"sendChatMessage"},
+            at = @At(
+                    value = "INVOKE",
+                    target = "Ljava/lang/String;substring(II)Ljava/lang/String;"
+            )
+    )
+    private String bypassChatLimit(String str, int start, int end) {
+        if (Myau.moduleManager != null) {
+            ChatLimitRemove mod = (ChatLimitRemove) Myau.moduleManager.modules.get(ChatLimitRemove.class);
+            if (mod != null && mod.isEnabled()) {
+                return str; // skip truncation entirely
+            }
+        }
+        return str.substring(start, end);
     }
 }

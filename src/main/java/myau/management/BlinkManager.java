@@ -245,13 +245,12 @@ public class BlinkManager {
      */
     private void flushSnapshot(PacketSnapshot snapshot) {
         if (snapshot.origin == TransferOrigin.OUTGOING) {
-            // Send outgoing packet
-            PacketUtil.sendPacketNoEvent(snapshot.packet);
+            // Send outgoing packet — must be on client thread
+            PacketUtil.sendPacketSafe(snapshot.packet);
         } else {
             // Process incoming packet
             if (mc.getNetHandler() != null) {
                 try {
-                    // Cannot safely cast and process - just send to network
                     mc.getNetHandler().addToSendQueue(snapshot.packet);
                 } catch (Exception e) {
                     // Ignore processing errors

@@ -2,9 +2,10 @@ package myau.mixin;
 
 import myau.Myau;
 import myau.event.EventManager;
+import myau.events.EntityMovementEvent;
 import myau.events.KnockbackEvent;
 import myau.events.SafeWalkEvent;
-import myau.module.modules.OldBacktrack;
+import myau.module.modules.Backtrack;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.entity.Entity;
 import net.minecraft.util.AxisAlignedBB;
@@ -85,13 +86,20 @@ public abstract class MixinEntity {
         }
     }
 
+    @Inject(method = {"moveEntity"}, at = @At("RETURN"))
+    private void onMoveEntityReturn(double dx, double dy, double dz, CallbackInfo ci) {
+        Entity self = (Entity) (Object) this;
+        if (self instanceof EntityPlayerSP) return;
+        EventManager.call(new EntityMovementEvent(self));
+    }
+
     @Inject(method = "getEntityBoundingBox", at = @At("RETURN"), cancellable = true)
     private void onGetBoundingBox(CallbackInfoReturnable<AxisAlignedBB> cir) {
-        if (!OldBacktrack.isRaytracing) return;
+        if (!Backtrack.isRaytracing) return;
         if (myau$inExpandCheck.get()) return;
         if (Myau.moduleManager == null) return;
 
-        OldBacktrack bt = (OldBacktrack) Myau.moduleManager.modules.get(OldBacktrack.class);
+        Backtrack bt = (Backtrack) Myau.moduleManager.modules.get(Backtrack.class);
         if (bt == null || !bt.isEnabled()) return;
 
         AxisAlignedBB original = cir.getReturnValue();

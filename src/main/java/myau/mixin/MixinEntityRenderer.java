@@ -109,12 +109,12 @@ public abstract class MixinEntityRenderer {
     // ── BackTrack raytrace flag ──
     @Inject(method = "getMouseOver", at = @At("HEAD"))
     private void preMouseOver(float pt, CallbackInfo ci) {
-        OldBacktrack.isRaytracing = true;
+        Backtrack.isRaytracing = true;
     }
 
     @Inject(method = "getMouseOver", at = @At("RETURN"))
     private void postMouseOver(float pt, CallbackInfo ci) {
-        OldBacktrack.isRaytracing = false;
+        Backtrack.isRaytracing = false;
     }
 
     @ModifyConstant(method = {"getMouseOver"}, constant = {@Constant(doubleValue = 3.0, ordinal = 1)})

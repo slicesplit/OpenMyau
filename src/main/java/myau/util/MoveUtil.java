@@ -154,6 +154,10 @@ public class MoveUtil {
         return new double[]{0.0, 0.0};
     }
 
+    public static boolean isMoving() {
+        return mc.thePlayer != null && (mc.thePlayer.motionX != 0.0 || mc.thePlayer.motionZ != 0.0);
+    }
+
     public static void fixStrafe(float targetYaw) {
         float angle = MathHelper.wrapAngleTo180_float(MoveUtil.adjustYaw(MoveUtil.mc.thePlayer.rotationYaw, MoveUtil.getForwardValue(), MoveUtil.getLeftValue()) - targetYaw + 22.5f);
         switch ((int) (angle + 180.0f) / 45 % 8) {
