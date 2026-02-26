@@ -10,7 +10,6 @@ import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.ItemRenderer;
 import net.minecraft.client.renderer.RenderHelper;
 import net.minecraft.client.renderer.block.model.ItemCameraTransforms;
-import net.minecraft.item.EnumAction;
 import net.minecraft.item.ItemMap;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.ItemSword;
@@ -263,6 +262,8 @@ public abstract class MixinItemRenderer {
      */
     @Overwrite
     public void renderItemInFirstPerson(float partialTicks) {
+        if (mc.thePlayer == null) return;
+
         // equipProgress: 0 = fully equipped, 1 = fully unequipped
         float f = 1f - (prevEquippedProgress + (equippedProgress - prevEquippedProgress) * partialTicks);
 
@@ -279,33 +280,37 @@ public abstract class MixinItemRenderer {
         GlStateManager.enableRescaleNormal();
         GlStateManager.pushMatrix();
 
-        // Hand position / scale offsets from Animations module
-        Animations anim = getAnim();
-        if (anim != null) {
-            GlStateManager.translate(anim.handX.getValue(), anim.handY.getValue(), anim.itemScale.getValue());
-            GlStateManager.rotate(anim.handPosX.getValue(), 1f, 0f, 0f);
-            GlStateManager.rotate(anim.handPosY.getValue(), 0f, 1f, 0f);
-            GlStateManager.rotate(anim.handPosZ.getValue(), 0f, 0f, 1f);
-        }
+        try {
+            // Hand position / scale offsets from Animations module
+            Animations anim = getAnim();
+            if (anim != null) {
+                GlStateManager.translate(anim.handX.getValue(), anim.handY.getValue(), anim.itemScale.getValue());
+                GlStateManager.rotate(anim.handPosX.getValue(), 1f, 0f, 0f);
+                GlStateManager.rotate(anim.handPosY.getValue(), 0f, 1f, 0f);
+                GlStateManager.rotate(anim.handPosZ.getValue(), 0f, 0f, 1f);
+            }
 
-        if (itemToRender != null) {
-            boolean forceBlock = isForceBlocking(itemToRender);
+            if (itemToRender != null) {
+                boolean forceBlock = isForceBlocking(itemToRender);
 
-            if (itemToRender.getItem() instanceof ItemMap) {
-                renderItemMap(abstractclientplayer, f2, f, f1);
-            } else if (abstractclientplayer.getItemInUseCount() > 0 || forceBlock) {
-                EnumAction enumaction = forceBlock ? EnumAction.BLOCK : itemToRender.getItemUseAction();
+                if (itemToRender.getItem() instanceof ItemMap) {
+                    renderItemMap(abstractclientplayer, f2, f, f1);
+                } else if (abstractclientplayer.getItemInUseCount() > 0 || forceBlock) {
+                    // Use string comparison to avoid $SwitchMap synthetic field conflicts
+                    // that cause NoSuchFieldError at runtime when mixed into ItemRenderer
+                    String actionName;
+                    try {
+                        actionName = forceBlock ? "BLOCK" : itemToRender.getItemUseAction().name();
+                    } catch (Exception e) {
+                        actionName = "NONE";
+                    }
 
-                switch (enumaction) {
-                    case NONE:
+                    if ("NONE".equals(actionName)) {
                         transformFirstPersonItem(f, 0f);
-                        break;
-                    case EAT:
-                    case DRINK:
+                    } else if ("EAT".equals(actionName) || "DRINK".equals(actionName)) {
                         performDrinking(abstractclientplayer, partialTicks);
                         transformFirstPersonItem(f, f1);
-                        break;
-                    case BLOCK:
+                    } else if ("BLOCK".equals(actionName)) {
                         if (anim != null) {
                             // FDP: animation.transform(f1=swingProgress, f=equipProgress, player)
                             applyAnimation(anim, f1, f, abstractclientplayer);
@@ -319,24 +324,29 @@ public abstract class MixinItemRenderer {
                             GlStateManager.rotate(60f,  0f, 1f, 0f);
                             GlStateManager.translate(-0.5f, 0.2f, 0f);
                         }
-                        break;
-                    case BOW:
+                    } else if ("BOW".equals(actionName)) {
                         transformFirstPersonItem(f, f1);
                         doBowTransformations(partialTicks, abstractclientplayer);
-                        break;
+                    } else {
+                        // Unknown action — safe fallback
+                        transformFirstPersonItem(f, f1);
+                    }
+                } else {
+                    // Not blocking / not using item
+                    // OddSwing: skip swing bob when enabled
+                    if (anim == null || !anim.oddSwing.getValue()) {
+                        doItemUsedTransformations(f1);
+                    }
+                    transformFirstPersonItem(f, f1);
                 }
-            } else {
-                // Not blocking / not using item
-                // OddSwing: skip swing bob when enabled
-                if (anim == null || !anim.oddSwing.getValue()) {
-                    doItemUsedTransformations(f1);
-                }
-                transformFirstPersonItem(f, f1);
-            }
 
-            renderItem(abstractclientplayer, itemToRender, ItemCameraTransforms.TransformType.FIRST_PERSON);
-        } else if (!abstractclientplayer.isInvisible()) {
-            renderPlayerArm(abstractclientplayer, f, f1);
+                renderItem(abstractclientplayer, itemToRender, ItemCameraTransforms.TransformType.FIRST_PERSON);
+            } else if (!abstractclientplayer.isInvisible()) {
+                renderPlayerArm(abstractclientplayer, f, f1);
+            }
+        } catch (Exception e) {
+            // Swallow any render exception (e.g. from Animations transforms on right-click)
+            // to prevent crashing the game — worst case is a skipped hand render frame
         }
 
         GlStateManager.popMatrix();

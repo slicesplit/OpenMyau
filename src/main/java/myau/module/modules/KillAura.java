@@ -135,11 +135,14 @@ public class KillAura extends Module {
     }
 
     private void sendUseItem() {
+        ItemStack held = mc.thePlayer.getHeldItem();
+        if (held == null) return;
         ((IAccessorPlayerControllerMP) mc.playerController).callSyncCurrentPlayItem();
-        this.startBlock(mc.thePlayer.getHeldItem());
+        this.startBlock(held);
     }
 
     private void startBlock(ItemStack itemStack) {
+        if (itemStack == null) return;
         PacketUtil.sendPacket(new C08PacketPlayerBlockPlacement(itemStack));
         mc.thePlayer.setItemInUse(itemStack, itemStack.getMaxItemUseDuration());
         this.blockingState = true;
@@ -153,6 +156,8 @@ public class KillAura extends Module {
 
     private void interactAttack(float yaw, float pitch) {
         if (this.target != null) {
+            ItemStack held = mc.thePlayer.getHeldItem();
+            if (held == null) return;
             MovingObjectPosition mop = RotationUtil.rayTrace(this.target.getBox(), yaw, pitch, 8.0);
             if (mop != null) {
                 ((IAccessorPlayerControllerMP) mc.playerController).callSyncCurrentPlayItem();
@@ -163,8 +168,8 @@ public class KillAura extends Module {
                         )
                 );
                 PacketUtil.sendPacket(new C02PacketUseEntity(this.target.getEntity(), Action.INTERACT));
-                PacketUtil.sendPacket(new C08PacketPlayerBlockPlacement(mc.thePlayer.getHeldItem()));
-                mc.thePlayer.setItemInUse(mc.thePlayer.getHeldItem(), mc.thePlayer.getHeldItem().getMaxItemUseDuration());
+                PacketUtil.sendPacket(new C08PacketPlayerBlockPlacement(held));
+                mc.thePlayer.setItemInUse(held, held.getMaxItemUseDuration());
                 this.blockingState = true;
             }
         }
@@ -606,7 +611,9 @@ public class KillAura extends Module {
                                             } else if (this.attackDelayMS <= 50L) {
                                                 PacketUtil.sendPacket(new C09PacketHeldItemChange(swordsSlot));
                                                 ((IAccessorPlayerControllerMP) mc.playerController).setCurrentPlayerItem(swordsSlot);
-                                                this.startBlock(mc.thePlayer.inventory.getStackInSlot(swordsSlot));
+                                                ItemStack swapStack = mc.thePlayer.inventory.getStackInSlot(swordsSlot);
+                                                if (swapStack == null) break;
+                                                this.startBlock(swapStack);
                                                 attack = false;
                                                 this.blockTick = 0;
                                             }
@@ -773,7 +780,10 @@ public class KillAura extends Module {
                     break;
                 case POST:
                     if (this.isPlayerBlocking() && !mc.thePlayer.isBlocking()) {
-                        mc.thePlayer.setItemInUse(mc.thePlayer.getHeldItem(), mc.thePlayer.getHeldItem().getMaxItemUseDuration());
+                        ItemStack heldPost = mc.thePlayer.getHeldItem();
+                        if (heldPost != null) {
+                            mc.thePlayer.setItemInUse(heldPost, heldPost.getMaxItemUseDuration());
+                        }
                     }
             }
         }
