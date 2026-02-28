@@ -698,7 +698,7 @@ public class BlockHit extends Module {
         if (serverBlocking) return;
         if (!ItemUtil.isHoldingSword()) return;
 
-        PacketUtil.sendPacket(new C08PacketPlayerBlockPlacement(mc.thePlayer.getHeldItem()));
+        PacketUtil.sendPacketSafe(new C08PacketPlayerBlockPlacement(mc.thePlayer.getHeldItem()));
         mc.thePlayer.setItemInUse(mc.thePlayer.getHeldItem(),
                 mc.thePlayer.getHeldItem().getMaxItemUseDuration());
         serverBlocking = true;
@@ -708,7 +708,7 @@ public class BlockHit extends Module {
     private void sendUnblock() {
         if (!serverBlocking) return;
 
-        PacketUtil.sendPacket(new C07PacketPlayerDigging(
+        PacketUtil.sendPacketSafe(new C07PacketPlayerDigging(
                 C07PacketPlayerDigging.Action.RELEASE_USE_ITEM,
                 BlockPos.ORIGIN, EnumFacing.DOWN));
         mc.thePlayer.stopUsingItem();
@@ -724,7 +724,10 @@ public class BlockHit extends Module {
         try {
             Packet<?> p;
             while ((p = lagHeld.pollFirst()) != null) {
-                mc.getNetHandler().addToSendQueue(p);
+                // Use sendPacketSafe (direct Netty write) so held C0F transactions
+                // bypass FakeLag's queue and arrive at the server immediately —
+                // order: C08 block → [held C0Fs] → C07 unblock → C02 attack
+                PacketUtil.sendPacketSafe(p);
             }
         } catch (Exception ignored) {
         } finally {

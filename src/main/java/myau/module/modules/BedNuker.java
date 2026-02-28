@@ -207,6 +207,26 @@ public class BedNuker extends Module {
         return hardness < 0.0F ? 0.0F : this.getDigSpeed(iBlockState, slot, boolean5) / hardness / boost;
     }
 
+    /**
+     * Sends a C03 position packet with onGround=true before any C07 digging
+     * packet so Grim's server-side ground state matches what we send in the C07.
+     * Grim's BreakAura [A-3] check flags when it receives START/STOP_DESTROY_BLOCK
+     * while thinking the player is airborne. Pre-spoofing ground eliminates this.
+     *
+     * We restore the real onGround value on the next normal C03 — this is safe
+     * because we only shift ground by 1 packet, not across multiple ticks.
+     */
+    private void sendGroundSpoofedDigPacket(C07PacketPlayerDigging packet) {
+        if (!mc.thePlayer.onGround) {
+            // Send a position-hold C03 with onGround=true first so Grim sees ground
+            // before the C07 arrives. Use current confirmed position (no movement).
+            net.minecraft.network.play.client.C03PacketPlayer groundSpoof =
+                new net.minecraft.network.play.client.C03PacketPlayer(true);
+            PacketUtil.sendPacket(groundSpoof);
+        }
+        PacketUtil.sendPacket(packet);
+    }
+
     private float calcBlockStrength(BlockPos blockPos) {
         IBlockState blockState = mc.theWorld.getBlockState(blockPos);
         int slot = ItemUtil.findInventorySlot(mc.thePlayer.inventory.currentItem, blockState.getBlock());
@@ -362,7 +382,9 @@ public class BedNuker extends Module {
                     case 0:
                         if (!mc.thePlayer.isUsingItem()) {
                             this.doSwing();
-                            PacketUtil.sendPacket(
+                            // Spoof onGround=true before C07 so Grim doesn't flag [A-3] BreakAura
+                            // when we send START_DESTROY_BLOCK while airborne (falling/stair-bridge).
+                            this.sendGroundSpoofedDigPacket(
                                     new C07PacketPlayerDigging(Action.START_DESTROY_BLOCK, this.targetBed, this.getHitFacing(this.targetBed))
                             );
                             this.doSwing();

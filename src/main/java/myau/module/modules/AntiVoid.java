@@ -63,7 +63,10 @@ public class AntiVoid extends Module {
             this.internalBlinking = false;
             if (mc.getNetHandler() != null && !this.internalBlinkedPackets.isEmpty()) {
                 for (Packet<?> blinkedPacket : internalBlinkedPackets) {
-                    PacketUtil.sendPacketNoEvent(blinkedPacket);
+                    // Use sendPacketSafe (direct Netty write) so these bypass FakeLag's
+                    // queue entirely — AntiVoid's teleport packets must arrive at the
+                    // server immediately, not get held behind lag packets.
+                    PacketUtil.sendPacketSafe(blinkedPacket);
                 }
             }
             this.internalBlinkedPackets.clear();

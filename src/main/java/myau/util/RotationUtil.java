@@ -77,6 +77,31 @@ public class RotationUtil {
         return RotationUtil.distanceToBox(boundingBox);
     }
 
+    /**
+     * Distance from eye to entity box, but with the Y contribution clamped to zero
+     * when the player's eyes are within the entity's vertical bounds.
+     * This matches how Grim validates reach — the server uses 3D box distance but
+     * the client-predicted Y during falling/stair-bridge PvP can be up to 0.5–1.0
+     * blocks off from the server's view. We return the raw 3D box distance here but
+     * the caller should subtract a safety margin when the player is airborne.
+     */
+    public static double distanceToEntityNoFallBias(Entity entity) {
+        float borderSize = entity.getCollisionBorderSize();
+        AxisAlignedBB bb = entity.getEntityBoundingBox().expand(borderSize, borderSize, borderSize);
+        Vec3 eye = RotationUtil.mc.thePlayer.getPositionEyes(1.0f);
+        // Clamp eye position to entity vertical range before computing distance.
+        // When falling onto a target, our client eye Y may be well above the entity
+        // but the server's entity position (not yet updated due to backtrack or lag)
+        // is still at the old Y — so the real server-side distance is less than what
+        // the 3D eye-to-box distance shows. We compensate by using the lateral (XZ)
+        // distance when the player is above the entity top.
+        double clampedEyeY = Math.max(bb.minY, Math.min(bb.maxY, eye.yCoord));
+        double dx = Math.max(0, Math.max(bb.minX - eye.xCoord, eye.xCoord - bb.maxX));
+        double dy = Math.max(0, Math.max(bb.minY - clampedEyeY, clampedEyeY - bb.maxY));
+        double dz = Math.max(0, Math.max(bb.minZ - eye.zCoord, eye.zCoord - bb.maxZ));
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
     public static double distanceToBox(Entity entity, Vec3 point) {
         float borderSize = entity.getCollisionBorderSize();
         return RotationUtil.clampVecToBox(entity.getEntityBoundingBox().expand(borderSize, borderSize, borderSize), point);

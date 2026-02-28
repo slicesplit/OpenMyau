@@ -5,6 +5,7 @@ import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.*;
+import myau.management.ServerGroundTracker;
 import myau.module.Module;
 import myau.module.ModuleInfo;
 import myau.property.properties.BooleanProperty;
@@ -13,6 +14,7 @@ import myau.property.properties.IntProperty;
 import myau.property.properties.ModeProperty;
 import myau.util.PacketUtil;
 import myau.util.TeamUtil;
+import net.minecraft.network.play.client.C03PacketPlayer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
@@ -46,10 +48,15 @@ public class Backtrack extends Module {
 
     // Legacy
     public final ModeProperty legacyPos = new ModeProperty("CachingMode", 0, new String[]{"ClientPos", "ServerPos"});
-    public final IntProperty maxCachedPositions = new IntProperty("MaxCachedPositions", 10, 1, 20);
+    public final IntProperty maxCachedPositions = new IntProperty("MaxCachedPositions", 10, 1, 40);
 
     // Modern
     public final BooleanProperty smart = new BooleanProperty("Smart", true);
+    // GroundSpoof: while backtracking (holding target packets) send C03 with
+    // onGround=true so Grim doesn't flag NoFall on the queued-position recoil.
+    // Also prevents Grim's AntiKB from flagging because our movement packets
+    // appear to originate from a grounded state — matching its simulation.
+    public final BooleanProperty grimGroundSpoof = new BooleanProperty("GrimGroundSpoof", true, () -> mode.getValue() == 1);
 
     // ESP
     public final ModeProperty espMode = new ModeProperty("ESPMode", 1, new String[]{"None", "Box", "Model", "Wireframe"});
@@ -82,7 +89,6 @@ public class Backtrack extends Module {
     private EntityLivingBase target = null;
     private boolean shouldRender = false;
     private int modernDelay = 80;
-    private long delayForNextBacktrack = 0L;
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -124,8 +130,7 @@ public class Backtrack extends Module {
     private boolean shouldBacktrack() {
         return mc.thePlayer != null && mc.theWorld != null && target != null
                 && mc.thePlayer.getHealth() > 0
-                && (target.getHealth() > 0 || Float.isNaN(target.getHealth()))
-                && System.currentTimeMillis() >= delayForNextBacktrack;
+                && (target.getHealth() > 0 || Float.isNaN(target.getHealth()));
     }
 
     // ── Event: Entity movement (Legacy ClientPos) ─────────────────────────────
@@ -229,39 +234,49 @@ public class Backtrack extends Module {
             }
         }
 
-        // ONLY queue if we actually have a target — never queue blindly
+        // ONLY queue entity movement packets for the current target — nothing else
         if (target == null || !shouldBacktrack()) {
             // No target: flush any stale packets and pass through
             clearPackets(true);
             return;
         }
 
-        // Track target entity position for range calculation
+        // Only intercept movement packets that belong to the current target
         if (packet instanceof S14PacketEntity) {
             S14PacketEntity p = (S14PacketEntity) packet;
             if (p.getEntity(mc.theWorld) == target) {
+                // Store current (pre-movement) position as the backtrack point
                 positions.add(new long[]{
                         Double.doubleToRawLongBits(target.posX),
                         Double.doubleToRawLongBits(target.posY),
                         Double.doubleToRawLongBits(target.posZ),
                         System.currentTimeMillis()
                 });
+                event.setCancelled(true);
+                packetQueue.add(new QueueData(packet, System.currentTimeMillis()));
             }
-        } else if (packet instanceof S18PacketEntityTeleport) {
-            S18PacketEntityTeleport p = (S18PacketEntityTeleport) packet;
-            if (p.getEntityId() == target.getEntityId()) {
-                positions.add(new long[]{
-                        Double.doubleToRawLongBits(target.posX),
-                        Double.doubleToRawLongBits(target.posY),
-                        Double.doubleToRawLongBits(target.posZ),
-                        System.currentTimeMillis()
-                });
-            }
+            // Other entities' movement packets pass through untouched
+            return;
         }
 
-        // Queue the packet (hold it back from the game)
-        event.setCancelled(true);
-        packetQueue.add(new QueueData(packet, System.currentTimeMillis()));
+        if (packet instanceof S18PacketEntityTeleport) {
+            S18PacketEntityTeleport p = (S18PacketEntityTeleport) packet;
+            if (p.getEntityId() == target.getEntityId()) {
+                // Store current position as the backtrack point
+                positions.add(new long[]{
+                        Double.doubleToRawLongBits(target.posX),
+                        Double.doubleToRawLongBits(target.posY),
+                        Double.doubleToRawLongBits(target.posZ),
+                        System.currentTimeMillis()
+                });
+                event.setCancelled(true);
+                packetQueue.add(new QueueData(packet, System.currentTimeMillis()));
+            }
+            // Other entities' teleport packets pass through untouched
+            return;
+        }
+
+        // All other packets pass through — never queue spawn, metadata, effects, sounds, etc.
     }
 
     // ── Event: Tick ───────────────────────────────────────────────────────────
@@ -283,23 +298,46 @@ public class Backtrack extends Module {
         // Modern mode game-loop equivalent
         if (mc.thePlayer == null || mc.theWorld == null) return;
 
-        EntityLivingBase t = target;
         if (mode.getModeString().equals("Modern")) {
+            EntityLivingBase t = target;
             if (shouldBacktrack() && t != null) {
-                double dist = mc.thePlayer.getDistanceSq(t.posX + (t.getEntityBoundingBox().maxX - t.getEntityBoundingBox().minX) / 2, t.posY + (t.getEntityBoundingBox().maxY - t.getEntityBoundingBox().minY) / 2, t.posZ + (t.getEntityBoundingBox().maxZ - t.getEntityBoundingBox().minZ) / 2);
-                // Within 6 blocks true range
-                double trueDist = mc.thePlayer.getDistance(t.posX, t.posY, t.posZ);
+                // Use eye-to-box distance consistent with how Grim validates reach.
+                // getDistance(feet→center) inflates distance when player is above/below
+                // the target — stair bridge and falling scenarios cause false flushes.
+                Vec3 eye = mc.thePlayer.getPositionEyes(1.0f);
+                AxisAlignedBB tBox = t.getEntityBoundingBox();
+                double _dx = Math.max(0, Math.max(tBox.minX - eye.xCoord, eye.xCoord - tBox.maxX));
+                double _dy = Math.max(0, Math.max(tBox.minY - eye.yCoord, eye.yCoord - tBox.maxY));
+                double _dz = Math.max(0, Math.max(tBox.minZ - eye.zCoord, eye.zCoord - tBox.maxZ));
+                double trueDist = Math.sqrt(_dx * _dx + _dy * _dy + _dz * _dz);
                 if (trueDist <= 6.0) {
                     shouldRender = true;
                     handleModernPackets();
+
+                    // ── GrimGroundSpoof ───────────────────────────────────────
+                    // While we are holding the target's movement packets (backtracking),
+                    // Grim still processes our own outgoing C03s. If we are in the air
+                    // during a backtrack window, Grim's NoFall and AntiKB simulation
+                    // can flag because our fall distance doesn't match our ground state.
+                    // Sending one extra C03(onGround=true) per held-window resets Grim's
+                    // fall distance accumulator and anchors our position as grounded.
+                    // We only do this when actually holding packets (queue non-empty) so
+                    // we don't spam unnecessarily on an idle tick.
+                    if (grimGroundSpoof.getValue() && !packetQueue.isEmpty() && !mc.thePlayer.onGround) {
+                        PacketUtil.sendPacketSafe(new C03PacketPlayer(true));
+                    }
                 } else {
-                    clear();
+                    // Target too far — flush and drop
+                    if (!packetQueue.isEmpty()) clear();
+                    else { positions.clear(); shouldRender = false; }
                 }
             } else {
-                clear();
+                // No target or dead — flush queued packets if any
+                if (!packetQueue.isEmpty()) clear();
+                else { positions.clear(); shouldRender = false; }
             }
 
-            // Refresh delay when queue empties
+            // Refresh delay when queue is empty
             if (packetQueue.isEmpty() && positions.isEmpty()) {
                 modernDelay = randomDelay();
             }
@@ -319,6 +357,14 @@ public class Backtrack extends Module {
             resetTarget();
         }
         target = (EntityLivingBase) attacked;
+
+        // Force-flush FakeLag so queued movement packets arrive at the server
+        // BEFORE the attack packet — otherwise the server processes the attack
+        // before updating our position, causing missed hits or desync.
+        FakeLag fakeLag = (FakeLag) Myau.moduleManager.modules.get(FakeLag.class);
+        if (fakeLag != null && fakeLag.isEnabled()) {
+            fakeLag.forceFlush();
+        }
     }
 
     // ── Event: World load ─────────────────────────────────────────────────────
@@ -472,10 +518,14 @@ public class Backtrack extends Module {
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     private void handleModernPackets() {
+        // Use the full configured delay — no artificial 120ms cap.
+        // The limit was previously there "for safety" but it defeats the purpose
+        // of backtrack entirely. The user's MaxDelay setting is the real control.
         long threshold = System.currentTimeMillis() - supposedDelay();
+        // Drain expired packets — process them client-side (incoming direction)
         packetQueue.removeIf(qd -> {
             if (qd.time <= threshold) {
-                PacketUtil.sendPacketSafe(qd.packet);
+                PacketUtil.processIncomingPacket(qd.packet);
                 return true;
             }
             return false;
@@ -485,8 +535,9 @@ public class Backtrack extends Module {
 
     private void clearPackets(boolean flush) {
         if (flush) {
+            // Process all queued server packets client-side in order — never send them to the server
             for (QueueData qd : packetQueue) {
-                PacketUtil.sendPacketSafe(qd.packet);
+                PacketUtil.processIncomingPacket(qd.packet);
             }
         }
         packetQueue.clear();
@@ -568,6 +619,9 @@ public class Backtrack extends Module {
 
         for (BacktrackData d : snapshot) {
             double dx = d.x - origX, dy = d.y - origY, dz = d.z - origZ;
+            // Allow up to 0.6 lateral and 3.0 vertical — covers stair-bridge deltas,
+            // falling onto targets, and full jump height without clipping valid positions.
+            if (Math.abs(dx) > 0.6 || Math.abs(dz) > 0.6 || Math.abs(dy) > 3.0) continue;
             minX = Math.min(minX, original.minX + dx);
             minY = Math.min(minY, original.minY + dy);
             minZ = Math.min(minZ, original.minZ + dz);
@@ -592,15 +646,34 @@ public class Backtrack extends Module {
         List<BacktrackData> snapshot;
         synchronized (dataList) { snapshot = new ArrayList<>(dataList); }
 
+        // Use player eye position for accurate eye-to-box distance matching Grim's reach check.
+        Vec3 eye = mc.thePlayer.getPositionEyes(1.0f);
         double nearest = Double.MAX_VALUE;
+        // Height of entity bounding box (standard player = 1.8 blocks)
+        double bbHeight = entity.getEntityBoundingBox().maxY - entity.getEntityBoundingBox().minY;
+        double bbHalfWidth = entity.getEntityBoundingBox().maxX - entity.getEntityBoundingBox().minX;
+
         for (BacktrackData d : snapshot) {
-            entity.posX = d.x; entity.posY = d.y; entity.posZ = d.z;
-            entity.prevPosX = d.x; entity.prevPosY = d.y; entity.prevPosZ = d.z;
-            double dist = entity.getDistanceSq(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
-            if (dist < nearest) nearest = dist;
+            double dx = d.x - origX, dz = d.z - origZ;
+            // Allow up to 0.8 lateral drift but no vertical cap — stair/fall scenarios
+            // move the entity significantly in Y, which is fine to include.
+            if (Math.abs(dx) > 0.8 || Math.abs(dz) > 0.8) continue;
+
+            // Reconstruct the entity's bounding box at the cached position and compute
+            // 3D eye-to-box distance, the same way Grim validates reach server-side.
+            double bbMinX = d.x - bbHalfWidth / 2.0;
+            double bbMaxX = d.x + bbHalfWidth / 2.0;
+            double bbMinZ = d.z - bbHalfWidth / 2.0;
+            double bbMaxZ = d.z + bbHalfWidth / 2.0;
+            double bbMinY = d.y;
+            double bbMaxY = d.y + bbHeight;
+
+            double edx = Math.max(0, Math.max(bbMinX - eye.xCoord, eye.xCoord - bbMaxX));
+            double edy = Math.max(0, Math.max(bbMinY - eye.yCoord, eye.yCoord - bbMaxY));
+            double edz = Math.max(0, Math.max(bbMinZ - eye.zCoord, eye.zCoord - bbMaxZ));
+            double distSq = edx * edx + edy * edy + edz * edz;
+            if (distSq < nearest) nearest = distSq;
         }
-        entity.posX = origX; entity.posY = origY; entity.posZ = origZ;
-        entity.prevPosX = origPX; entity.prevPosY = origPY; entity.prevPosZ = origPZ;
         return nearest == Double.MAX_VALUE ? 0.0 : nearest;
     }
 

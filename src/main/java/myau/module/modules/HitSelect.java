@@ -12,7 +12,6 @@ import myau.property.properties.PercentProperty;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.network.play.client.C02PacketUseEntity;
-import net.minecraft.network.play.server.S0BPacketAnimation;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
 
 @ModuleInfo(category = ModuleCategory.COMBAT)
@@ -20,34 +19,18 @@ public class HitSelect extends Module {
 
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    public final PercentProperty chance      = new PercentProperty("Chance", 100);
-    public final ModeProperty    mode        = new ModeProperty("Mode", 0, new String[]{"PAUSE", "ACTIVE"});
-    public final ModeProperty    preference  = new ModeProperty("Preference", 0,
+    public final PercentProperty chance     = new PercentProperty("Chance", 100);
+    // PAUSE  – blocks hits only while target is still in their hurtTime invuln window
+    // ACTIVE – actively chooses the best moment to hit based on preference
+    public final ModeProperty    mode       = new ModeProperty("Mode", 0, new String[]{"PAUSE", "ACTIVE"});
+    public final ModeProperty    preference = new ModeProperty("Preference", 0,
             new String[]{"KB_REDUCTION", "CRITICAL_HITS"}, () -> mode.getValue() == 1);
-    public final BooleanProperty killSkip    = new BooleanProperty("KillSkip", true);
+    public final BooleanProperty killSkip   = new BooleanProperty("KillSkip", true);
 
-    // ── own state ──────────────────────────────────────────────────────────────
-    private int  pauseTicks       = 0;   // PAUSE mode: ticks remaining in pause
-    private int  sinceLast        = 0;   // ticks since last attack was SENT
-    private int  groundTicks      = 0;   // consecutive ticks on ground
-    private int  consecutiveSkips = 0;   // attacks blocked in a row (safety cap)
-    private boolean lastHitWasCrit = false;
-
-    // ── incoming velocity tracking ─────────────────────────────────────────────
-    // We track the server velocity packet (S12) for ourselves.
-    // velAge counts up every tick; a fresh S12 resets it to 0.
-    private int velAge = 999;
-
-    // ── opponent motion model ──────────────────────────────────────────────────
-    // Lateral-only approach speed to avoid Y noise from jumping.
-    // opSwingAge: ticks since the target's arm-swing animation — used as a
-    //   proxy for "opponent just attacked" (attack swing = type 0 from S0B).
-    private int    opId              = -1;
-    private int    opSwingAge        = 999;
-    private int    opClientHurtTime  = 0;    // from entity field each tick
-    private double opLastLateralDist = 5.0;
-    private double opLateralSpeed    = 0.0;  // blocks/tick approaching laterally
-    private int    opApproachTicks   = 0;
+    // ── state ─────────────────────────────────────────────────────────────────
+    private int  sinceLast        = 0;   // ticks since our last attack was sent
+    private int  consecutiveSkips = 0;   // safety cap — never block more than N in a row
+    private int  velAge           = 999; // ticks since we received S12 velocity (incoming KB)
 
     public HitSelect() {
         super("HitSelect", false);
@@ -57,49 +40,15 @@ public class HitSelect extends Module {
     @Override public void onDisabled() { reset(); }
 
     private void reset() {
-        pauseTicks = 0; sinceLast = 0; groundTicks = 0; consecutiveSkips = 0;
-        lastHitWasCrit = false; velAge = 999;
-        opId = -1; opSwingAge = 999; opClientHurtTime = 0;
-        opLastLateralDist = 5.0; opLateralSpeed = 0.0; opApproachTicks = 0;
+        sinceLast = 0; consecutiveSkips = 0; velAge = 999;
     }
 
-    // ── per-tick bookkeeping ──────────────────────────────────────────────────
+    // ── per-tick ──────────────────────────────────────────────────────────────
     @EventTarget
     public void onUpdate(UpdateEvent event) {
         if (event.getType() != EventType.PRE || mc.thePlayer == null) return;
-
         sinceLast++;
-        opSwingAge++;
         velAge++;
-        if (pauseTicks > 0) pauseTicks--;
-
-        // ground streak
-        groundTicks = mc.thePlayer.onGround ? groundTicks + 1 : 0;
-
-        // opponent motion model
-        EntityLivingBase t = getTarget();
-        if (t != null) {
-            // target changed → reset opponent model
-            if (t.getEntityId() != opId) {
-                opId              = t.getEntityId();
-                opSwingAge        = 999;
-                opClientHurtTime  = 0;
-                opLastLateralDist = lateralDist(t);
-                opLateralSpeed    = 0.0;
-                opApproachTicks   = 0;
-            }
-
-            opClientHurtTime = t.hurtTime;
-
-            // Lateral-only approach speed (ignore Y so jumping doesn't fake-trigger)
-            double ld = lateralDist(t);
-            double delta = opLastLateralDist - ld; // positive = closing
-            opLateralSpeed    = delta;
-            opApproachTicks   = (delta > 0.04) ? opApproachTicks + 1 : 0;
-            opLastLateralDist = ld;
-        } else {
-            opId = -1;
-        }
     }
 
     // ── packet intercept ──────────────────────────────────────────────────────
@@ -108,111 +57,78 @@ public class HitSelect extends Module {
         if (!isEnabled() || mc.thePlayer == null) return;
 
         if (event.getType() == EventType.SEND) {
-            if (event.getPacket() instanceof C02PacketUseEntity) {
-                C02PacketUseEntity pkt = (C02PacketUseEntity) event.getPacket();
-                if (pkt.getAction() != C02PacketUseEntity.Action.ATTACK) return;
+            if (!(event.getPacket() instanceof C02PacketUseEntity)) return;
+            C02PacketUseEntity pkt = (C02PacketUseEntity) event.getPacket();
+            if (pkt.getAction() != C02PacketUseEntity.Action.ATTACK) return;
 
-                // chance gate: skip HitSelect entirely with (100-chance)% probability
-                if (chance.getValue() < 100 && (Math.random() * 100.0) >= chance.getValue()) {
-                    onHitSent();
-                    return;
-                }
+            // chance gate
+            if (chance.getValue() < 100 && (Math.random() * 100.0) >= chance.getValue()) {
+                onHitSent();
+                return;
+            }
 
-                if (shouldBlock()) {
-                    event.setCancelled(true);
-                    consecutiveSkips++;
-                } else {
-                    onHitSent();
-                }
+            if (shouldBlock()) {
+                event.setCancelled(true);
+                consecutiveSkips++;
+            } else {
+                onHitSent();
             }
         }
 
         if (event.getType() == EventType.RECEIVE) {
-            // opponent arm-swing → proxy for opponent attack
-            if (event.getPacket() instanceof S0BPacketAnimation) {
-                S0BPacketAnimation anim = (S0BPacketAnimation) event.getPacket();
-                // type 0 = swing arm (happens for both walking and attacking in 1.8,
-                // but it only fires from server when the entity actually swings —
-                // i.e. attacks or right-clicks). Close enough for our purposes.
-                if (anim.getAnimationType() == 0) {
-                    EntityLivingBase t = getTarget();
-                    if (t != null && anim.getEntityID() == t.getEntityId()) {
-                        opSwingAge = 0;
-                    }
-                }
-            }
-
-            // S12 to US → incoming knockback
             if (event.getPacket() instanceof S12PacketEntityVelocity) {
                 S12PacketEntityVelocity vel = (S12PacketEntityVelocity) event.getPacket();
                 if (vel.getEntityID() == mc.thePlayer.getEntityId()) {
                     velAge = 0;
                 }
             }
-
         }
     }
 
-    // ── decision entrypoints ──────────────────────────────────────────────────
+    // ── decision ──────────────────────────────────────────────────────────────
 
     private void onHitSent() {
-        lastHitWasCrit = isCrit();
-        consecutiveSkips = 0;
         sinceLast = 0;
-        if (mode.getValue() == 0) {
-            pauseTicks = calcPause();
-        }
+        consecutiveSkips = 0;
     }
 
     private boolean shouldBlock() {
-        // safety: never skip more than 6 in a row
-        if (consecutiveSkips >= 6) return false;
-        // kill skip: never delay when target is nearly dead
+        // Hard safety: never cancel more than 4 in a row — avoids getting stuck
+        if (consecutiveSkips >= 4) return false;
+
+        // Kill pressure: never delay near-dead targets
         if (killSkip.getValue()) {
             EntityLivingBase t = getTarget();
-            if (t != null && t.getHealth() / t.getMaxHealth() < 0.18f) return false;
+            if (t != null && t.getHealth() / t.getMaxHealth() < 0.2f) return false;
         }
+
         return mode.getValue() == 0 ? pauseLogic() : activeLogic();
     }
 
     // ── PAUSE mode ────────────────────────────────────────────────────────────
-
+    // Only blocks while the target is genuinely in their hurtTime invuln window.
+    // hurtTime counts DOWN from 10. Server applies damage only at hurtTime==0.
+    // We block while hurtTime > 6 (deeply invuln), let through at <=6 because
+    // the hit will land by the time packets arrive and hurtTime reaches 0.
+    // This gives you ~1 skip per 10-tick window max — feels natural, not CPS-halving.
     private boolean pauseLogic() {
-        return pauseTicks > 0;
-    }
-
-    private int calcPause() {
         EntityLivingBase t = getTarget();
+        if (t == null) return false;
 
-        // base pause of 2 ticks — just enough to avoid double-hits in 1 hurtTime window
-        int p = 2;
+        int ht = t.hurtTime;
 
-        if (t != null) {
-            int ht = authorativeHurtTime(t);
+        // Target is not invuln — always let the hit through
+        if (ht == 0) return false;
 
-            // target still deeply in invuln — no point attacking, extend pause
-            if (ht > 8) p = Math.max(p, 4);
-            else if (ht > 5) p = Math.max(p, 3);
+        // Deep invuln (10..7): block — this attack would do nothing server-side
+        if (ht >= 7) return true;
 
-            // we just did a crit — let motionY settle before next hit
-            if (lastHitWasCrit) p = Math.max(p, 3);
-        }
+        // Mid invuln (6..4): block only if we haven't been waiting long
+        // (if sinceLast >= 4 we've already held back enough — force the hit)
+        if (ht >= 4 && sinceLast < 4) return true;
 
-        // we're on the ground and moving — W-tap opportunity, let movement reset
-        if (mc.thePlayer.onGround && groundTicks >= 2 && mc.thePlayer.moveForward > 0) {
-            p = Math.max(p, 3);
-        }
-
-        // opponent just swung — they're committed, we can pause safely
-        if (opSwingAge <= 3) p = Math.max(p, 3);
-
-        // incoming velocity — we're about to be knocked back, ride it out
-        if (velAge <= 3) p = Math.max(p, 4);
-
-        // opponent rushing — closing fast, shorten pause to maintain pressure
-        if (opApproachTicks >= 3 && opLateralSpeed > 0.15) p = Math.max(p, 3);
-
-        return Math.min(p, 5);
+        // Low invuln (3..1): let through — close enough that it'll register
+        return false;
     }
 
     // ── ACTIVE mode ───────────────────────────────────────────────────────────
@@ -221,67 +137,42 @@ public class HitSelect extends Module {
         EntityLivingBase t = getTarget();
         if (t == null) return false;
 
-        int ht = authorativeHurtTime(t);
-        boolean inCrit      = isCrit();
-        boolean sprint      = mc.thePlayer.isSprinting();
-        boolean onGround    = mc.thePlayer.onGround;
-        boolean velFresh    = velAge <= 4;
-        boolean opSwinging  = opSwingAge <= 3 && opLastLateralDist < 4.5;
-        boolean opRushing   = opApproachTicks >= 2 && opLateralSpeed > 0.08;
+        int ht = t.hurtTime;
 
-        // ── KB_REDUCTION preference ───────────────────────────────────────────
-        // Goal: only hit when our attack will apply fresh knockback (server-side
-        // the knockback is applied only when hurtTime==0 on the target, but we
-        // can also get KB from the enemy's counter-hit). We skip hits when the
-        // target is in their invuln window to avoid wasting attacks.
+        // ── KB_REDUCTION ──────────────────────────────────────────────────────
+        // Hit only when the target is out of (or nearly out of) invuln so every
+        // attack applies fresh knockback. We do NOT block blindly — we only block
+        // when the hit would literally be wasted (server would ignore it).
         if (preference.getValue() == 0) {
-            // Target is currently vulnerable — ALLOW the hit
+            // Out of invuln — always allow
             if (ht == 0) return false;
-
-            // Target is deep in invuln (>4 ticks) — block this attack,
-            // wait for them to come out of it.
-            // Exception: if they're about to swing at us, let the hit through
-            // so we can exchange and reset sprinting.
-            if (ht > 4 && !opSwinging) return true;
-
-            // ht in [1..4]: borderline — block only if we're not in a
-            // dangerous approach scenario (they'd hit us while we wait)
-            if (ht > 2 && !opRushing && !velFresh) return true;
-
-            // We took velocity, skip — let their KB resolve before we hit
-            if (velFresh && sinceLast < 4) return true;
-
-            // Allow otherwise
+            // Deeply invuln AND we haven't waited too long — skip this one
+            if (ht >= 6 && sinceLast < 6) return true;
+            // We received fresh velocity (we're being knocked back) — don't trade
+            // into it, wait a couple ticks for our position to stabilise
+            if (velAge <= 2 && sinceLast < 3) return true;
+            // Otherwise allow
             return false;
         }
 
-        // ── CRITICAL_HITS preference ──────────────────────────────────────────
-        // Goal: only land hits when we're in a true crit (falling, fallDistance>0).
-        // Block attacks at any non-crit moment, but with exceptions for
-        // urgency (opponent about to hit us, we're being rushed).
+        // ── CRITICAL_HITS ─────────────────────────────────────────────────────
+        // Only land hits during a genuine downward fall (true crit).
+        // We block when ascending or at ground level, but with tight timeouts
+        // so we never get stuck cancelling every hit.
         if (preference.getValue() == 1) {
-            // Already in crit — ALLOW
-            if (inCrit) return false;
-
-            // Kill pressure override — if sinceLast > 6 ticks, force a hit
-            // regardless of crit state (can't miss too many in a row)
-            if (sinceLast > 6) return false;
-
-            // Opponent just swung — they're open, take the trade even if not a crit
-            if (opSwinging && sinceLast >= 3) return false;
-
-            // On ground and jumping — we're mid-hop, about to go airborne.
-            // Block this hit and let us get into the air for the crit.
-            if (onGround && groundTicks <= 1 && !mc.thePlayer.isCollidedVertically) return true;
-
-            // Rising (motionY > 0.1): ascending jump, NOT a crit yet — block
-            if (!onGround && mc.thePlayer.motionY > 0.1) return true;
-
-            // Falling but fallDistance too small (< 0.1) — not a real crit
-            if (!onGround && mc.thePlayer.motionY < 0 && mc.thePlayer.fallDistance < 0.1f) return true;
-
-            // Block by default unless we've waited too long
-            return sinceLast < 5;
+            // True crit — always allow
+            if (isCrit()) return false;
+            // Waited too long (>5 ticks) — force the hit regardless
+            if (sinceLast > 5) return false;
+            // Actively rising (jump apex not reached) — block, crit incoming
+            if (!mc.thePlayer.onGround && mc.thePlayer.motionY > 0.05) return true;
+            // On ground, about to jump — block so we can get air
+            if (mc.thePlayer.onGround && sinceLast < 2) return true;
+            // Falling but fallDistance too small — not a real crit yet
+            if (!mc.thePlayer.onGround && mc.thePlayer.motionY < 0
+                    && mc.thePlayer.fallDistance < 0.08f) return true;
+            // Everything else — allow (don't be greedy)
+            return false;
         }
 
         return false;
@@ -289,37 +180,14 @@ public class HitSelect extends Module {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    /**
-     * Returns the most reliable hurtTime we have for the target.
-     * opClientHurtTime is updated every tick from the entity field —
-     * accurate enough since we read it at the top of each UpdateEvent.
-     */
-    private int authorativeHurtTime(EntityLivingBase t) {
-        return opClientHurtTime;
-    }
-
-    /**
-     * True crit: airborne, actively falling (motionY < 0), has fallen at least
-     * a tiny bit (fallDistance > 0), not on ladder, water, or mount.
-     */
     private boolean isCrit() {
-        if (mc.thePlayer.onGround) return false;
-        if (mc.thePlayer.motionY >= 0) return false;
+        if (mc.thePlayer.onGround)          return false;
+        if (mc.thePlayer.motionY >= 0)      return false;
         if (mc.thePlayer.fallDistance <= 0) return false;
-        if (mc.thePlayer.isOnLadder()) return false;
-        if (mc.thePlayer.isInWater()) return false;
-        if (mc.thePlayer.isRiding()) return false;
+        if (mc.thePlayer.isOnLadder())      return false;
+        if (mc.thePlayer.isInWater())       return false;
+        if (mc.thePlayer.isRiding())        return false;
         return true;
-    }
-
-    /**
-     * Lateral (XZ-plane only) distance to target — ignores Y so a player
-     * jumping at us doesn't fake-trigger the "approaching" detector.
-     */
-    private double lateralDist(EntityLivingBase t) {
-        double dx = mc.thePlayer.posX - t.posX;
-        double dz = mc.thePlayer.posZ - t.posZ;
-        return Math.sqrt(dx * dx + dz * dz);
     }
 
     private EntityLivingBase getTarget() {

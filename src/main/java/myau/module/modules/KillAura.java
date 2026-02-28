@@ -13,6 +13,7 @@ import myau.events.*;
 import myau.management.RotationState;
 import myau.mixin.IAccessorPlayerControllerMP;
 import myau.module.Module;
+import myau.module.modules.Backtrack;
 import myau.property.properties.*;
 import myau.util.*;
 import net.minecraft.client.Minecraft;
@@ -114,7 +115,7 @@ public class KillAura extends Module {
             } else {
                 this.attackDelayMS = this.attackDelayMS + this.getAttackDelay();
                 mc.thePlayer.swingItem();
-                if ((this.rotations.getValue() != 0 || !this.isBoxInAttackRange(this.target.getBox()))
+                if ((this.rotations.getValue() != 0 || !this.isBoxInAttackRangeSafe(this.target.getBox(), this.target.getEntity()))
                         && RotationUtil.rayTrace(this.target.getBox(), yaw, pitch, this.attackRange.getValue()) == null) {
                     return false;
                 } else {
@@ -291,6 +292,46 @@ public class KillAura extends Module {
 
     private boolean isBoxInAttackRange(AxisAlignedBB axisAlignedBB) {
         return RotationUtil.distanceToBox(axisAlignedBB) <= (double) this.attackRange.getValue();
+    }
+
+    /**
+     * Returns the effective reach margin to subtract when the player is at a
+     * significant Y-level difference relative to the target. When falling onto
+     * or stair-bridging past a target, the server's entity position can lag behind
+     * our client position by up to ~0.5 blocks in Y due to packet delay. Grim's
+     * reach check uses the server-side eye→box 3D distance, so we need to leave
+     * headroom equal to the potential Y-desync to avoid a reach flag.
+     *
+     * - Airborne (not on ground): apply 0.3 safety margin
+     * - Backtrack active + airborne: apply 0.5 safety margin (server entity position
+     *   is intentionally held back, so the real server-side distance is even less)
+     * - On ground: no margin needed
+     */
+    private double getReachSafetyMargin(EntityLivingBase target) {
+        boolean airborne = !mc.thePlayer.onGround;
+        if (!airborne) return 0.0;
+        Backtrack bt = (Backtrack) Myau.moduleManager.modules.get(Backtrack.class);
+        boolean backtracking = bt != null && bt.isEnabled();
+        // Additional margin when we're above the target (falling / stair case)
+        double eyeY = mc.thePlayer.getPositionEyes(1.0f).yCoord;
+        double targetTopY = target.getEntityBoundingBox().maxY;
+        boolean aboveTarget = eyeY > targetTopY;
+        if (backtracking && aboveTarget) return 0.5;
+        if (airborne && aboveTarget) return 0.3;
+        return 0.15; // generic airborne margin even when not above
+    }
+
+    /**
+     * Attack-range check that accounts for Y-level bias when falling/stair-bridging.
+     * Uses the no-fall-bias distance (ignores the eye-above-entity Y delta) and
+     * subtracts a safety margin so we never fire a packet the server will flag.
+     */
+    private boolean isBoxInAttackRangeSafe(AxisAlignedBB axisAlignedBB, EntityLivingBase entity) {
+        if (mc.thePlayer.onGround) {
+            return RotationUtil.distanceToBox(axisAlignedBB) <= (double) this.attackRange.getValue();
+        }
+        double safeRange = (double) this.attackRange.getValue() - getReachSafetyMargin(entity);
+        return RotationUtil.distanceToEntityNoFallBias(entity) <= safeRange;
     }
 
     private boolean isPlayerTarget(EntityLivingBase entityLivingBase) {
@@ -717,9 +758,19 @@ public class KillAura extends Module {
         if (this.isEnabled()) {
             switch (event.getType()) {
                 case PRE:
+                    // Refresh the AttackData bounding box first so validity checks below
+                    // use the entity's current position, not last tick's snapshot.
+                    // This fixes reach/hitbox flags in switch mode after many players:
+                    // the old code checked isBoxInAttackRange on a stale box, then rebuilt
+                    // it — meaning the range check triggered a re-select on the stale box
+                    // even when the entity was still in range.
+                    if (this.target != null && this.target.getEntity() != null) {
+                        this.target = new AttackData(this.target.getEntity());
+                    }
+
                     if (this.target == null
                             || !this.isValidTarget(this.target.getEntity())
-                            || !this.isBoxInAttackRange(this.target.getBox())
+                            || !this.isBoxInAttackRangeSafe(this.target.getBox(), this.target.getEntity())
                             || !this.isBoxInSwingRange(this.target.getBox())
                             || this.timer.hasTimeElapsed(this.switchDelay.getValue().longValue())) {
                         this.timer.reset();
@@ -733,12 +784,16 @@ public class KillAura extends Module {
                         }
                         if (targets.isEmpty()) {
                             this.target = null;
+                            // Reset switchTick and hitRegistered so next time we get
+                            // targets we start from index 0 cleanly.
+                            this.switchTick = 0;
+                            this.hitRegistered = false;
                         } else {
                             if (targets.stream().anyMatch(this::isInSwingRange)) {
                                 targets.removeIf(entityLivingBase -> !this.isInSwingRange(entityLivingBase));
                             }
-                            if (targets.stream().anyMatch(this::isInAttackRange)) {
-                                targets.removeIf(entityLivingBase -> !this.isInAttackRange(entityLivingBase));
+                            if (targets.stream().anyMatch(e -> this.isBoxInAttackRangeSafe(e.getEntityBoundingBox(), e))) {
+                                targets.removeIf(e -> !this.isBoxInAttackRangeSafe(e.getEntityBoundingBox(), e));
                             }
                             if (targets.stream().anyMatch(this::isPlayerTarget)) {
                                 targets.removeIf(entityLivingBase -> !this.isPlayerTarget(entityLivingBase));
@@ -768,14 +823,17 @@ public class KillAura extends Module {
                                 this.hitRegistered = false;
                                 this.switchTick++;
                             }
+                            // Always clamp switchTick to valid range — this is the core
+                            // fix: if the target list shrinks (players leave/die mid-fight),
+                            // switchTick could be >= size, causing an AIOOBE or wrapping
+                            // to index 0 while still carrying a stale hitRegistered state,
+                            // then immediately re-incrementing next hit → targets.get(1)
+                            // which may be out of swing range → reach flag.
                             if (this.mode.getValue() == 0 || this.switchTick >= targets.size()) {
                                 this.switchTick = 0;
                             }
                             this.target = new AttackData(targets.get(this.switchTick));
                         }
-                    }
-                    if (this.target != null) {
-                        this.target = new AttackData(this.target.getEntity());
                     }
                     break;
                 case POST:

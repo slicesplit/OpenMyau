@@ -12,69 +12,59 @@ import myau.module.Module;
 import myau.property.properties.BooleanProperty;
 import myau.property.properties.FloatProperty;
 import myau.property.properties.IntProperty;
-import myau.property.properties.ModeProperty;
 import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
+import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.play.server.S08PacketPlayerPosLook;
-import net.minecraft.util.Vec3;
+import net.minecraft.util.Timer;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.lang.reflect.Field;
 
 /**
- * TickBase - GRIM OPTIMIZED - Speeds up client ticks to get closer to enemies
+ * TickBase - GRIM OPTIMIZED v2
  * 
- * GRIM BYPASS STRATEGY:
- * - Uses FUTURE mode with PLAYER call for minimal server-side impact
- * - Conservative tick counts (2-3) to stay within Grim's prediction tolerance
- * - Smart balance recovery to avoid pattern detection
- * - Ground-only execution to prevent air movement flags
- * - Cooldown system to spread out bursts naturally
+ * NEW STRATEGY: Timer-speed manipulation (Grim-safe)
+ * Instead of calling onUpdate() which generates extra C03 packets,
+ * we manipulate mc.timer.timerSpeed to make the game naturally tick faster.
  * 
- * DEFAULT CONFIG = BEST GRIM BYPASS:
- * - Mode: FUTURE (less detectable than PAST)
- * - Call: PLAYER (doesn't trigger full game tick exploits)
- * - Max Ticks: 3 (safe for Grim's 60ms prediction window)
- * - Balance Recovery: 0.8 (slower recovery = less suspicious)
- * - Cooldown: 15 ticks (750ms between bursts)
- * - Force Ground: TRUE (prevents air movement flags)
+ * Why this works against Grim:
+ * - Grim's Timer check allows a small balance buffer (~0.3s)
+ * - By running timerSpeed at 1.08-1.15 for 4-8 ticks, we send C03s at a rate
+ *   that Grim expects from a slightly faster client
+ * - The packets arrive naturally spaced (50ms apart at normal speed, ~46ms faster)
+ *   which is within Grim's prediction tolerance
+ * - No extra packet generation, no subsystem re-entry, no crashes
+ * 
+ * Critical constraints:
+ * - Never exceed timerSpeed 1.15 (~3 extra ticks/sec = 0.15s over 1 second)
+ * - Always use a cooldown (15-20 ticks) so balance recovers
+ * - Reset timerSpeed on teleport (S08PacketPlayerPosLook)
+ * - Only activate when KillAura has a target in range
  */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class TickBase extends Module {
 
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    // ==================== GRIM-OPTIMIZED DEFAULTS ====================
+    // ==================== PROPERTIES ====================
     
-    // Mode selection - FUTURE is safer for Grim
-    public final ModeProperty mode = new ModeProperty("Mode", 1, new String[]{"PAST", "FUTURE"}); // Default: FUTURE
-    public final ModeProperty callMode = new ModeProperty("Call", 1, new String[]{"GAME", "PLAYER"}); // Default: PLAYER
+    public final FloatProperty speed = new FloatProperty("Speed", 1.08f, 1.05f, 1.15f);
+    public final IntProperty duration = new IntProperty("Duration", 4, 2, 8);
+    public final IntProperty cooldown = new IntProperty("Cooldown", 20, 10, 40);
+    public final FloatProperty minRange = new FloatProperty("Min Range", 2.5f, 2.0f, 5.0f);
+    public final BooleanProperty requiresKillAura = new BooleanProperty("Requires KillAura", true);
 
-    // Range settings - Optimal for combat without being obvious
-    public final FloatProperty minRange = new FloatProperty("Min Range", 2.8f, 0f, 8f); // GRIM: 2.8 blocks
-    public final FloatProperty maxRange = new FloatProperty("Max Range", 3.5f, 0f, 8f); // GRIM: 3.5 blocks (safe reach range)
-
-    // Balance system - Conservative for anti-cheat bypass
-    public final FloatProperty balanceRecoveryIncrement = new FloatProperty("Balance Recovery", 0.8f, 0f, 2f); // GRIM: 0.8 (slower = safer)
-    public final IntProperty balanceMaxValue = new IntProperty("Balance Max", 25, 0, 200); // GRIM: 25 (higher reserve)
-    public final IntProperty maxTicksAtATime = new IntProperty("Max Ticks", 3, 1, 20); // GRIM: 3 ticks (60ms burst = safe)
-
-    // Control settings - CRITICAL for Grim bypass
-    public final BooleanProperty pauseOnFlag = new BooleanProperty("Pause On Flag", true); // GRIM: Always pause on flag
-    public final IntProperty pause = new IntProperty("Pause", 2, 0, 20); // GRIM: 2 tick pause after burst
-    public final IntProperty cooldown = new IntProperty("Cooldown", 15, 0, 100); // GRIM: 15 ticks (750ms) between bursts
-    public final BooleanProperty forceGround = new BooleanProperty("Force Ground", true); // GRIM: Only on ground (prevents air flags)
-
-    // KillAura integration - Smart activation
-    public final BooleanProperty requiresKillAura = new BooleanProperty("Requires KillAura", true); // GRIM: Only with KillAura
-
-    // Internal state
-    private int ticksToSkip = 0;
-    private float tickBalance = 0f;
-    private boolean reachedTheLimit = false;
-    private final List<TickData> tickBuffer = new ArrayList<>();
+    // ==================== STATE ====================
+    
+    private int activeTicks = 0;
     private int cooldownTicks = 0;
+    private boolean timerSpeedActive = false;
+    
+    // Reflected fields for timer access (cached on first use)
+    private static Field timerField = null;
+    private static Field speedField = null;
+    private static boolean reflectionFailed = false;
 
     public TickBase() {
         super("TickBase", false);
@@ -82,22 +72,23 @@ public class TickBase extends Module {
 
     @Override
     public void onDisabled() {
-        ticksToSkip = 0;
-        tickBalance = 0f;
-        reachedTheLimit = false;
-        tickBuffer.clear();
+        // CRITICAL: Always reset timerSpeed on disable
+        resetTimerSpeed();
+        activeTicks = 0;
         cooldownTicks = 0;
+        timerSpeedActive = false;
     }
 
     @EventTarget
     public void onPacket(PacketEvent event) {
         if (!this.isEnabled()) return;
 
-        // Reset balance on flag (teleport packet)
+        // Reset timerSpeed on teleport (Grim flag detection)
         if (event.getType() == EventType.RECEIVE && event.getPacket() instanceof S08PacketPlayerPosLook) {
-            if (pauseOnFlag.getValue()) {
-                tickBalance = 0f;
-            }
+            resetTimerSpeed();
+            activeTicks = 0;
+            cooldownTicks = 0;
+            timerSpeedActive = false;
         }
     }
 
@@ -107,235 +98,151 @@ public class TickBase extends Module {
 
         if (event.getType() != EventType.PRE) return;
 
-        // Don't conflict with blink
+        // Don't conflict with blink or FakeLag
         Blink blink = (Blink) Myau.moduleManager.getModule(Blink.class);
-        if (mc.thePlayer.isRiding() || (blink != null && blink.isEnabled())) {
+        FakeLag fakeLag = (FakeLag) Myau.moduleManager.getModule(FakeLag.class);
+        if (mc.thePlayer.isRiding() || (blink != null && blink.isEnabled()) || (fakeLag != null && fakeLag.isEnabled())) {
+            resetTimerSpeed();
             return;
         }
 
-        // Handle tick skipping for PAST mode
-        if (ticksToSkip > 0) {
-            ticksToSkip--;
-            // Cannot cancel tick event - just skip logic
-            return;
-        }
-
-        // Cooldown handling
+        // Handle cooldown
         if (cooldownTicks > 0) {
             cooldownTicks--;
             return;
         }
 
-        // Update tick buffer with simulated positions
-        updateTickBuffer();
-
-        if (tickBuffer.isEmpty()) {
-            return;
-        }
-
-        // Find nearby enemy
-        EntityPlayer nearbyEnemy = findNearbyEnemy();
-        if (nearbyEnemy == null) {
-            return;
-        }
-
-        double currentDistanceSq = mc.thePlayer.getDistanceSqToEntity(nearbyEnemy);
-        double minRangeSq = minRange.getValue() * minRange.getValue();
-        double maxRangeSq = maxRange.getValue() * maxRange.getValue();
-
-        // Find best tick to execute
-        int bestTick = -1;
-        TickData bestTickData = null;
-        boolean foundCriticalTick = false;
-
-        for (int i = 0; i < tickBuffer.size(); i++) {
-            TickData tickData = tickBuffer.get(i);
-
-            // Check if we should only use ground ticks
-            if (forceGround.getValue() && !tickData.onGround) {
-                continue;
+        // Handle active duration
+        if (activeTicks > 0) {
+            activeTicks--;
+            if (activeTicks == 0) {
+                // Duration expired, reset timerSpeed and start cooldown
+                resetTimerSpeed();
+                cooldownTicks = cooldown.getValue();
             }
-
-            double dx = tickData.position.xCoord - nearbyEnemy.posX;
-            double dy = tickData.position.yCoord - nearbyEnemy.posY;
-            double dz = tickData.position.zCoord - nearbyEnemy.posZ;
-            double distSq = dx * dx + dy * dy + dz * dz;
-
-            // Must be closer than current distance and in range
-            if (distSq < currentDistanceSq && distSq >= minRangeSq && distSq <= maxRangeSq) {
-                // Prefer critical hits (falling)
-                if (tickData.fallDistance > 0.0f && !foundCriticalTick) {
-                    bestTick = i;
-                    bestTickData = tickData;
-                    foundCriticalTick = true;
-                } else if (!foundCriticalTick && bestTick == -1) {
-                    bestTick = i;
-                    bestTickData = tickData;
-                }
-            }
+            return;
         }
 
-        if (bestTick <= 0 || bestTickData == null) {
-            return;
+        // Try to activate TickBase if conditions are met
+        if (shouldActivate()) {
+            activateTick();
+        }
+    }
+
+    /**
+     * Check if TickBase should activate this tick
+     */
+    private boolean shouldActivate() {
+        // Must be on ground
+        if (!mc.thePlayer.onGround) {
+            return false;
         }
 
         // Check KillAura requirement
         if (requiresKillAura.getValue()) {
             KillAura killAura = (KillAura) Myau.moduleManager.getModule(KillAura.class);
             if (killAura == null || !killAura.isEnabled()) {
-                return;
+                return false;
             }
-        }
 
-        // Execute tickbase
-        executeTickBase(bestTick);
-    }
+            // Check if KillAura has a target in range
+            EntityLivingBase target = killAura.getTarget();
+            if (target == null || target.isDead || target.deathTime > 0) {
+                return false;
+            }
 
-    private void executeTickBase(int tickCount) {
-        switch (mode.getValue()) {
-            case 0: // PAST mode
-                ticksToSkip = tickCount + pause.getValue();
+            // Check range
+            double distSq = mc.thePlayer.getDistanceSqToEntity(target);
+            double minRangeSq = minRange.getValue() * minRange.getValue();
+            if (distSq > minRangeSq) {
+                return false;
+            }
 
-                for (int i = 0; i < tickCount; i++) {
-                    executeTick();
-                    tickBalance -= 1;
+            // Skip teammates and friends (only for EntityPlayer targets)
+            if (target instanceof EntityPlayer) {
+                EntityPlayer player = (EntityPlayer) target;
+                if (TeamUtil.isSameTeam(player) || TeamUtil.isFriend(player)) {
+                    return false;
                 }
+            }
+        }
 
-                ticksToSkip = 0;
-                cooldownTicks = cooldown.getValue();
-                break;
+        return true;
+    }
 
-            case 1: // FUTURE mode
-                int totalSkipped = 0;
+    /**
+     * Activate TickBase by speeding up the game timer
+     */
+    private void activateTick() {
+        if (!setTimerSpeed(speed.getValue())) {
+            return; // Reflection failed, can't proceed
+        }
+        timerSpeedActive = true;
+        activeTicks = duration.getValue();
+    }
 
-                for (int i = 0; i < tickCount; i++) {
-                    executeTick();
-                    tickBalance -= 1;
-                    totalSkipped++;
+    /**
+     * Set the timer speed via reflection
+     * @return true if successful, false if reflection failed
+     */
+    private static boolean setTimerSpeed(float speedValue) {
+        if (reflectionFailed) {
+            return false;
+        }
 
-                    // Check if we should break early
-                    if (requiresKillAura.getValue()) {
-                        KillAura killAura = (KillAura) Myau.moduleManager.getModule(KillAura.class);
-                        if (killAura == null || !killAura.isEnabled()) {
-                            break;
-                        }
-                    }
-                }
+        try {
+            // Initialize reflected fields if not already done
+            if (timerField == null || speedField == null) {
+                initializeReflection();
+            }
 
-                ticksToSkip = totalSkipped + pause.getValue();
-                cooldownTicks = cooldown.getValue();
-                break;
+            if (timerField == null || speedField == null) {
+                reflectionFailed = true;
+                return false;
+            }
+
+            // Get the timer object from Minecraft
+            Object timer = timerField.get(mc);
+            if (timer == null) {
+                return false;
+            }
+
+            // Set the timerSpeed field
+            speedField.setFloat(timer, speedValue);
+            return true;
+        } catch (Exception e) {
+            reflectionFailed = true;
+            return false;
         }
     }
 
-    private void executeTick() {
-        switch (callMode.getValue()) {
-            case 0: // GAME - full game tick
-                try {
-                    mc.runTick();
-                } catch (Exception e) {
-                    // Fallback to player tick if game tick fails
-                    if (mc.thePlayer != null) {
-                        mc.thePlayer.onUpdate();
-                    }
-                }
-                break;
-
-            case 1: // PLAYER - only player tick
-                if (mc.thePlayer != null) {
-                    mc.thePlayer.onUpdate();
-                }
-                break;
-        }
+    /**
+     * Reset the timer speed to normal (1.0)
+     */
+    private static void resetTimerSpeed() {
+        setTimerSpeed(1.0f);
     }
 
-    private void updateTickBuffer() {
-        tickBuffer.clear();
+    /**
+     * Initialize reflection for Timer access
+     */
+    private static void initializeReflection() {
+        try {
+            // Get the timer field from Minecraft (SRG name: field_71428_T)
+            timerField = Minecraft.class.getDeclaredField("field_71428_T");
+            timerField.setAccessible(true);
 
-        // Manage tick balance
-        if (tickBalance <= 0) {
-            reachedTheLimit = true;
-        }
-        if (tickBalance * 2 > balanceMaxValue.getValue()) {
-            reachedTheLimit = false;
-        }
-        if (tickBalance <= balanceMaxValue.getValue()) {
-            tickBalance += balanceRecoveryIncrement.getValue();
-        }
-
-        if (reachedTheLimit) {
-            return;
-        }
-
-        // Simulate future positions
-        int maxTicks = Math.min((int) tickBalance, maxTicksAtATime.getValue());
-        
-        // Simple position prediction based on current velocity
-        Vec3 currentPos = new Vec3(mc.thePlayer.posX, mc.thePlayer.posY, mc.thePlayer.posZ);
-        Vec3 currentVel = new Vec3(mc.thePlayer.motionX, mc.thePlayer.motionY, mc.thePlayer.motionZ);
-        
-        boolean onGround = mc.thePlayer.onGround;
-        float fallDistance = mc.thePlayer.fallDistance;
-
-        for (int i = 0; i < maxTicks; i++) {
-            // Simple physics simulation
-            currentPos = currentPos.addVector(currentVel.xCoord, currentVel.yCoord, currentVel.zCoord);
-            
-            // Apply gravity if not on ground
-            if (!onGround) {
-                currentVel = new Vec3(currentVel.xCoord * 0.91, (currentVel.yCoord - 0.08) * 0.98, currentVel.zCoord * 0.91);
-                fallDistance += Math.abs(currentVel.yCoord);
-            } else {
-                currentVel = new Vec3(currentVel.xCoord * 0.6, currentVel.yCoord, currentVel.zCoord * 0.6);
+            // Get the Timer class and the timerSpeed field (SRG name: field_74277_a)
+            Object timerObj = timerField.get(mc);
+            if (timerObj != null) {
+                speedField = timerObj.getClass().getDeclaredField("field_74277_a");
+                speedField.setAccessible(true);
             }
-
-            // Simple ground check (y velocity negative and low)
-            if (currentVel.yCoord < 0 && Math.abs(currentVel.yCoord) < 0.1) {
-                onGround = true;
-                fallDistance = 0;
-            } else if (currentVel.yCoord > 0) {
-                onGround = false;
-            }
-
-            tickBuffer.add(new TickData(currentPos, fallDistance, currentVel, onGround));
-        }
-    }
-
-    private EntityPlayer findNearbyEnemy() {
-        EntityPlayer closest = null;
-        double closestDist = maxRange.getValue() * maxRange.getValue();
-
-        for (EntityPlayer player : mc.theWorld.playerEntities) {
-            if (player == mc.thePlayer || player.isDead || player.deathTime > 0) {
-                continue;
-            }
-
-            // Skip teammates and friends
-            if (TeamUtil.isSameTeam(player) || TeamUtil.isFriend(player)) {
-                continue;
-            }
-
-            double distSq = mc.thePlayer.getDistanceSqToEntity(player);
-            if (distSq <= closestDist) {
-                closest = player;
-                closestDist = distSq;
-            }
-        }
-
-        return closest;
-    }
-
-    private static class TickData {
-        final Vec3 position;
-        final float fallDistance;
-        final Vec3 velocity;
-        final boolean onGround;
-
-        TickData(Vec3 position, float fallDistance, Vec3 velocity, boolean onGround) {
-            this.position = position;
-            this.fallDistance = fallDistance;
-            this.velocity = velocity;
-            this.onGround = onGround;
+        } catch (Exception e) {
+            // Reflection failed, mark it and disable this feature
+            timerField = null;
+            speedField = null;
+            reflectionFailed = true;
         }
     }
 }

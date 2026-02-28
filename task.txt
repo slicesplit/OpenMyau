@@ -1,0 +1,3 @@
+oversimplfy grim regen ui, and make it fully bypass all the checks cause it flags for simulation, antikb, nofall,
+groundspoof all kidns of things at once, bypass grim fully by studying it for a long itme, and is backtrack bypass fully    
+impl? (do it and remove those limits since whats the use of backtrack then and subsititue them for more internal bypasses) , and fix switch killaura flagging for reach and hitboxes after a really long time or just too many players at once, improve its bypasses and itself
