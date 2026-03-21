@@ -5,6 +5,7 @@ import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
+import myau.event.types.Priority;
 import myau.events.PacketEvent;
 import myau.events.UpdateEvent;
 import myau.module.Module;
@@ -14,7 +15,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.play.server.S12PacketEntityVelocity;
 import net.minecraft.network.play.server.S27PacketExplosion;
-import net.minecraft.util.MathHelper;
 
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class JumpReset extends Module {
@@ -26,12 +26,11 @@ public class JumpReset extends Module {
     public final BooleanProperty onlyTargeting = new BooleanProperty("OnlyWhenTargeting", false);
     public final BooleanProperty waterCheck = new BooleanProperty("WaterCheck", true);
 
-    private boolean shouldJump = false;
+    private boolean pendingJump = false;
     private boolean shouldFail = false;
-    private int jumpDelay = 0;
-    private long lastVelocityTime = 0;
-
-    private static final long VELOCITY_COOLDOWN_MS = 500;
+    private int failDelay = 0;
+    private boolean wasGroundedOnKB = false;
+    private int jumpCooldown = 0;
 
     public JumpReset() {
         super("JumpReset", false);
@@ -39,23 +38,29 @@ public class JumpReset extends Module {
 
     @Override
     public void onEnabled() {
-        shouldJump = false;
-        shouldFail = false;
-        jumpDelay = 0;
-        lastVelocityTime = 0;
+        this.pendingJump = false;
+        this.shouldFail = false;
+        this.failDelay = 0;
+        this.wasGroundedOnKB = false;
+        this.jumpCooldown = 0;
     }
 
     @Override
     public void onDisabled() {
-        shouldJump = false;
-        shouldFail = false;
-        jumpDelay = 0;
+        this.pendingJump = false;
+        this.shouldFail = false;
+        this.failDelay = 0;
+        this.wasGroundedOnKB = false;
+        this.jumpCooldown = 0;
     }
 
-    @EventTarget
+    @EventTarget(Priority.HIGH)
     public void onPacket(PacketEvent event) {
         if (event.getType() != EventType.RECEIVE) return;
         if (mc.thePlayer == null || mc.theWorld == null) return;
+
+        boolean isKB = false;
+        double horizontalVel = 0;
 
         if (event.getPacket() instanceof S12PacketEntityVelocity) {
             S12PacketEntityVelocity packet = (S12PacketEntityVelocity) event.getPacket();
@@ -63,29 +68,21 @@ public class JumpReset extends Module {
 
             double velX = packet.getMotionX() / 8000.0;
             double velZ = packet.getMotionZ() / 8000.0;
-            double horizontalVel = Math.sqrt(velX * velX + velZ * velZ);
-            if (horizontalVel < 0.05) return;
-
-            handleIncomingKnockback();
-            return;
+            horizontalVel = Math.sqrt(velX * velX + velZ * velZ);
+            isKB = true;
         }
 
         if (event.getPacket() instanceof S27PacketExplosion) {
             S27PacketExplosion packet = (S27PacketExplosion) event.getPacket();
-            double horizontalVel = Math.sqrt(
-                    packet.func_149149_c() * packet.func_149149_c() +
-                    packet.func_149144_d() * packet.func_149144_d()
-            );
-            if (horizontalVel < 0.05) return;
-
-            handleIncomingKnockback();
+            float expX = packet.func_149149_c();
+            float expZ = packet.func_149147_e();
+            horizontalVel = Math.sqrt(expX * expX + expZ * expZ);
+            isKB = true;
         }
-    }
 
-    private void handleIncomingKnockback() {
-        long now = System.currentTimeMillis();
-        if (now - lastVelocityTime < VELOCITY_COOLDOWN_MS) return;
-        lastVelocityTime = now;
+        if (!isKB) return;
+        if (horizontalVel < 0.05) return;
+        if (this.jumpCooldown > 0) return;
 
         if (waterCheck.getValue() && (mc.thePlayer.isInWater()
                 || mc.thePlayer.isInLava()
@@ -93,39 +90,55 @@ public class JumpReset extends Module {
             return;
         }
 
-        if (!mc.thePlayer.onGround) return;
-        if (onlyTargeting.getValue() && !isLookingAtAttacker()) return;
+        if (onlyTargeting.getValue() && !isTargetingPlayer()) return;
         if (Math.random() * 100 >= chance.getValue()) return;
 
-        shouldFail = Math.random() * 100 >= accuracy.getValue();
-        shouldJump = true;
+        this.wasGroundedOnKB = mc.thePlayer.onGround;
+        if (!this.wasGroundedOnKB) return;
 
-        if (shouldFail) {
-            jumpDelay = 1 + (int) (Math.random() * 3);
+        this.shouldFail = Math.random() * 100 >= accuracy.getValue();
+
+        if (this.shouldFail) {
+            this.failDelay = 1 + (int) (Math.random() * 3);
         } else {
-            jumpDelay = 0;
+            this.failDelay = 0;
         }
+
+        this.pendingJump = true;
     }
 
     @EventTarget
     public void onUpdate(UpdateEvent event) {
         if (event.getType() != EventType.PRE) return;
-        if (mc.thePlayer == null || !shouldJump) return;
+        if (mc.thePlayer == null) return;
 
-        if (jumpDelay > 0) {
-            jumpDelay--;
-            return;
+        if (this.jumpCooldown > 0) {
+            this.jumpCooldown--;
         }
 
-        if (mc.thePlayer.onGround) {
+        if (!this.pendingJump) return;
+
+        if (this.failDelay > 0) {
+            this.failDelay--;
+            if (this.failDelay > 0) return;
+        }
+
+        if (mc.thePlayer.onGround || this.wasGroundedOnKB) {
             mc.thePlayer.jump();
+            this.jumpCooldown = 10;
         }
 
-        shouldJump = false;
-        shouldFail = false;
+        this.pendingJump = false;
+        this.shouldFail = false;
+        this.wasGroundedOnKB = false;
     }
 
-    private boolean isLookingAtAttacker() {
+    /**
+     * Check if we're actively fighting someone.
+     * 360° — any player within 6 blocks triggers this.
+     */
+    private boolean isTargetingPlayer() {
+        // Check if KillAura is active
         try {
             KillAura ka = (KillAura) Myau.moduleManager.modules.get(KillAura.class);
             if (ka != null && ka.isEnabled()) {
@@ -133,26 +146,15 @@ public class JumpReset extends Module {
             }
         } catch (Exception ignored) {}
 
-        EntityPlayer nearest = null;
-        double nearestDist = 6.0;
-
+        // 360° check — any player within range counts
         for (EntityPlayer player : mc.theWorld.playerEntities) {
             if (player == mc.thePlayer || player.isDead) continue;
-            double dist = mc.thePlayer.getDistanceToEntity(player);
-            if (dist < nearestDist) {
-                nearestDist = dist;
-                nearest = player;
+            if (mc.thePlayer.getDistanceToEntity(player) < 6.0) {
+                return true;
             }
         }
 
-        if (nearest == null) return false;
-
-        double dx = nearest.posX - mc.thePlayer.posX;
-        double dz = nearest.posZ - mc.thePlayer.posZ;
-        float angleToTarget = (float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0F;
-        float yawDiff = MathHelper.wrapAngleTo180_float(mc.thePlayer.rotationYaw - angleToTarget);
-
-        return Math.abs(yawDiff) < 60.0F;
+        return false;
     }
 
     @Override
