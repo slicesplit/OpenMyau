@@ -25,10 +25,6 @@ import java.util.concurrent.Future;
 @Mixin(value = {NetworkManager.class}, priority = 9999)
 public abstract class MixinNetworkManager {
 
-    // ────────────────────────────────────────────────────────────────────────
-    //  INCOMING PACKET CLASSIFICATION
-    // ────────────────────────────────────────────────────────────────────────
-
     @Unique
     private static boolean myau$isCriticalIncoming(Packet<?> packet) {
         return packet instanceof S08PacketPlayerPosLook
@@ -43,22 +39,6 @@ public abstract class MixinNetworkManager {
         return packet instanceof S12PacketEntityVelocity
             || packet instanceof S27PacketExplosion;
     }
-
-    // ────────────────────────────────────────────────────────────────────────
-    //  OUTGOING PACKET CLASSIFICATION
-    //
-    //  CRITICAL: Bypass event system AND managers. No module ever sees these.
-    //            Only packets where interception would cause kicks/timeouts
-    //            and no module should ever need to touch them.
-    //
-    //  MANAGER-PROTECTED: Goes through event system (modules can see/cancel)
-    //            but never touched by blink/lag/playerState managers.
-    //            - C01 Chat: command system intercepts via PacketEvent
-    //            - C0D CloseWindow: RemoteShop cancels to keep windows cached
-    //            - C0E ClickWindow: inventory modules may need to intercept
-    //
-    //  NORMAL: Everything else flows through events then managers.
-    // ────────────────────────────────────────────────────────────────────────
 
     @Unique
     private static boolean myau$isCriticalOutgoing(Packet<?> packet) {
@@ -76,10 +56,6 @@ public abstract class MixinNetworkManager {
             || packet instanceof C0DPacketCloseWindow
             || packet instanceof C0EPacketClickWindow;
     }
-
-    // ────────────────────────────────────────────────────────────────────────
-    //  INCOMING HANDLER
-    // ────────────────────────────────────────────────────────────────────────
 
     @Inject(
             method = {"channelRead0*"},
@@ -128,10 +104,6 @@ public abstract class MixinNetworkManager {
         } catch (Exception ignored) {}
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    //  OUTGOING HANDLER (primary)
-    // ────────────────────────────────────────────────────────────────────────
-
     @Inject(
             method = {"sendPacket(Lnet/minecraft/network/Packet;)V"},
             at = {@At("HEAD")},
@@ -178,10 +150,6 @@ public abstract class MixinNetworkManager {
             } catch (Exception ignored) {}
         }
     }
-
-    // ────────────────────────────────────────────────────────────────────────
-    //  OUTGOING HANDLER (with future listener)
-    // ────────────────────────────────────────────────────────────────────────
 
     @Inject(
             method = {"sendPacket(Lnet/minecraft/network/Packet;Lio/netty/util/concurrent/GenericFutureListener;[Lio/netty/util/concurrent/GenericFutureListener;)V"},

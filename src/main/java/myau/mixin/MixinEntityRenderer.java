@@ -106,17 +106,6 @@ public abstract class MixinEntityRenderer {
         return noHurtCam.isEnabled() ? float1 * (float) noHurtCam.multiplier.getValue().intValue() / 100.0F : float1;
     }
 
-    // ── BackTrack raytrace flag ──
-    @Inject(method = "getMouseOver", at = @At("HEAD"))
-    private void preMouseOver(float pt, CallbackInfo ci) {
-        Backtrack.isRaytracing = true;
-    }
-
-    @Inject(method = "getMouseOver", at = @At("RETURN"))
-    private void postMouseOver(float pt, CallbackInfo ci) {
-        Backtrack.isRaytracing = false;
-    }
-
     @ModifyConstant(method = {"getMouseOver"}, constant = {@Constant(doubleValue = 3.0, ordinal = 1)})
     private double getMouseOver(double range) {
         PickEvent event = new PickEvent(range);

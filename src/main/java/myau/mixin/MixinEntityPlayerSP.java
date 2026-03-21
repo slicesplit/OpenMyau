@@ -143,7 +143,17 @@ public abstract class MixinEntityPlayerSP extends MixinEntityPlayer {
             )}
     )
     private void updateMove(CallbackInfo callbackInfo) {
-        EventManager.call(new MoveInputEvent());
+        EntityPlayerSP player = (EntityPlayerSP) (Object) this;
+
+        MoveInputEvent event = new MoveInputEvent();
+        EventManager.call(event);
+
+        if (event.isSneakOverridden()) {
+            player.movementInput.sneak = event.isSneak();
+        }
+        if (event.isForwardOverridden()) {
+            player.movementInput.moveForward = event.getForward();
+        }
     }
 
     @Redirect(
@@ -175,7 +185,6 @@ public abstract class MixinEntityPlayerSP extends MixinEntityPlayer {
         return ((IAccessorEntityLivingBase) entityPlayerSP).getActivePotionsMap().containsKey(potion.id);
     }
 
-    // Bypass the vanilla 256-char substring truncation in sendChatMessage
     @Redirect(
             method = {"sendChatMessage"},
             at = @At(
@@ -187,7 +196,7 @@ public abstract class MixinEntityPlayerSP extends MixinEntityPlayer {
         if (Myau.moduleManager != null) {
             ChatLimitRemove mod = (ChatLimitRemove) Myau.moduleManager.modules.get(ChatLimitRemove.class);
             if (mod != null && mod.isEnabled()) {
-                return str; // skip truncation entirely
+                return str;
             }
         }
         return str.substring(start, end);

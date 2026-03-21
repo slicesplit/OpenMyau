@@ -1,10 +1,11 @@
 package myau.module.modules;
 
+import myau.enums.BlinkModules;
+
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 
 import myau.Myau;
-import myau.enums.BlinkModules;
 import myau.enums.ChatColors;
 import myau.event.EventTarget;
 import myau.event.types.EventType;

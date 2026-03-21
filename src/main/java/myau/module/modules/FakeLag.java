@@ -1,93 +1,68 @@
 package myau.module.modules;
 
-import myau.Myau;
 import myau.enums.ModuleCategory;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.events.AttackEvent;
 import myau.events.LoadWorldEvent;
 import myau.events.PacketEvent;
+import myau.events.Render3DEvent;
 import myau.events.TickEvent;
+import myau.mixin.IAccessorRenderManager;
 import myau.module.Module;
 import myau.module.ModuleInfo;
 import myau.property.properties.BooleanProperty;
-import myau.property.properties.IntProperty;
+import myau.property.properties.FloatProperty;
+import myau.property.properties.ModeProperty;
+import myau.utility.backtrack.TimedPacket;
 import myau.util.PacketUtil;
 import myau.util.TeamUtil;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.inventory.GuiContainer;
+import net.minecraft.client.entity.AbstractClientPlayer;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.network.Packet;
 import net.minecraft.network.handshake.client.C00Handshake;
-import net.minecraft.network.play.client.*;
-import net.minecraft.network.play.server.*;
+import net.minecraft.network.login.client.C00PacketLoginStart;
+import net.minecraft.network.login.client.C01PacketEncryptionResponse;
+import net.minecraft.network.play.client.C01PacketChatMessage;
 import net.minecraft.network.status.client.C00PacketServerQuery;
-import net.minecraft.network.status.client.C01PacketPing;
-import net.minecraft.network.status.server.S01PacketPong;
+import net.minecraft.util.Vec3;
 
-import java.util.ArrayDeque;
-import java.util.Iterator;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
-/**
- * FakeLag — clean port of fdpclient's FakeLag logic.
- *
- * Core behaviour:
- *   • Queues all non-critical outgoing packets up to `delay` ms.
- *   • Flushes (blinks) the queue on: attack, knockback, PosLook correction,
- *     inventory interaction, block placement/digging, scaffold, no-movement,
- *     item use, chest open, world change, or disable.
- *   • After a flush, enters a `recoilTime` ms window during which nothing is
- *     queued (packets pass through freely) — mirrors fdpclient exactly.
- *   • Cap of 40 queued C03s before force-flushing oldest half to prevent
- *     Grim timer accumulation.
- */
 @ModuleInfo(category = ModuleCategory.COMBAT)
 public class FakeLag extends Module {
 
     private static final Minecraft mc = Minecraft.getMinecraft();
 
-    public final IntProperty     delay          = new IntProperty("Delay",       550,  0, 1000);
-    public final IntProperty     recoilTime     = new IntProperty("RecoilTime",  750,  0, 2000);
-    public final BooleanProperty blinkOnAction  = new BooleanProperty("BlinkOnAction",  true);
-    public final BooleanProperty pauseOnNoMove  = new BooleanProperty("PauseOnNoMove",  true);
-    public final BooleanProperty pauseOnScaffold= new BooleanProperty("PauseOnScaffold",true);
-    public final BooleanProperty pauseOnChest   = new BooleanProperty("PauseOnChest",   false);
+    public final ModeProperty mode = new ModeProperty("Mode", 0,
+            new String[]{"Latency", "Dynamic"});
 
-    // ── internal queue ──────────────────────────────────────────────────────
+    public final FloatProperty delay = new FloatProperty("Delay", 200f, 25f, 1000f);
+    public final BooleanProperty drawRealPosition = new BooleanProperty("DrawRealPos", true,
+            () -> mode.getValue() == 0);
 
-    private static final class QueueData {
-        final Packet<?> packet;
-        final long      timestamp;
-        QueueData(Packet<?> p, long t) { packet = p; timestamp = t; }
-    }
+    public final BooleanProperty ignoreTeammates = new BooleanProperty("IgnoreTeammates", true,
+            () -> mode.getValue() == 1);
+    public final BooleanProperty stopOnHurt = new BooleanProperty("StopOnHurt", true,
+            () -> mode.getValue() == 1);
+    public final FloatProperty stopOnHurtTime = new FloatProperty("StopOnHurtTime", 500f, 0f, 1000f,
+            () -> mode.getValue() == 1 && stopOnHurt.getValue());
+    public final FloatProperty startRange = new FloatProperty("StartRange", 6.0f, 3.0f, 10.0f,
+            () -> mode.getValue() == 1);
+    public final FloatProperty stopRange = new FloatProperty("StopRange", 3.5f, 1.0f, 6.0f,
+            () -> mode.getValue() == 1);
+    public final FloatProperty maxTargetRange = new FloatProperty("MaxTargetRange", 15.0f, 6.0f, 20.0f,
+            () -> mode.getValue() == 1);
 
-    private final ArrayDeque<QueueData> packetQueue   = new ArrayDeque<>();
-    private long    recoilUntil    = 0;
-    private boolean ignoreThisTick = false;
-
-    // ── public API for other modules ────────────────────────────────────────
-
-    /** True while FakeLag is holding packets in its queue. */
-    public boolean isLagging() {
-        synchronized (packetQueue) { return isEnabled() && !packetQueue.isEmpty(); }
-    }
-
-    /** True during the post-flush recoil window. */
-    public boolean isInRecoil() {
-        return isEnabled() && System.currentTimeMillis() < recoilUntil;
-    }
-
-    /** True when actively queuing or in recoil. */
-    public boolean isActive() {
-        return isEnabled() && (isLagging() || isInRecoil());
-    }
-
-    /** Hard flush — called by Backtrack / external consumers. */
-    public void forceFlush() {
-        blink();
-    }
-
-    // ── lifecycle ───────────────────────────────────────────────────────────
+    private final Queue<TimedPacket> packetQueue = new ConcurrentLinkedQueue<>();
+    private Vec3 vec3 = null;
+    private AbstractClientPlayer dynamicTarget = null;
+    private long lastDisableTime = -1;
+    private boolean lastHurt = false;
+    private long lastStartBlinkTime = -1;
+    private boolean dynamicBlinking = false;
 
     public FakeLag() {
         super("FakeLag", false);
@@ -95,60 +70,113 @@ public class FakeLag extends Module {
 
     @Override
     public void onEnabled() {
-        synchronized (packetQueue) { packetQueue.clear(); }
-        recoilUntil    = 0;
-        ignoreThisTick = false;
+        packetQueue.clear();
+        vec3 = null;
+        dynamicTarget = null;
+        lastDisableTime = -1;
+        lastHurt = false;
+        lastStartBlinkTime = -1;
+        dynamicBlinking = false;
     }
 
     @Override
     public void onDisabled() {
-        blink();
+        sendPacket(false);
+        vec3 = null;
+        dynamicBlinking = false;
     }
 
-    // ── tick ────────────────────────────────────────────────────────────────
+    // ── public API ────────────────────────────────────────────────────────────
+
+    public boolean isLagging() {
+        return isEnabled() && !packetQueue.isEmpty();
+    }
+
+    /** Backward compat — used by Regen and others. */
+    public boolean isActive() {
+        return isLagging();
+    }
+
+    public void forceFlush() {
+        sendPacket(false);
+    }
+
+    @Override
+    public String[] getSuffix() {
+        return new String[]{mode.getModeString(), String.valueOf(packetQueue.size())};
+    }
+
+    // ── tick ─────────────────────────────────────────────────────────────────
 
     @EventTarget
     public void onTick(TickEvent event) {
-        if (event.getType() != EventType.PRE || mc.thePlayer == null) return;
-
-        // Hard stops — always flush and skip this tick
-        if (mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0) {
-            blink(); return;
-        }
-        if (isSingleplayer()) {
-            blink(); return;
-        }
-
-        // Scaffold pause
-        if (pauseOnScaffold.getValue()) {
-            Scaffold scaffold = (Scaffold) Myau.moduleManager.modules.get(Scaffold.class);
-            if (scaffold != null && scaffold.isEnabled()) {
-                blink(); return;
-            }
-        }
-
-        // Chest / inventory GUI open
-        if (pauseOnChest.getValue() && mc.currentScreen instanceof GuiContainer) {
-            blink(); return;
-        }
-
-        // Item use (eating, blocking)
-        if (mc.thePlayer.isUsingItem()) {
-            blink(); return;
-        }
-
-        // In recoil window — pass everything through, queue nothing
-        if (System.currentTimeMillis() < recoilUntil) {
-            ignoreThisTick = true;
+        if (event.getType() != EventType.PRE) return;
+        if (mc.thePlayer == null) {
+            sendPacket(false);
             return;
         }
 
-        // Normal drain — release packets older than `delay`
-        ignoreThisTick = false;
-        handlePackets(false);
-    }
+        if (mode.getValue() == 0) {
+            sendPacket(true);
+        } else {
+            if (!isNullCheck()) {
+                sendPacket(false);
+                lastDisableTime = System.currentTimeMillis();
+                lastStartBlinkTime = -1;
+                return;
+            }
 
-    // ── outgoing packet hook ─────────────────────────────────────────────────
+            if (stopOnHurt.getValue()
+                    && lastDisableTime != -1
+                    && System.currentTimeMillis() - lastDisableTime <= stopOnHurtTime.getValue().longValue()) {
+                if (dynamicBlinking) {
+                    dynamicBlinking = false;
+                    sendPacket(false);
+                }
+            }
+
+            if (dynamicBlinking) {
+                if (lastStartBlinkTime != -1
+                        && System.currentTimeMillis() - lastStartBlinkTime > delay.getValue().longValue()) {
+                    dynamicBlinking = false;
+                    lastStartBlinkTime = System.currentTimeMillis();
+                    sendPacket(false);
+                } else if (!lastHurt && mc.thePlayer.hurtTime > 0 && stopOnHurt.getValue()) {
+                    lastDisableTime = System.currentTimeMillis();
+                    dynamicBlinking = false;
+                    sendPacket(false);
+                }
+            }
+
+            if (dynamicTarget != null) {
+                double distance = distanceTo(mc.thePlayer, dynamicTarget);
+
+                if (dynamicBlinking && distance < stopRange.getValue()) {
+                    dynamicBlinking = false;
+                    sendPacket(false);
+                } else if (!dynamicBlinking
+                        && distance > stopRange.getValue()
+                        && distance < startRange.getValue()) {
+                    lastStartBlinkTime = System.currentTimeMillis();
+                    dynamicBlinking = true;
+                } else if (dynamicBlinking && distance > startRange.getValue()) {
+                    dynamicBlinking = false;
+                    sendPacket(false);
+                } else if (distance > maxTargetRange.getValue()) {
+                    dynamicTarget = null;
+                    dynamicBlinking = false;
+                    sendPacket(false);
+                }
+            } else {
+                if (!packetQueue.isEmpty()) {
+                    dynamicBlinking = false;
+                    sendPacket(false);
+                }
+            }
+
+            lastHurt = mc.thePlayer.hurtTime > 0;
+        }
+    }
 
     @EventTarget
     public void onPacket(PacketEvent event) {
@@ -157,205 +185,106 @@ public class FakeLag extends Module {
 
         Packet<?> packet = event.getPacket();
 
-        // Always pass through — protocol-critical or non-gameplay packets
-        if (isPassThrough(packet)) return;
-
-        // Dead / singleplayer — don't queue
-        if (mc.thePlayer.isDead || mc.thePlayer.getHealth() <= 0) return;
-        if (isSingleplayer()) return;
-
-        // In recoil — pass through freely
-        if (System.currentTimeMillis() < recoilUntil) return;
-
-        // ignoreThisTick set by tick handler (scaffold, chest, item use, etc.)
-        if (ignoreThisTick) return;
-
-        // ── Flush triggers ───────────────────────────────────────────────────
-
-        // Inventory / window interactions
-        if (packet instanceof C0EPacketClickWindow || packet instanceof C0DPacketCloseWindow) {
-            blink(); return;
-        }
-
-        // Block placement, digging, sign, resource pack
-        if (packet instanceof C08PacketPlayerBlockPlacement
-                || packet instanceof C07PacketPlayerDigging
-                || packet instanceof C12PacketUpdateSign
-                || packet instanceof C19PacketResourcePackStatus) {
-            blink(); return;
-        }
-
-        // Attack → flush so position packets reach server before the C02
-        if (blinkOnAction.getValue() && packet instanceof C02PacketUseEntity) {
-            if (mc.theWorld != null) {
-                net.minecraft.entity.Entity attacked =
-                        ((C02PacketUseEntity) packet).getEntityFromWorld(mc.theWorld);
-                if (attacked instanceof EntityPlayer) {
-                    EntityPlayer ap = (EntityPlayer) attacked;
-                    if (TeamUtil.isFriend(ap) || TeamUtil.isBot(ap)) return;
-                }
-            }
-            blink(); return;
-        }
-
-        // PauseOnNoMove — flush when the player is genuinely stationary.
-        // Don't flush during a jump (motionY > 0.1) or fall (motionY < -0.1)
-        // as that would reset the server's vertical motion and cause rubberbanding.
-        if (pauseOnNoMove.getValue() && packet instanceof C03PacketPlayer) {
-            C03PacketPlayer move = (C03PacketPlayer) packet;
-            if (!move.isMoving()) {
-                boolean jumping = !move.isOnGround() && mc.thePlayer.motionY > 0.1;
-                boolean falling = mc.thePlayer.motionY < -0.1;
-                boolean still   = move.isOnGround() && Math.abs(mc.thePlayer.motionY) < 0.01;
-                if (still && !jumping && !falling) {
-                    blink(); return;
-                }
-            }
-        }
-
-        // ── Queue the packet ──────────────────────────────────────────────────
-
-        event.setCancelled(true);
-        synchronized (packetQueue) {
-            // Cap at 40 queued C03s to prevent Grim timer accumulation.
-            // If we're at the cap, flush the oldest half before queuing more.
-            if (packet instanceof C03PacketPlayer) {
-                int c03Count = 0;
-                for (QueueData qd : packetQueue) {
-                    if (qd.packet instanceof C03PacketPlayer) c03Count++;
-                }
-                if (c03Count >= 40) {
-                    Iterator<QueueData> it = packetQueue.iterator();
-                    while (it.hasNext() && c03Count >= 20) {
-                        QueueData qd = it.next();
-                        if (qd.packet instanceof C03PacketPlayer) {
-                            PacketUtil.sendPacketSafe(qd.packet);
-                            it.remove();
-                            c03Count--;
-                        }
-                    }
-                }
-            }
-            packetQueue.add(new QueueData(packet, System.currentTimeMillis()));
-        }
-    }
-
-    // ── incoming packet hook (knockback / PosLook) ───────────────────────────
-
-    @EventTarget
-    public void onPacketReceive(PacketEvent event) {
-        if (event.getType() != EventType.RECEIVE) return;
-        Packet<?> packet = event.getPacket();
-
-        // Server position correction
-        if (packet instanceof S08PacketPlayerPosLook) {
-            blink(); return;
-        }
-
-        // Knockback from entity velocity
-        if (packet instanceof S12PacketEntityVelocity) {
-            S12PacketEntityVelocity vel = (S12PacketEntityVelocity) packet;
-            if (mc.thePlayer != null && mc.thePlayer.getEntityId() == vel.getEntityID()) {
-                blink();
-            }
+        if (packet instanceof C00Handshake
+                || packet instanceof C00PacketLoginStart
+                || packet instanceof C00PacketServerQuery
+                || packet instanceof C01PacketEncryptionResponse
+                || packet instanceof C01PacketChatMessage) {
             return;
         }
 
-        // Explosion knockback
-        if (packet instanceof S27PacketExplosion) {
-            S27PacketExplosion exp = (S27PacketExplosion) packet;
-            if (exp.func_149149_c() != 0f || exp.func_149144_d() != 0f || exp.func_149147_e() != 0f) {
-                blink();
-            }
+        if (event.isCancelled()) return;
+
+        if (mode.getValue() == 1) {
+            if (!dynamicBlinking) return;
         }
+
+        packetQueue.add(new TimedPacket(packet, System.currentTimeMillis()));
+        event.setCancelled(true);
     }
 
-    // ── attack event (fallback for non-C02-routed hits) ──────────────────────
+    @EventTarget
+    public void onRender3D(Render3DEvent event) {
+        if (mode.getValue() != 0) return;
+        if (!drawRealPosition.getValue()) return;
+        if (vec3 == null) return;
+        if (mc.gameSettings.thirdPersonView == 0) return;
+        Blink.drawBox(vec3);
+    }
 
     @EventTarget
     public void onAttack(AttackEvent event) {
-        if (!blinkOnAction.getValue()) return;
-        if (event.getTarget() instanceof EntityPlayer) {
-            EntityPlayer target = (EntityPlayer) event.getTarget();
-            if (TeamUtil.isFriend(target) || TeamUtil.isBot(target)) return;
-        }
-        // Only flush if the C02 path didn't already flush (queue non-empty)
-        synchronized (packetQueue) {
-            if (!packetQueue.isEmpty()) blink();
-        }
+        if (mode.getValue() != 1) return;
+        if (!(event.getTarget() instanceof AbstractClientPlayer)) return;
+        AbstractClientPlayer attacked = (AbstractClientPlayer) event.getTarget();
+        if (ignoreTeammates.getValue() && TeamUtil.isSameTeam(attacked)) return;
+        dynamicTarget = attacked;
     }
-
-    // ── world / disconnect ───────────────────────────────────────────────────
 
     @EventTarget
     public void onLoadWorld(LoadWorldEvent event) {
-        // On disconnect (null world) drop the queue without recoil
-        synchronized (packetQueue) { packetQueue.clear(); }
-        recoilUntil    = 0;
-        ignoreThisTick = false;
+        packetQueue.clear();
+        vec3 = null;
+        dynamicTarget = null;
+        dynamicBlinking = false;
+        lastDisableTime = -1;
+        lastHurt = false;
+        lastStartBlinkTime = -1;
     }
 
-    // ── suffix ───────────────────────────────────────────────────────────────
+    // ── internals ─────────────────────────────────────────────────────────────
 
-    @Override
-    public String[] getSuffix() {
-        int size;
-        synchronized (packetQueue) { size = packetQueue.size(); }
-        return new String[]{String.valueOf(size)};
-    }
+    private void sendPacket(boolean useDelay) {
+        try {
+            while (!packetQueue.isEmpty()) {
+                boolean shouldSend;
 
-    // ── internals ────────────────────────────────────────────────────────────
+                if (!useDelay) {
+                    shouldSend = true;
+                } else {
+                    shouldSend = packetQueue.element().getCold().getCum(
+                            delay.getValue().longValue()
+                    );
+                }
 
-    /**
-     * Flush all queued packets and enter recoil window.
-     * Mirrors fdpclient's `blink()` — simple, no budget math.
-     */
-    private void blink() {
-        recoilUntil    = System.currentTimeMillis() + recoilTime.getValue();
-        ignoreThisTick = true;
-        handlePackets(true);
-    }
+                if (shouldSend) {
+                    Packet<?> packet = packetQueue.remove().getPacket();
+                    if (packet == null) continue;
 
-    /**
-     * Drain packets from the queue.
-     *
-     * @param clear true  → send everything immediately (flush/blink)
-     *              false → send only packets older than `delay` ms (normal drain)
-     *
-     * Packet ordering: non-C03 packets (e.g. C02 attack) are sent after all C03
-     * position packets so Grim sees the position before the attack — same ordering
-     * fdpclient uses via its ArrayDeque (insertion order preserved).
-     */
-    private void handlePackets(boolean clear) {
-        synchronized (packetQueue) {
-            long threshold = System.currentTimeMillis() - delay.getValue();
-            Iterator<QueueData> it = packetQueue.iterator();
-            while (it.hasNext()) {
-                QueueData qd = it.next();
-                if (clear || qd.timestamp <= threshold) {
-                    PacketUtil.sendPacketSafe(qd.packet);
-                    it.remove();
+                    if (mode.getValue() == 0) {
+                        updateTrackedPos(packet);
+                    }
+
+                    PacketUtil.sendPacketNoEvent(packet);
+                } else {
+                    break;
                 }
             }
+        } catch (Exception ignored) {
         }
     }
 
-    /**
-     * Packets that always pass through — never queued or dropped.
-     * Matches fdpclient's pass-through list exactly.
-     */
-    private static boolean isPassThrough(Packet<?> p) {
-        return p instanceof C00Handshake
-            || p instanceof C00PacketServerQuery
-            || p instanceof C01PacketPing
-            || p instanceof C01PacketChatMessage
-            || p instanceof S01PacketPong
-            || p instanceof C00PacketKeepAlive
-            || p instanceof C0FPacketConfirmTransaction;
+    private void updateTrackedPos(Packet<?> packet) {
+        if (packet instanceof net.minecraft.network.play.client.C03PacketPlayer.C06PacketPlayerPosLook) {
+            net.minecraft.network.play.client.C03PacketPlayer.C06PacketPlayerPosLook p =
+                    (net.minecraft.network.play.client.C03PacketPlayer.C06PacketPlayerPosLook) packet;
+            vec3 = new Vec3(p.getPositionX(), p.getPositionY(), p.getPositionZ());
+        } else if (packet instanceof net.minecraft.network.play.client.C03PacketPlayer.C04PacketPlayerPosition) {
+            net.minecraft.network.play.client.C03PacketPlayer.C04PacketPlayerPosition p =
+                    (net.minecraft.network.play.client.C03PacketPlayer.C04PacketPlayerPosition) packet;
+            vec3 = new Vec3(p.getPositionX(), p.getPositionY(), p.getPositionZ());
+        }
     }
 
-    private boolean isSingleplayer() {
-        return ((myau.mixin.IAccessorMinecraft)(Object)mc).isIntegratedServerRunning()
-            || ((myau.mixin.IAccessorMinecraft)(Object)mc).getCurrentServerData() == null;
+    private static double distanceTo(net.minecraft.entity.Entity a, net.minecraft.entity.Entity b) {
+        double dx = a.posX - b.posX;
+        double dy = a.posY - b.posY;
+        double dz = a.posZ - b.posZ;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    private static boolean isNullCheck() {
+        Minecraft mc = Minecraft.getMinecraft();
+        return mc.thePlayer != null && mc.theWorld != null && mc.thePlayer.ticksExisted > 0;
     }
 }

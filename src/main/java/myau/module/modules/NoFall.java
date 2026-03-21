@@ -1,11 +1,12 @@
 package myau.module.modules;
 
+import myau.enums.BlinkModules;
+
 import myau.module.ModuleInfo;
 import myau.enums.ModuleCategory;
 
 import com.google.common.base.CaseFormat;
 import myau.Myau;
-import myau.enums.BlinkModules;
 import myau.event.EventTarget;
 import myau.event.types.EventType;
 import myau.event.types.Priority;
